@@ -1,0 +1,39 @@
+name: Backfill (max) - Gomtang Index
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  backfill:
+    runs-on: ubuntu-latest
+    env:
+      SERVICE_KEY: ${{ secrets.SERVICE_KEY }}
+      ECOS_KEY: ${{ secrets.ECOS_KEY }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install deps
+        run: pip install -r requirements.txt
+
+      - name: Run backfill
+        run: |
+          export PYTHONPATH=src
+          python src/backfill_max.py
+
+      - name: Commit & push outputs
+        run: |
+          git config user.name "github-actions"
+          git config user.email "actions@users.noreply.github.com"
+          git add data/*.parquet data/*.csv docs/index.html || true
+          git commit -m "backfill max" || echo "no changes"
+          git push
