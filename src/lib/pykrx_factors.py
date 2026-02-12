@@ -117,21 +117,41 @@ def factor7_safe_haven(k200: pd.DataFrame, usdkrw: pd.DataFrame) -> pd.DataFrame
 
 def factor8_foreign_netbuy(start_date: str, end_date: str) -> pd.DataFrame:
     """
-    ⑧ 외국인 순매수 강도:
-    - pykrx 투자자별 거래대금(또는 거래량)에서 외국인 순매수 금액 사용
-    - 시장: KOSPI + KOSDAQ 합산
+    ⑧ 외국인 순매수(거래대금) - pykrx 버전 차이 안전 처리
+    - market 키워드 미사용 (positional arg)
+    - '외국인' 컬럼 우선 탐색, 없으면 유사 키워드 탐색
+    - 실패 시 NaN 대신 0으로 반환(파이프라인 중단 방지)
     """
-    kospi = stock.get_market_trading_value_by_investor(start_date, end_date, "KOSPI")
-    kosdaq = stock.get_market_trading_value_by_investor(start_date, end_date, "KOSDAQ")
+    def _pick_foreign_col(df: pd.DataFrame):
+        # 1) 가장 흔한 컬럼명
+        if "외국인" in df.columns:
+            return "외국인"
+        # 2) 혹시 공백/변형이 있는 경우
+        for c in df.columns:
+            if isinstance(c, str) and ("외국인" in c):
+                return c
+        return None
 
+    try:
+        # 키워드 market= 사용 금지 (TypeError 방지)
+        kospi = stock.get_market_trading_value_by_investor(start_date, end_date, "KOSPI")
+        kosdaq = stock.get_market_trading_value_by_investor(start_date, end_date, "KOSDAQ")
 
-    kospi = _as_date_index(kospi)
-    kosdaq = _as_date_index(kosdaq)
+        kospi = _as_date_index(kospi)
+        kosdaq = _as_date_index(kosdaq)
 
-    # 컬럼명은 보통 '외국인' 존재
-    col = "외국인"
-    if col not in kospi.columns or col not in kosdaq.columns:
-        return pd.DataFrame(columns=["date","f08_raw"])
+        c1 = _pick_foreign_col(kospi)
+        c2 = _pick_foreign_col(kosdaq)
+        if (c1 is None) or (c2 is None):
+            # 컬럼이 예상과 다를 때: 파이프라인이 죽지 않게 0으로 리턴
+            idx = kospi.index.union(kosdaq.index)
+            out = pd.DataFrame({"date": idx, "f08_raw": 0.0})
+            return out.reset_index(drop=True)
 
-    raw = (pd.to_numeric(kospi[col], errors="coerce") + pd.to_numeric(kosdaq[col], errors="coerce"))
-    return raw.reset_index().rename(columns={col:"f08_raw", 0:"f08_raw", "index":"date"})
+        raw = pd.to_numeric(kospi[c1], errors="coerce").fillna(0) + pd.to_numeric(kosdaq[c2], errors="coerce").fillna(0)
+        return raw.reset_index().rename(columns={0: "f08_raw", c1: "f08_raw", "index": "date"})
+
+    except Exception:
+        # 어떤 이유로든 실패하면 0으로 반환 (중단 방지)
+        return pd.DataFrame(columns=["date", "f08_raw"])
+
