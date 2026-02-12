@@ -121,8 +121,9 @@ def factor8_foreign_netbuy(start_date: str, end_date: str) -> pd.DataFrame:
     - pykrx 투자자별 거래대금(또는 거래량)에서 외국인 순매수 금액 사용
     - 시장: KOSPI + KOSDAQ 합산
     """
-    kospi = stock.get_market_trading_value_by_investor(start_date, end_date, market="KOSPI")
-    kosdaq = stock.get_market_trading_value_by_investor(start_date, end_date, market="KOSDAQ")
+    kospi = stock.get_market_trading_value_by_investor(start_date, end_date, "KOSPI")
+    kosdaq = stock.get_market_trading_value_by_investor(start_date, end_date, "KOSDAQ")
+
 
     kospi = _as_date_index(kospi)
     kosdaq = _as_date_index(kosdaq)
