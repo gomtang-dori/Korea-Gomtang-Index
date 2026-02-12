@@ -277,12 +277,21 @@ else:
     df["f10_score_greed"] = 100 - df["f10_score"]
     df["f09_score_greed"] = df["f09_score"]
 
-    wsum = cfg.W_F05 + cfg.W_F09 + cfg.W_F10
-    df["index_score_total"] = (
-        cfg.W_F05 * df["f05_score_greed"] +
-        cfg.W_F09 * df["f09_score_greed"] +
-        cfg.W_F10 * df["f10_score_greed"]
-    ) / wsum
+parts = []
+weights = []
+
+if "f05_score_greed" in df.columns:
+    parts.append(df["f05_score_greed"]); weights.append(cfg.W_F05)
+if "f09_score_greed" in df.columns and df["f09_score_greed"].notna().any():
+    parts.append(df["f09_score_greed"]); weights.append(cfg.W_F09)
+if "f10_score_greed" in df.columns:
+    parts.append(df["f10_score_greed"]); weights.append(cfg.W_F10)
+
+wsum = sum(weights)
+df["index_score_total"] = np.nan
+if wsum > 0:
+    df["index_score_total"] = sum(w*p for w,p in zip(weights, parts)) / wsum
+
 
     # 5점 단위 구간
     df["bucket_5pt"] = (df["index_score_total"] // 5 * 5).clip(0, 95).astype("Int64")
