@@ -258,7 +258,13 @@ def compute_scores(index_df: pd.DataFrame) -> pd.DataFrame:
     # 사용자의 기존 합의가 '⑨ 쪽으로 가중치 상향'이었으므로, 일단 '탐욕' 방향 유지:
     #  -> 최종 지수(0~100)에서 높은 점수=탐욕이면 그대로, 높은 점수=공포면 100-pct.
     # 아래는 "탐욕 점수"로 산출:
+if "f09_raw" in df.columns:
     df["f09_score"] = rolling_percentile(df["f09_raw"], cfg.ROLLING_DAYS, cfg.MIN_OBS)
+    df["f09_score_greed"] = df["f09_score"]
+else:
+    df["f09_score"] = np.nan
+    df["f09_score_greed"] = np.nan
+
 
     # ⑩: 변동성 ↑ = 공포 ↑ => pct 그대로
     df["f10_score"] = rolling_percentile(df["f10_raw"], cfg.ROLLING_DAYS, cfg.MIN_OBS)
