@@ -1,4 +1,9 @@
 name: Daily v2 - Verify (manual)
+run-name: "Daily v2 verify (manual) probe=${{ inputs.probe_only }}"
+on:
+  workflow_dispatch:
+    inputs:
+      ...
 
 on:
   workflow_dispatch:
