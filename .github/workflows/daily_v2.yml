@@ -59,6 +59,20 @@ jobs:
         run: |
           export PYTHONPATH=src
           python src/caches/cache_putcall.py
+          
+      - name: Cache K200 close (recent+buffer)
+        env:
+          KRX_AUTH_KEY: ${{ secrets.KRX_AUTH_KEY }}
+          KRX_KOSPI_DD_TRD_URL: ${{ secrets.KRX_KOSPI_DD_TRD_URL }}
+          BACKFILL_START: ${{ env.BACKFILL_START }}
+          BACKFILL_END: ${{ env.BACKFILL_END }}
+          CACHE_BUFFER_DAYS: "450"
+          K200_CACHE_PATH: data/cache/k200_close.parquet
+          PROGRESS_EVERY_N_DAYS: "25"
+        run: |
+          export PYTHONPATH=src
+          python src/caches/cache_k200_close.py
+  
 
       # -------------------------
       # factors (f02/f03 제거)
