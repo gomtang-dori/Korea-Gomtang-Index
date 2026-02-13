@@ -24,6 +24,18 @@ jobs:
         run: |
           export PYTHONPATH=src
           python src/caches/cache_k200_members.py
+          
+      - name: Validate k200_members.csv row count
+        run: |
+          python - <<'PY'
+          import pandas as pd
+          df = pd.read_csv("data/k200_members.csv", dtype={"isu_cd": str})
+          n = len(df)
+          print("rows=", n)
+          if n < 150:
+            raise SystemExit(f"Too few rows in k200_members.csv: {n}")
+          PY
+
 
       - name: Commit & push
         run: |
