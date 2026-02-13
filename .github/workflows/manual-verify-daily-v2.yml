@@ -1,0 +1,100 @@
+name: Daily v2 - Verify (manual)
+
+on:
+  workflow_dispatch:
+    inputs:
+      probe_only:
+        description: "1=6영업일 PROBE_ONLY(빠른 검증), 0=BACKFILL_START/END 기반 캐시 채움"
+        required: true
+        default: "1"
+      backfill_start:
+        description: "PROBE_ONLY=0일 때만 사용 (YYYYMMDD)"
+        required: false
+        default: ""
+      backfill_end:
+        description: "PROBE_ONLY=0일 때만 사용 (YYYYMMDD)"
+        required: false
+        default: ""
+      cache_buffer_days:
+        description: "PROBE_ONLY=0일 때 버퍼(캘린더 일수). 기본 450"
+        required: true
+        default: "450"
+      progress_every_n_days:
+        description: "진행률 로그 주기(일 단위). 기본 25"
+        required: true
+        default: "25"
+      python_version:
+        description: "Python version"
+        required: true
+        default: "3.11"
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ inputs.python_version }}
+
+      - name: Install deps
+        run: |
+          python -m pip install --upgrade pip
+          if [ -f requirements.txt ]; then
+            pip install -r requirements.txt
+          else
+            echo "requirements.txt not found"
+            exit 1
+          fi
+
+      - name: Debug files (safe)
+        run: |
+          set -e
+          mkdir -p data/cache docs
+          echo "== ls data =="
+          ls -al data || true
+          echo "== ls data/cache =="
+          ls -al data/cache || true
+          echo "== k200_members.csv preview =="
+          python -c "import pandas as pd, pathlib; p=pathlib.Path('data/k200_members.csv'); \
+print('exists=',p.exists()); \
+df=pd.read_csv(p, dtype={'isu_cd':str}) if p.exists() else None; \
+print('cols=', list(df.columns) if df is not None else None); \
+print('rows=', len(df) if df is not None else None); \
+print(df.head(5).to_string(index=False) if df is not None else 'NO FILE')"
+
+      - name: Run verify_daily_v2.py
+        env:
+          PYTHONPATH: src
+          KRX_AUTH_KEY: ${{ secrets.KRX_AUTH_KEY }}
+          KRX_STK_BYDD_TRD_URL: ${{ secrets.KRX_STK_BYDD_TRD_URL }}
+
+          PROBE_ONLY: ${{ inputs.probe_only }}
+          BACKFILL_START: ${{ inputs.backfill_start }}
+          BACKFILL_END: ${{ inputs.backfill_end }}
+          CACHE_BUFFER_DAYS: ${{ inputs.cache_buffer_days }}
+          PROGRESS_EVERY_N_DAYS: ${{ inputs.progress_every_n_days }}
+
+          K200_MEMBERS_PATH: data/k200_members.csv
+          K200_OHLCV_CACHE_PATH: data/cache/k200_ohlcv.parquet
+          INDEX_DAILY_PATH: data/index_daily.parquet
+          REPORT_HTML_PATH: docs/index.html
+        run: |
+          python src/verify_daily_v2.py
+
+      - name: Upload outputs (artifacts)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: verify_daily_v2_outputs
+          path: |
+            data/k200_members.csv
+            data/cache/k200_ohlcv.parquet
+            data/index_daily.parquet
+            docs/index.html
+          if-no-files-found: warn
