@@ -1,28 +1,28 @@
 name: Daily update (Gomtang Index)
+
 on:
-  schedule:
-    - cron: "10 9 * * *"   # KST 18:10 = UTC 09:10
   workflow_dispatch:
+  schedule:
+    - cron: "10 9 * * *"
 
 permissions:
   contents: write
 
 jobs:
-  build:
+  daily:
     runs-on: ubuntu-latest
     env:
-      SERVICE_KEY: ${{ secrets.SERVICE_KEY }}
+      # ECOS
       ECOS_KEY: ${{ secrets.ECOS_KEY }}
+      ECOS_USDKRW_STAT_CODE: ${{ secrets.ECOS_USDKRW_STAT_CODE }}
+      ECOS_USDKRW_CYCLE: ${{ secrets.ECOS_USDKRW_CYCLE }}
+      ECOS_USDKRW_ITEM_CODE1: ${{ secrets.ECOS_USDKRW_ITEM_CODE1 }}
 
-      # ECOS USD/KRW level settings (Variables)
-      ECOS_USDKRW_STAT_CODE: ${{ vars.ECOS_USDKRW_STAT_CODE }}
-      ECOS_USDKRW_CYCLE: ${{ vars.ECOS_USDKRW_CYCLE }}
-      ECOS_USDKRW_ITEM_CODE1: ${{ vars.ECOS_USDKRW_ITEM_CODE1 }}
-
-      # KRX Put/Call (factor 4)
+      # KRX
       KRX_AUTH_KEY: ${{ secrets.KRX_AUTH_KEY }}
       KRX_EQSOP_URL: ${{ secrets.KRX_EQSOP_URL }}
       KRX_EQKOP_URL: ${{ secrets.KRX_EQKOP_URL }}
+      KRX_KOSPI_DD_TRD_URL: ${{ secrets.KRX_KOSPI_DD_TRD_URL }}
 
     steps:
       - uses: actions/checkout@v4
@@ -54,14 +54,14 @@ jobs:
           if not p.exists():
               raise SystemExit("data/index_daily.parquet not found (daily_update may have failed).")
           df = pd.read_parquet(p)
-          df.to_csv(out, index=False, encoding="utf-8-sig")
-          print(f"wrote {out} rows={len(df)} cols={len(df.columns)}")
+          df.to_csv(out, index=False)
+          print("[csv] wrote", out, "rows=", len(df))
           PY
 
       - name: Commit & push outputs
         run: |
           git config user.name "github-actions"
-          git config user.email "actions@users.noreply.github.com"
-          git add docs/index.html docs/assets/style.css data/index_daily.parquet data/index_daily.csv data/usdkrw_level.parquet data/usdkrw_level.csv || true
-          git commit -m "daily update" || echo "no changes"
+          git config user.email "github-actions@users.noreply.github.com"
+          git add data/index_daily.parquet data/index_daily.csv docs/index.html || true
+          git commit -m "daily update" || echo "nothing to commit"
           git push
