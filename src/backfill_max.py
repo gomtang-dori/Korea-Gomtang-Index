@@ -142,29 +142,27 @@ def fetch_k200_close_range_chunked(
     end: pd.Timestamp,
     progress_every: int,
 ) -> tuple[pd.DataFrame, list[str], int]:
-    """
-    일단위로 basDt 요청 -> 빈 결과는 SKIP + 누락일 기록.
-    반환:
-      - k200_df(date,k200_close)
-      - missing_days(YYYYMMDD list)
-      - requested_day_count
-    """
-    # 캘린더 범위 (휴장일 포함 가능). 누락률 판단은 "요청일수" 대비로 계산.
     days = pd.date_range(start, end, freq="D")
     missing = []
     frames = []
     t0 = time.time()
+    err_samples = 0
 
     for i, d in enumerate(days, start=1):
         bas = d.strftime("%Y%m%d")
         try:
-            df_day = api.fetch_k200_close_by_date(bas)  # 내부에서 basDt/basDd fallback 및 close col 자동 선택 처리된 상태 가정
+            df_day = api.fetch_k200_close_by_date(bas)
+
             if df_day is None or df_day.empty:
                 missing.append(bas)
             else:
                 frames.append(df_day)
-        except Exception:
+
+        except Exception as e:
             missing.append(bas)
+            if err_samples < 5:
+                print(f"[k200_err_sample] bas={bas} err={repr(e)}")
+                err_samples += 1
 
         _progress_line("k200", i, len(days), bas, t0, progress_every)
 
@@ -178,6 +176,7 @@ def fetch_k200_close_range_chunked(
         out = pd.DataFrame(columns=["date", "k200_close"])
 
     return out, missing, len(days)
+
 
 
 # ------------------- main -------------------
