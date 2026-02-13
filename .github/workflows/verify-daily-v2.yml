@@ -1,18 +1,18 @@
-name: verify_daily_v2
+name: Daily v2 - Verify (manual)
 
 on:
   workflow_dispatch:
     inputs:
       probe_only:
-        description: "1이면 6영업일 PROBE_ONLY=1로 실행(빠른 검증), 0이면 BACKFILL_START/END 기반 캐시 채움"
+        description: "1=6영업일 PROBE_ONLY(빠른 검증), 0=BACKFILL_START/END 기반 캐시 채움"
         required: true
         default: "1"
       backfill_start:
-        description: "PROBE_ONLY=0일 때만 사용 (YYYYMMDD). 예: 20250102"
+        description: "PROBE_ONLY=0일 때만 사용 (YYYYMMDD)"
         required: false
         default: ""
       backfill_end:
-        description: "PROBE_ONLY=0일 때만 사용 (YYYYMMDD). 예: 20260212"
+        description: "PROBE_ONLY=0일 때만 사용 (YYYYMMDD)"
         required: false
         default: ""
       cache_buffer_days:
@@ -27,7 +27,6 @@ on:
         description: "Python version"
         required: true
         default: "3.11"
-
 
 jobs:
   verify:
@@ -49,38 +48,38 @@ jobs:
           if [ -f requirements.txt ]; then
             pip install -r requirements.txt
           else
-            echo "requirements.txt not found; please add dependencies."
+            echo "requirements.txt not found"
             exit 1
           fi
 
-      - name: Show member files (debug)
+      - name: Debug files (safe)
         run: |
           set -e
+          mkdir -p data/cache docs
+          echo "== ls data =="
           ls -al data || true
+          echo "== ls data/cache =="
           ls -al data/cache || true
-          echo "k200_members.csv head:"
-          python -c "import pandas as pd, pathlib; p=pathlib.Path('data/k200_members.csv'); print('exists=',p.exists()); \
+          echo "== k200_members.csv preview =="
+          python -c "import pandas as pd, pathlib; p=pathlib.Path('data/k200_members.csv'); \
+print('exists=',p.exists()); \
 df=pd.read_csv(p, dtype={'isu_cd':str}) if p.exists() else None; \
 print('cols=', list(df.columns) if df is not None else None); \
 print('rows=', len(df) if df is not None else None); \
 print(df.head(5).to_string(index=False) if df is not None else 'NO FILE')"
 
-
       - name: Run verify_daily_v2.py
         env:
           PYTHONPATH: src
-          # Required secrets for stk_bydd_trd OHLCV cache
           KRX_AUTH_KEY: ${{ secrets.KRX_AUTH_KEY }}
           KRX_STK_BYDD_TRD_URL: ${{ secrets.KRX_STK_BYDD_TRD_URL }}
 
-          # Inputs -> env for your cache script
           PROBE_ONLY: ${{ inputs.probe_only }}
           BACKFILL_START: ${{ inputs.backfill_start }}
           BACKFILL_END: ${{ inputs.backfill_end }}
           CACHE_BUFFER_DAYS: ${{ inputs.cache_buffer_days }}
           PROGRESS_EVERY_N_DAYS: ${{ inputs.progress_every_n_days }}
 
-          # Paths convention
           K200_MEMBERS_PATH: data/k200_members.csv
           K200_OHLCV_CACHE_PATH: data/cache/k200_ohlcv.parquet
           INDEX_DAILY_PATH: data/index_daily.parquet
