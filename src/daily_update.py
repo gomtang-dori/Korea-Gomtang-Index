@@ -355,19 +355,24 @@ def main():
     # K200이 없으면 이후 K200 파생/히트맵 섹션 스킵 가능하도록 NaN 컬럼만 만들어 둠
     base["k200_close"] = np.nan
 
-    # k200 derived
-    if base["k200_close"].notna().sum() > 10:
+# ---- k200 derived (안전장치 포함) ----
+if ("k200_close" not in base.columns) or (base["k200_close"].dropna().empty):
+    # K200 데이터가 없으면 이후 계산/히트맵을 안전하게 스킵할 수 있도록 NaN 컬럼만 준비
+    base["k200_close"] = np.nan
+
+if base["k200_close"].notna().sum() > 10:
     base["k200_ret_3d"] = base["k200_close"].pct_change(3)
     base["k200_ret_5d"] = base["k200_close"].pct_change(5)
     base["k200_ret_7d"] = base["k200_close"].pct_change(7)
     base["k200_fwd_10d_return"] = forward_return(base["k200_close"], 10)
     base["k200_fwd_10d_win"] = forward_win(base["k200_close"], 10)
-    else:
+else:
     base["k200_ret_3d"] = np.nan
     base["k200_ret_5d"] = np.nan
     base["k200_ret_7d"] = np.nan
     base["k200_fwd_10d_return"] = np.nan
     base["k200_fwd_10d_win"] = np.nan
+
 
     # scores
     for key in ["f01","f02","f03","f05","f06","f07","f08","f10"]:
