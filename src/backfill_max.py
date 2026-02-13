@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import os
+import time
 from dataclasses import dataclass
 from pathlib import Path
 import numpy as np
@@ -26,6 +27,9 @@ class CFG:
     DATA_DIR: str = "data"
     USDKRW_LEVEL_PATH: str = "data/usdkrw_level.parquet"
     VKOSPI_LEVEL_PATH: str = "data/vkospi_level.parquet"
+
+    # progress logging
+    PROGRESS_EVERY_N_DAYS: int = 25  # 로그 주기(캘린더 일 기준)
     W: dict = None
 
     def __post_init__(self):
@@ -91,6 +95,65 @@ def load_existing_f05_f10(index_df: pd.DataFrame) -> pd.DataFrame:
     return index_df[cols].copy()
 
 
+def _fmt_elapsed(sec: float) -> str:
+    sec = int(sec)
+    h = sec // 3600
+    m = (sec % 3600) // 60
+    s = sec % 60
+    if h > 0:
+        return f"{h}h{m:02d}m{s:02d}s"
+    return f"{m}m{s:02d}s"
+
+
+def fetch_k200_close_range_with_progress(start: pd.Timestamp, end: pd.Timestamp) -> pd.DataFrame:
+    """
+    K200을 backfill_max.py에서 직접 1일씩 호출해서 진행률을 확실히 출력.
+    (휴일/주말은 빈 결과 -> 스킵)
+    """
+    api = KRXKospiIndexAPI.from_env()
+    start = pd.to_datetime(start).normalize()
+    end = pd.to_datetime(end).normalize()
+
+    days = pd.date_range(start, end, freq="D")
+    total = len(days)
+    t0 = time.time()
+
+    rows = []
+    done = 0
+    for d in days:
+        done += 1
+        basDt = d.strftime("%Y%m%d")
+
+        try:
+            one = api.fetch_k200_close_by_date(basDt)  # returns date,k200_close or empty
+        except Exception as e:
+            one = pd.DataFrame(columns=["date", "k200_close"])
+
+        if one is not None and not one.empty:
+            rows.append(one)
+
+        # progress log
+        if done == 1 or done % cfg.PROGRESS_EVERY_N_DAYS == 0 or done == total:
+            elapsed = time.time() - t0
+            pct = done / total * 100.0
+            speed = done / elapsed if elapsed > 0 else 0.0
+            eta = (total - done) / speed if speed > 0 else float("inf")
+            print(
+                f"[progress:k200] {pct:6.2f}% ({done}/{total}) "
+                f"basDt={basDt} elapsed={_fmt_elapsed(elapsed)} "
+                f"speed={speed:.2f} days/s eta={_fmt_elapsed(eta) if eta != float('inf') else 'NA'}"
+            )
+
+    if not rows:
+        return pd.DataFrame(columns=["date", "k200_close"])
+
+    out = pd.concat(rows, ignore_index=True)
+    out["date"] = pd.to_datetime(out["date"], errors="coerce")
+    out["k200_close"] = pd.to_numeric(out["k200_close"], errors="coerce")
+    out = out.dropna(subset=["date", "k200_close"]).drop_duplicates("date").sort_values("date").reset_index(drop=True)
+    return out
+
+
 def main():
     ensure_dir(cfg.DATA_DIR)
 
@@ -123,9 +186,9 @@ def main():
     vkospi["vkospi"] = pd.to_numeric(vkospi["vkospi"], errors="coerce")
     vkospi = vkospi.dropna(subset=["date", "vkospi"]).sort_values("date").reset_index(drop=True)
 
-    # ---- KOSPI200 close ----
-    api = KRXKospiIndexAPI.from_env()
-    k200 = api.fetch_k200_close_range(start, end)
+    # ---- K200 (with progress) ----
+    print(f"[backfill_max] start={start.date()} end={end.date()} years={backfill_years}")
+    k200 = fetch_k200_close_range_with_progress(start, end)
     k200 = safe_to_datetime(k200, "date")
     k200["k200_close"] = pd.to_numeric(k200.get("k200_close"), errors="coerce")
     k200 = k200.dropna(subset=["date", "k200_close"]).sort_values("date").reset_index(drop=True)
@@ -138,7 +201,7 @@ def main():
     f02 = factor2_strength(start_str, end_str)
     f03 = factor3_breadth(start_str, end_str)
 
-    # keep realized vol as alt raw
+    # realized vol as alt raw (optional)
     f06_alt = factor6_volatility(k200)
     if f06_alt is not None and not f06_alt.empty and "f06_raw" in f06_alt.columns:
         f06_alt = f06_alt.rename(columns={"f06_raw": "f06_alt_raw"})
@@ -152,10 +215,12 @@ def main():
         safe_to_datetime(df, "date")
 
     # ---- Put/Call full window ----
+    print("[progress:f04] fetching put/call range ...")
     f04 = fetch_putcall_ratio_by_date(pd.to_datetime(start), pd.to_datetime(end))
     f04 = safe_to_datetime(f04, "date")
+    print(f"[progress:f04] done rows={len(f04)}")
 
-    # ---- VKOSPI raw (level) ----
+    # ---- VKOSPI raw ----
     f06 = vkospi[["date", "vkospi"]].copy().rename(columns={"vkospi": "f06_raw"})
 
     # ---- Existing f05/f10 from existing index (optional) ----
@@ -173,7 +238,7 @@ def main():
         base = base.merge(add, on="date", how="left")
     base = base.sort_values("date").reset_index(drop=True)
 
-    # ---- Derived K200 ----
+    # ---- Derived ----
     base["k200_ret_3d"] = base["k200_close"].pct_change(3)
     base["k200_ret_5d"] = base["k200_close"].pct_change(5)
     base["k200_ret_7d"] = base["k200_close"].pct_change(7)
