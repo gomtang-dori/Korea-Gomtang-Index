@@ -78,13 +78,14 @@ jobs:
       # factors (F01/F04/F06/F10) - fail fast
       # -------------------------
 
-      - name: Factors (F01/F04/F06/F10) - fail fast
+      - name: Factors (F01 125MA / F04 / F06 / F10) - fail fast
         env:
           # 운영 기본값(Backfill과 동일)
           ROLLING_DAYS: "1260"
           MIN_OBS: "252"
 
-          # F01
+          # ✅ F01: 125 거래일 이동평균 기반
+          F01_MA_DAYS: "125"
           K200_CACHE_PATH: data/cache/k200_close.parquet
 
           # F04
@@ -124,5 +125,5 @@ jobs:
           git config user.name "github-actions"
           git config user.email "github-actions@github.com"
           git add data/cache data/factors data/index_daily.parquet data/index_daily.csv docs/index.html || true
-          git commit -m "Daily v2 update (F01+F04+F06+F10)" || echo "No changes"
+          git commit -m "Daily v2 update (F01=MA125 + F04 + F06 + F10)" || echo "No changes"
           git push
