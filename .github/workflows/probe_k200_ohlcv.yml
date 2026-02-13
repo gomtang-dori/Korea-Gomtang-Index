@@ -1,0 +1,31 @@
+name: probe_k200_ohlcv
+
+on:
+  workflow_dispatch:
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Probe K200 OHLCV (6 business days)
+        env:
+          KRX_AUTH_KEY: ${{ secrets.KRX_AUTH_KEY }}
+          KRX_STK_BYDD_TRD_URL: ${{ secrets.KRX_STK_BYDD_TRD_URL }}
+          K200_MEMBERS_PATH: data/k200_members.csv
+          K200_OHLCV_CACHE_PATH: data/cache/k200_ohlcv.parquet
+          PROBE_ONLY: "1"
+          PROGRESS_EVERY_N_DAYS: "1"
+        run: |
+          export PYTHONPATH=src
+          python src/caches/cache_k200_ohlcv.py
