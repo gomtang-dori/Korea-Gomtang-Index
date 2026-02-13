@@ -1,5 +1,5 @@
-name: verify_daily_v2
-mkdir -p data/cache
+name: Daily v2 - Verify
+
 
 
 on:
