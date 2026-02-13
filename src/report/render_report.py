@@ -33,7 +33,7 @@ HTML_TMPL = Template(
     <div class="card">
       <h2>데이터 소스</h2>
       <div class="muted">
-        ②/③은 KRX OpenAPI 유가증권 일별매매정보(stk_bydd_trd)의 OHLCV(고가/저가/종가/거래량)를 캐시화해 계산합니다. [Source](https://www.genspark.ai/api/files/s/B1PYOvrO)
+        ③은 KRX OpenAPI 유가증권 일별매매정보(stk_bydd_trd)의 OHLCV(고가/저가/종가/거래량)를 캐시화해 계산합니다. [Source](https://www.genspark.ai/api/files/s/B1PYOvrO)
       </div>
       <div class="muted">
         VKOSPI(코스피 200 변동성지수)는 파생상품지수 시세정보에서 IDX_NM 필터로 수집하며 종가 컬럼은 CLSPRC_IDX입니다. [Source](https://www.genspark.ai/api/files/s/uX7923Iq)
