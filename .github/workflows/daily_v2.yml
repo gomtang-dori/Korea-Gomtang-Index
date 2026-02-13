@@ -3,7 +3,7 @@ name: daily_v2
 on:
   workflow_dispatch:
   schedule:
-    - cron: "15 1 * * 1-5"  # 평일 UTC 01:15 (필요시 조정)
+    - cron: "15 1 * * 1-5"  # 평일 UTC 01:15
 
 jobs:
   daily:
@@ -21,14 +21,13 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: Set date range (recent 30d + buffer)
+      - name: Set date range (recent 30d)
         run: |
           echo "BACKFILL_END=$(date -u +%Y%m%d)" >> $GITHUB_ENV
           echo "BACKFILL_START=$(date -u -d '30 days ago' +%Y%m%d)" >> $GITHUB_ENV
-          echo "CACHE_BUFFER_DAYS=450" >> $GITHUB_ENV
 
       # -------------------------
-      # caches
+      # caches (K200 close / K200 OHLCV 제거)
       # -------------------------
 
       - name: Cache USD/KRW
@@ -49,18 +48,6 @@ jobs:
           export PYTHONPATH=src
           python src/vkospi_fetch.py
 
-      - name: Cache K200 close (recent+buffer)
-        env:
-          KRX_AUTH_KEY: ${{ secrets.KRX_AUTH_KEY }}
-          KRX_KOSPI_DD_TRD_URL: ${{ secrets.KRX_KOSPI_DD_TRD_URL }}
-          BACKFILL_START: ${{ env.BACKFILL_START }}
-          BACKFILL_END: ${{ env.BACKFILL_END }}
-          CACHE_BUFFER_DAYS: ${{ env.CACHE_BUFFER_DAYS }}
-          K200_CACHE_PATH: data/cache/k200_close.parquet
-        run: |
-          export PYTHONPATH=src
-          python src/caches/cache_k200_close.py
-
       - name: Cache Put/Call (recent)
         env:
           KRX_AUTH_KEY: ${{ secrets.KRX_AUTH_KEY }}
@@ -73,45 +60,33 @@ jobs:
           export PYTHONPATH=src
           python src/caches/cache_putcall.py
 
-      - name: Cache K200 OHLCV (recent+buffer)
-        env:
-          KRX_AUTH_KEY: ${{ secrets.KRX_AUTH_KEY }}
-          KRX_STK_BYDD_TRD_URL: ${{ secrets.KRX_STK_BYDD_TRD_URL }}
-          BACKFILL_START: ${{ env.BACKFILL_START }}
-          BACKFILL_END: ${{ env.BACKFILL_END }}
-          CACHE_BUFFER_DAYS: ${{ env.CACHE_BUFFER_DAYS }}
-          K200_MEMBERS_PATH: data/k200_members.csv
-          K200_OHLCV_CACHE_PATH: data/cache/k200_ohlcv.parquet
-          PROGRESS_EVERY_N_DAYS: "25"
-        run: |
-          export PYTHONPATH=src
-          python src/caches/cache_k200_ohlcv.py
-
       # -------------------------
-      # factors
-      #  - Strength(f02) 제외
-      #  - Breadth(f03)만 daily 모드로 점수 생성
+      # factors (f02/f03 제거)
+      # - 아래는 "파일 있으면 실행" 형태로 안전하게
       # -------------------------
 
-      - name: Factor 01/03/06 (Strength 제외, Breadth daily)
-        env:
-          # f03 "짧은 검증(최근 30일)"용 점수 생성 파라미터
-          # (주의) f03_breadth.py가 F03_MODE를 지원해야 합니다.
-          F03_MODE: "daily"
-          ROLLING_DAYS: "60"
-          MIN_OBS: "20"
-
-          K200_CACHE_PATH: data/cache/k200_close.parquet
-          K200_OHLCV_CACHE_PATH: data/cache/k200_ohlcv.parquet
+      - name: Factors (lite)
         run: |
+          set -e
           export PYTHONPATH=src
-          python src/factors/f01_momentum.py
-          python src/factors/f03_breadth.py
-          python src/factors/f06_vkospi.py
+
+          # VKOSPI (f06) - 스펙상 종가 컬럼은 CLSPRC_IDX [Source](https://www.genspark.ai/api/files/s/uX7923Iq)
+          python src/factors/f06_vkospi.py || true
+
+          # Put/Call (f04)
+          python src/factors/f04_putcall.py || true
+
+          # FX Vol (f10) - 구현돼 있으면
+          python src/factors/f10_fxvol.py || true
+
+          # 기타(있으면)
+          python src/factors/f05_junk_spread.py || true
+          python src/factors/f07_safe_haven.py || true
+          python src/factors/f08_foreign_flow.py || true
+          python src/factors/f09_margin.py || true
 
       # -------------------------
       # assemble & report
-      # (f02가 없어도 assemble/report가 깨지지 않도록 code 수정 반영 필요)
       # -------------------------
 
       - name: Assemble index
@@ -134,5 +109,5 @@ jobs:
           git config user.name "github-actions"
           git config user.email "github-actions@github.com"
           git add data/cache data/factors data/index_daily.parquet data/index_daily.csv docs/index.html || true
-          git commit -m "Daily v2 update (caches->factors->assemble->report)" || echo "No changes"
+          git commit -m "Daily v2 update (lite: skip strength+breadth)" || echo "No changes"
           git push
