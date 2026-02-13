@@ -143,6 +143,11 @@ def factor7_safe_haven(k200: pd.DataFrame, usdkrw: pd.DataFrame) -> pd.DataFrame
     raw.name = "f07_raw"
     return raw.reset_index()
 
+# --- compatibility alias (daily_update/backfill uses factor7_safehaven name) ---
+def factor7_safehaven(k200: pd.DataFrame, usdkrw: pd.DataFrame) -> pd.DataFrame:
+    return factor7_safe_haven(k200, usdkrw)
+
+
 def factor8_foreign_netbuy(start_date: str, end_date: str) -> pd.DataFrame:
     """
     ⑧ 외국인 순매수(거래대금) - pykrx 버전 차이 안전 처리
