@@ -12,7 +12,7 @@ class KRXDrvProdIndexAPI:
     """
     KRX OpenAPI - 파생상품지수 시세정보
     (실제 동작 endpoint는 probe로 확인된 drvprod_dd_trd)
-      - URL (env): KRX_DVRPROD_DD_TRD_URL
+      - URL (env): KRX_DRVPROD_DD_TRD_URL
       - Auth: AUTH_KEY header (env: KRX_AUTH_KEY)
       - Request param: basDd=YYYYMMDD
       - Response list: OutBlock_1
@@ -25,7 +25,7 @@ class KRXDrvProdIndexAPI:
 
     @classmethod
     def from_env(cls) -> "KRXDrvProdIndexAPI":
-        url = (os.getenv("KRX_DVRPROD_DD_TRD_URL") or "").strip()
+        url = (os.getenv("KRX_DRVPROD_DD_TRD_URL") or "").strip()
         if not url:
             # safe default (probe-confirmed working path)
             url = "https://data-dbg.krx.co.kr/svc/apis/idx/drvprod_dd_trd"
