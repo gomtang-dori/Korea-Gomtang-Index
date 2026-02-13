@@ -1,4 +1,6 @@
 name: verify_daily_v2
+mkdir -p data/cache
+
 
 on:
   workflow_dispatch:
@@ -54,20 +56,16 @@ jobs:
 
       - name: Show member files (debug)
         run: |
+          set -e
           ls -al data || true
           ls -al data/cache || true
           echo "k200_members.csv head:"
-          if [ -f data/k200_members.csv ]; then
-            python - <<'PY'
-            import pandas as pd
-            df = pd.read_csv("data/k200_members.csv", dtype={"isu_cd": str})
-            print("cols=", list(df.columns))
-            print("rows=", len(df))
-            print(df.head(5).to_string(index=False))
-            PY
-          else
-            echo "data/k200_members.csv NOT FOUND"
-          fi
+          python -c "import pandas as pd, pathlib; p=pathlib.Path('data/k200_members.csv'); print('exists=',p.exists()); \
+df=pd.read_csv(p, dtype={'isu_cd':str}) if p.exists() else None; \
+print('cols=', list(df.columns) if df is not None else None); \
+print('rows=', len(df) if df is not None else None); \
+print(df.head(5).to_string(index=False) if df is not None else 'NO FILE')"
+
 
       - name: Run verify_daily_v2.py
         env:
