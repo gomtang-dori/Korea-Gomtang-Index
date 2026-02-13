@@ -18,6 +18,7 @@ jobs:
       - name: Install deps
         run: |
           python -m pip install --upgrade pip
+          pip install -U pykrx pandas requests  # -U 옵션을 넣어 최신버전 강제 설치
           pip install -r requirements.txt
 
       - name: Generate k200_members.csv
