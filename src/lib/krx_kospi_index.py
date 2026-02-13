@@ -1,4 +1,3 @@
-# src/lib/krx_kospi_index.py
 from __future__ import annotations
 
 import os
@@ -58,7 +57,6 @@ class KRXKospiIndexAPI:
         # Normalize column names
         cols = set(df.columns)
         if "IDX_NM" not in cols:
-            # if field name differs, keep as-is; user requested IDX_NM filter, so fail softly
             return pd.DataFrame()
 
         mask = df["IDX_NM"].astype(str).isin(["KOSPI 200", "코스피 200"])
@@ -70,67 +68,65 @@ class KRXKospiIndexAPI:
         # CLS_PRC may contain commas or '-' etc.
         return pd.to_numeric(s.astype(str).str.replace(",", "", regex=False), errors="coerce")
 
-def fetch_k200_close_by_date(self, basDt: str) -> pd.DataFrame:
-    """
-    Returns: DataFrame columns: date, k200_close
-    date is YYYY-MM-DD (datetime)
-    """
-    js = self._get(basDt)
+    # --- 여기서부터 들여쓰기가 수정된 부분입니다 ---
 
-    # ---- DEBUG (start) ----
-    try:
-        if isinstance(js, dict):
-            print(f"[k200_debug] basDt={basDt} top_keys={list(js.keys())}")
+    def fetch_k200_close_by_date(self, basDt: str) -> pd.DataFrame:
+        """
+        Returns: DataFrame columns: date, k200_close
+        date is YYYY-MM-DD (datetime)
+        """
+        js = self._get(basDt)
+
+        # ---- DEBUG (start) ----
+        try:
+            if isinstance(js, dict):
+                print(f"[k200_debug] basDt={basDt} top_keys={list(js.keys())}")
+            else:
+                print(f"[k200_debug] basDt={basDt} js_type={type(js)}")
+            print("[k200_debug] js_head:", json.dumps(js, ensure_ascii=False)[:800])
+        except Exception as e:
+            print("[k200_debug] js_dump_failed:", e)
+        # ---- DEBUG (end) ----
+
+        df = self._to_frame(js)
+
+        # ---- DEBUG (start) ----
+        print(f"[k200_debug] basDt={basDt} out_rows={len(df)}")
+        print(f"[k200_debug] basDt={basDt} cols={list(df.columns)}")
+        if not df.empty and "IDX_NM" in df.columns:
+            idx_list = df["IDX_NM"].astype(str).head(30).tolist()
+            print(f"[k200_debug] basDt={basDt} IDX_NM_head30={idx_list}")
+
+            # KOSPI/200 관련 후보 탐색
+            norm = df["IDX_NM"].astype(str).str.replace(" ", "", regex=False).str.upper()
+            cand_mask = norm.str.contains("KOSPI", na=False) | norm.str.contains("코스피".upper(), na=False) | norm.str.contains("200", na=False)
+            cand = df.loc[cand_mask, ["IDX_NM"] + ([c for c in ["BAS_DD", "CLS_PRC"] if c in df.columns])].head(20)
+            print("[k200_debug] candidates_head20:")
+            print(cand.to_string(index=False))
+        # ---- DEBUG (end) ----
+
+        df = self._pick_k200_row(df)
+        if df.empty:
+            print(f"[k200_debug] basDt={basDt} pick_row=EMPTY (filter miss)")
+            return pd.DataFrame(columns=["date", "k200_close"])
+
+        # 날짜 처리
+        if "BAS_DD" in df.columns:
+            dt = pd.to_datetime(df["BAS_DD"].iloc[0], errors="coerce")
         else:
-            print(f"[k200_debug] basDt={basDt} js_type={type(js)}")
-        print("[k200_debug] js_head:", json.dumps(js, ensure_ascii=False)[:800])
-    except Exception as e:
-        print("[k200_debug] js_dump_failed:", e)
-    # ---- DEBUG (end) ----
+            dt = pd.to_datetime(basDt, format="%Y%m%d", errors="coerce")
 
-    df = self._to_frame(js)
+        if "CLS_PRC" not in df.columns:
+            print(f"[k200_debug] basDt={basDt} CLS_PRC missing")
+            return pd.DataFrame(columns=["date", "k200_close"])
 
-    # ---- DEBUG (start) ----
-    print(f"[k200_debug] basDt={basDt} out_rows={len(df)}")
-    print(f"[k200_debug] basDt={basDt} cols={list(df.columns)}")
-    if not df.empty and "IDX_NM" in df.columns:
-        idx_list = df["IDX_NM"].astype(str).head(30).tolist()
-        print(f"[k200_debug] basDt={basDt} IDX_NM_head30={idx_list}")
-
-        # KOSPI/200 관련 후보를 더 넓게 탐색해서 몇 개라도 찍기
-        norm = df["IDX_NM"].astype(str).str.replace(" ", "", regex=False).str.upper()
-        cand_mask = norm.str.contains("KOSPI", na=False) | norm.str.contains("코스피".upper(), na=False) | norm.str.contains("200", na=False)
-        cand = df.loc[cand_mask, ["IDX_NM"] + ([c for c in ["BAS_DD", "CLS_PRC"] if c in df.columns])].head(20)
-        print("[k200_debug] candidates_head20:")
-        print(cand.to_string(index=False))
-    # ---- DEBUG (end) ----
-
-    df = self._pick_k200_row(df)
-    if df.empty:
-        print(f"[k200_debug] basDt={basDt} pick_row=EMPTY (filter miss)")
-        return pd.DataFrame(columns=["date", "k200_close"])
-
-    # Prefer BAS_DD if present, else basDt
-    if "BAS_DD" in df.columns:
-        dt = pd.to_datetime(df["BAS_DD"].iloc[0], errors="coerce")
-    else:
-        dt = pd.to_datetime(basDt, format="%Y%m%d", errors="coerce")
-
-    if "CLS_PRC" not in df.columns:
-        print(f"[k200_debug] basDt={basDt} CLS_PRC missing")
-        return pd.DataFrame(columns=["date", "k200_close"])
-
-    close = self._parse_close(df["CLS_PRC"]).iloc[0]
-    print(f"[k200_debug] basDt={basDt} PICKED IDX_NM={df.get('IDX_NM').iloc[0] if 'IDX_NM' in df.columns else 'NA'} CLS_PRC={close}")
-    return pd.DataFrame({"date": [dt], "k200_close": [close]})
-
-
+        close = self._parse_close(df["CLS_PRC"]).iloc[0]
+        print(f"[k200_debug] basDt={basDt} PICKED IDX_NM={df.get('IDX_NM').iloc[0] if 'IDX_NM' in df.columns else 'NA'} CLS_PRC={close}")
+        return pd.DataFrame({"date": [dt], "k200_close": [close]})
 
     def fetch_k200_close_range(self, start: pd.Timestamp, end: pd.Timestamp) -> pd.DataFrame:
         """
         Fetch by calling the daily endpoint per date.
-        This is robust but can be heavier.
-        We'll call only business days-ish by generating all calendar days and letting API return empty on holidays.
         """
         start = pd.to_datetime(start).normalize()
         end = pd.to_datetime(end).normalize()
@@ -144,7 +140,6 @@ def fetch_k200_close_by_date(self, basDt: str) -> pd.DataFrame:
                 if not one.empty and pd.notna(one["k200_close"].iloc[0]):
                     rows.append(one)
             except Exception:
-                # Fail soft for individual dates
                 continue
 
         if not rows:
