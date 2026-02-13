@@ -1,5 +1,3 @@
-name: Daily v2 - Verify (manual)
-
 on:
   workflow_dispatch:
     inputs:
