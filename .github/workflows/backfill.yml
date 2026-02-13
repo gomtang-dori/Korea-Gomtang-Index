@@ -1,32 +1,24 @@
-name: Backfill (max) - Gomtang Index
+name: backfill
 
 on:
   workflow_dispatch:
 
-permissions:
-  contents: write
-
 jobs:
-  backfill:
+  chunk:
     runs-on: ubuntu-latest
-    env:
-      # ECOS
-      ECOS_KEY: ${{ secrets.ECOS_KEY }}
-      ECOS_USDKRW_STAT_CODE: ${{ secrets.ECOS_USDKRW_STAT_CODE }}
-      ECOS_USDKRW_CYCLE: ${{ secrets.ECOS_USDKRW_CYCLE }}
-      ECOS_USDKRW_ITEM_CODE1: ${{ secrets.ECOS_USDKRW_ITEM_CODE1 }}
-
-      # KRX
-      KRX_AUTH_KEY: ${{ secrets.KRX_AUTH_KEY }}
-      KRX_EQSOP_URL: ${{ secrets.KRX_EQSOP_URL }}
-      KRX_EQKOP_URL: ${{ secrets.KRX_EQKOP_URL }}
-      KRX_KOSPI_DD_TRD_URL: ${{ secrets.KRX_KOSPI_DD_TRD_URL }}
-
-      # KRX Derivative Index (VKOSPI)
-      KRX_DRVPROD_DD_TRD_URL: ${{ secrets.KRX_DRVPROD_DD_TRD_URL }}
-
-      # Optional backfill window (years)
-      BACKFILL_YEARS: "12"
+    strategy:
+      fail-fast: false
+      matrix:
+        # 2년 청크(필요 구간에 맞게 조정 가능)
+        chunk:
+          - { label: "2010_2011", start: "20100104", end: "20111230" }
+          - { label: "2012_2013", start: "20120102", end: "20131230" }
+          - { label: "2014_2015", start: "20140102", end: "20151230" }
+          - { label: "2016_2017", start: "20160104", end: "20171228" }
+          - { label: "2018_2019", start: "20180102", end: "20191230" }
+          - { label: "2020_2021", start: "20200102", end: "20211230" }
+          - { label: "2022_2023", start: "20220103", end: "20231228" }
+          - { label: "2024_2026", start: "20240102", end: "20261230" }
 
     steps:
       - uses: actions/checkout@v4
@@ -36,41 +28,85 @@ jobs:
           python-version: "3.11"
 
       - name: Install deps
-        run: pip install -r requirements.txt
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
 
-      - name: Fetch USD/KRW level (for f07)
+      - name: Fetch USD/KRW level (deps)
+        env:
+          ECOS_KEY: ${{ secrets.ECOS_KEY }}
+          ECOS_USDKRW_CYCLE: ${{ secrets.ECOS_USDKRW_CYCLE }}
+          ECOS_USDKRW_ITEM_CODE1: ${{ secrets.ECOS_USDKRW_ITEM_CODE1 }}
+          ECOS_USDKRW_STAT_CODE: ${{ secrets.ECOS_USDKRW_STAT_CODE }}
         run: |
           export PYTHONPATH=src
           python src/usdkrw_fetch.py
 
-      - name: Fetch VKOSPI level (for f06)
+      - name: Fetch VKOSPI level (aux store)
+        env:
+          KRX_AUTH_KEY: ${{ secrets.KRX_AUTH_KEY }}
+          KRX_DVRPROD_DD_TRD_URL: ${{ secrets.KRX_DVRPROD_DD_TRD_URL }}
         run: |
           export PYTHONPATH=src
           python src/vkospi_fetch.py
 
-      - name: Run backfill
+      - name: Run backfill chunk (2y)
+        env:
+          KRX_AUTH_KEY: ${{ secrets.KRX_AUTH_KEY }}
+          KRX_KOSPI_DD_TRD_URL: ${{ secrets.KRX_KOSPI_DD_TRD_URL }}
+
+          BACKFILL_START: ${{ matrix.chunk.start }}
+          BACKFILL_END: ${{ matrix.chunk.end }}
+          CHUNK_OUT: outputs/index_daily_${{ matrix.chunk.label }}.parquet
+          MISSING_RATE_MAX: "0.02"
+          PROGRESS_EVERY_N_DAYS: "25"
+          ROLLING_WINDOW_5Y: "1260"
         run: |
           export PYTHONPATH=src
           python src/backfill_max.py
 
+      - name: Upload chunk artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: index_daily_${{ matrix.chunk.label }}
+          path: outputs/index_daily_${{ matrix.chunk.label }}.parquet
+          if-no-files-found: error
+
+  merge:
+    runs-on: ubuntu-latest
+    needs: chunk
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Download all chunk artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: chunks
+
+      - name: Merge chunks to final parquet
+        run: |
+          export PYTHONPATH=src
+          python src/merge_backfill_chunks.py
+
       - name: Convert parquet to CSV (index_daily)
         run: |
-          python - << 'PY'
-          import pandas as pd
-          from pathlib import Path
-          p = Path("data/index_daily.parquet")
-          out = Path("data/index_daily.csv")
-          if not p.exists():
-              raise SystemExit("data/index_daily.parquet not found (backfill may have failed).")
-          df = pd.read_parquet(p)
-          df.to_csv(out, index=False)
-          print("[csv] wrote", out, "rows=", len(df))
-          PY
+          export PYTHONPATH=src
+          python src/parquet_to_csv.py
 
       - name: Commit & push outputs
         run: |
           git config user.name "github-actions"
-          git config user.email "github-actions@users.noreply.github.com"
-          git add data/index_daily.parquet data/index_daily.csv data/vkospi_level.parquet || true
-          git commit -m "backfill update" || echo "nothing to commit"
+          git config user.email "github-actions@github.com"
+          git add data/index_daily.parquet data/index_daily.csv || true
+          git commit -m "Backfill (chunked 2y) update" || echo "No changes"
           git push
