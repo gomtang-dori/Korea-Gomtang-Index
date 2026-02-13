@@ -16,13 +16,14 @@ jobs:
       ECOS_USDKRW_CYCLE: ${{ secrets.ECOS_USDKRW_CYCLE }}
       ECOS_USDKRW_ITEM_CODE1: ${{ secrets.ECOS_USDKRW_ITEM_CODE1 }}
 
-      # KRX Put/Call (factor 4)
+      # KRX
       KRX_AUTH_KEY: ${{ secrets.KRX_AUTH_KEY }}
       KRX_EQSOP_URL: ${{ secrets.KRX_EQSOP_URL }}
       KRX_EQKOP_URL: ${{ secrets.KRX_EQKOP_URL }}
-
-      # KRX KOSPI index daily (K200 close)
       KRX_KOSPI_DD_TRD_URL: ${{ secrets.KRX_KOSPI_DD_TRD_URL }}
+
+      # KRX Derivative Index (VKOSPI)
+      KRX_DRVPROD_DD_TRD_URL: ${{ secrets.KRX_DRVPROD_DD_TRD_URL }}
 
       # Optional backfill window (years)
       BACKFILL_YEARS: "12"
@@ -41,6 +42,11 @@ jobs:
         run: |
           export PYTHONPATH=src
           python src/usdkrw_fetch.py
+
+      - name: Fetch VKOSPI level (for f06)
+        run: |
+          export PYTHONPATH=src
+          python src/vkospi_fetch.py
 
       - name: Run backfill
         run: |
@@ -65,6 +71,6 @@ jobs:
         run: |
           git config user.name "github-actions"
           git config user.email "github-actions@users.noreply.github.com"
-          git add data/index_daily.parquet data/index_daily.csv || true
+          git add data/index_daily.parquet data/index_daily.csv data/vkospi_level.parquet || true
           git commit -m "backfill update" || echo "nothing to commit"
           git push
