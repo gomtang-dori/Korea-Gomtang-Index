@@ -11,11 +11,15 @@ jobs:
   build:
     runs-on: ubuntu-latest
     env:
-      # existing secrets
       SERVICE_KEY: ${{ secrets.SERVICE_KEY }}
       ECOS_KEY: ${{ secrets.ECOS_KEY }}
 
-      # KRX Put/Call (factor 4) secrets
+      # ECOS USD/KRW level settings (Variables)
+      ECOS_USDKRW_STAT_CODE: ${{ vars.ECOS_USDKRW_STAT_CODE }}
+      ECOS_USDKRW_CYCLE: ${{ vars.ECOS_USDKRW_CYCLE }}
+      ECOS_USDKRW_ITEM_CODE1: ${{ vars.ECOS_USDKRW_ITEM_CODE1 }}
+
+      # KRX Put/Call (factor 4)
       KRX_AUTH_KEY: ${{ secrets.KRX_AUTH_KEY }}
       KRX_EQSOP_URL: ${{ secrets.KRX_EQSOP_URL }}
       KRX_EQKOP_URL: ${{ secrets.KRX_EQKOP_URL }}
@@ -30,6 +34,11 @@ jobs:
       - name: Install deps
         run: pip install -r requirements.txt
 
+      - name: Fetch USD/KRW level (for f07)
+        run: |
+          export PYTHONPATH=src
+          python src/usdkrw_fetch.py
+
       - name: Run daily update
         run: |
           export PYTHONPATH=src
@@ -40,7 +49,6 @@ jobs:
           python - << 'PY'
           import pandas as pd
           from pathlib import Path
-
           p = Path("data/index_daily.parquet")
           out = Path("data/index_daily.csv")
           if not p.exists():
@@ -54,6 +62,6 @@ jobs:
         run: |
           git config user.name "github-actions"
           git config user.email "actions@users.noreply.github.com"
-          git add docs/index.html docs/assets/style.css data/index_daily.parquet data/index_daily.csv || true
+          git add docs/index.html docs/assets/style.css data/index_daily.parquet data/index_daily.csv data/usdkrw_level.parquet data/usdkrw_level.csv || true
           git commit -m "daily update" || echo "no changes"
           git push
