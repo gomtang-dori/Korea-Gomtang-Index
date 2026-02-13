@@ -9,7 +9,6 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # 2년 청크(필요 구간에 맞게 조정 가능)
         chunk:
           - { label: "2010_2011", start: "20100104", end: "20111230" }
           - { label: "2012_2013", start: "20120102", end: "20131230" }
@@ -50,17 +49,23 @@ jobs:
           export PYTHONPATH=src
           python src/vkospi_fetch.py
 
-      - name: Run backfill chunk (2y)
+      - name: Run backfill chunk (2y, skip-empty-day, missing<=2%)
         env:
           KRX_AUTH_KEY: ${{ secrets.KRX_AUTH_KEY }}
           KRX_KOSPI_DD_TRD_URL: ${{ secrets.KRX_KOSPI_DD_TRD_URL }}
+          KRX_EQSOP_URL: ${{ secrets.KRX_EQSOP_URL }}
+          KRX_EQKOP_URL: ${{ secrets.KRX_EQKOP_URL }}
+          SERVICE_KEY: ${{ secrets.SERVICE_KEY }}
+          ECOS_KEY: ${{ secrets.ECOS_KEY }}
+          ECOS_USDKRW_CYCLE: ${{ secrets.ECOS_USDKRW_CYCLE }}
+          ECOS_USDKRW_ITEM_CODE1: ${{ secrets.ECOS_USDKRW_ITEM_CODE1 }}
+          ECOS_USDKRW_STAT_CODE: ${{ secrets.ECOS_USDKRW_STAT_CODE }}
 
           BACKFILL_START: ${{ matrix.chunk.start }}
           BACKFILL_END: ${{ matrix.chunk.end }}
           CHUNK_OUT: outputs/index_daily_${{ matrix.chunk.label }}.parquet
           MISSING_RATE_MAX: "0.02"
           PROGRESS_EVERY_N_DAYS: "25"
-          ROLLING_WINDOW_5Y: "1260"
         run: |
           export PYTHONPATH=src
           python src/backfill_max.py
