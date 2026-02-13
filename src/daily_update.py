@@ -29,8 +29,8 @@ class CFG:
     DATA_DIR: str = "data"
     DOCS_DIR: str = "docs"
     ASSETS_DIR: str = "docs/assets"
+    USDKRW_LEVEL_PATH: str = "data/usdkrw_level.parquet"
 
-    # ⑨ 제외, ④ 포함 (가용한 팩터만 행별로 재정규화)
     W: dict = None
 
     def __post_init__(self):
@@ -94,7 +94,6 @@ def rolling_percentile(s: pd.Series, window: int, min_obs: int) -> pd.Series:
         if len(x) < min_obs:
             return np.nan
         return float(pd.Series(x).rank(pct=True).iloc[-1] * 100.0)
-
     return s.rolling(window=window, min_periods=min_obs).apply(_pct, raw=False)
 
 
@@ -116,8 +115,6 @@ def renormalize_weights(df: pd.DataFrame, weights: dict) -> pd.DataFrame:
 
 
 def load_existing_f05_f10(index_df: pd.DataFrame) -> pd.DataFrame:
-    # 레포마다 f05/f10 수집 구현이 다를 수 있어,
-    # 기존 index_daily에 있으면 유지하고, 없으면 NaN으로 둡니다.
     keep = ["date", "f05_raw", "f10_raw"]
     cols = [c for c in keep if c in index_df.columns]
     if not cols:
@@ -159,10 +156,12 @@ HTML_TMPL = Template(
       <div>7일: {{ idx7 }}</div>
     </div>
     <div class="card">
-      <h2>메모</h2>
+      <h2>데이터 소스</h2>
       <div class="muted">
-        ④ Put/Call은 KRX 옵션(유가+코스닥) 거래대금 기반으로 계산합니다.
-        (RGHT_TP_NM, ACC_TRDVAL) [Source](https://www.genspark.ai/api/files/s/6ynCkTUc)
+        ECOS 일일환율(731Y001[D]) + 원/달러 종가 15:30(0000003) 사용 [Source](https://www.genspark.ai/api/files/s/4TDXM2NX)
+      </div>
+      <div class="muted">
+        KRX 옵션 Put/Call: OutBlock_1의 RGHT_TP_NM, ACC_TRDVAL 확인 [Source](https://www.genspark.ai/api/files/s/6ynCkTUc)
       </div>
     </div>
   </div>
@@ -175,13 +174,6 @@ HTML_TMPL = Template(
   <div class="card">
     <h2>구성요소(팩터 점수) 라인차트</h2>
     {{ fig_components | safe }}
-  </div>
-
-  <div class="footer muted">
-    Option endpoint spec:
-    유가 https://data-dbg.krx.co.kr/svc/apis/drv/eqsop_bydd_trd,
-    코스닥 https://data-dbg.krx.co.kr/svc/apis/drv/eqkop_bydd_trd
-    (요청 basDd, 응답 OutBlock_1) [Source](https://www.genspark.ai/api/files/s/08Toc4xA)
   </div>
 </div>
 </body>
@@ -212,12 +204,22 @@ def main():
     old = safe_to_datetime(old, "date")
 
     today = pd.Timestamp.utcnow().tz_localize(None).normalize()
-    start = today - pd.Timedelta(days=cfg.REFRESH_DAYS + 30)  # 휴장일 buffer
-
+    start = today - pd.Timedelta(days=cfg.REFRESH_DAYS + 30)
     start_str = start.strftime("%Y%m%d")
     end_str = today.strftime("%Y%m%d")
 
-    # --- KOSPI200 proxy (069500) ---
+    # ---- USD/KRW level (mandatory) ----
+    usd_path = Path(cfg.USDKRW_LEVEL_PATH)
+    if not usd_path.exists():
+        raise RuntimeError(f"Missing {usd_path}. Workflow must run usdkrw_fetch.py before daily_update.py")
+    usdkrw = pd.read_parquet(usd_path)
+    usdkrw = safe_to_datetime(usdkrw, "date")
+    if "usdkrw" not in usdkrw.columns:
+        raise RuntimeError("usdkrw_level.parquet missing 'usdkrw' column")
+    usdkrw["usdkrw"] = pd.to_numeric(usdkrw["usdkrw"], errors="coerce")
+    usdkrw = usdkrw.dropna(subset=["date", "usdkrw"]).sort_values("date").reset_index(drop=True)
+
+    # ---- KOSPI200 proxy ----
     k200 = fetch_kospi200_ohlcv(start_str, end_str)
     k200 = safe_to_datetime(k200, "date")
     if "k200_close" not in k200.columns:
@@ -228,61 +230,39 @@ def main():
     k200["k200_close"] = pd.to_numeric(k200.get("k200_close"), errors="coerce")
     k200 = k200.dropna(subset=["date", "k200_close"]).sort_values("date").reset_index(drop=True)
 
-    # --- Factor 10 input (USD/KRW df) ---
-    # 현재 레포에서는 usdkrw를 별도로 수집해 두었거나 index_daily에 있을 수 있습니다.
-    # 여기서는 "기존 index_daily에서 f10_raw가 있으면" 그것을 usdkrw proxy로 재구성하려고 시도합니다.
-    # (정석은 별도 usdkrw_raw df를 수집해서 넣는 것)
-    usdkrw = pd.DataFrame(columns=["date", "usdkrw"])
-    if "f10_raw" in old.columns:
-        tmp = old[["date", "f10_raw"]].copy()
-        tmp = safe_to_datetime(tmp, "date").dropna()
-        # f10_raw가 '변동성'이면 환율레벨이 아니므로 safe-haven raw에 바로 쓰기 부적합.
-        # 따라서 여기서는 safe-haven 계산을 위해 최소한의 fallback으로 NaN 처리.
-        # (원하시면 다음 단계에서 'usdkrw 레벨'을 별도로 적재하도록 개선 가능)
-        usdkrw = pd.DataFrame(columns=["date", "usdkrw"])
-    # 결국 usdkrw가 비어있으면 factor7은 NaN 처리(가중치 재정규화로 지수는 계속 계산)
+    # ---- Factors (pykrx_factors signatures) ----
+    f01 = factor1_momentum(k200)
+    f02 = factor2_strength(start_str, end_str)
+    f03 = factor3_breadth(start_str, end_str)
+    f06 = factor6_volatility(k200)
+    f07 = factor7_safe_haven(k200, usdkrw)
+    f08 = factor8_foreign_netbuy(start_str, end_str)
 
-    # --- pykrx factors ---
-    f01 = factor1_momentum(k200)                 # (k200_df)
-    f02 = factor2_strength(start_str, end_str)   # (start,end)
-    f03 = factor3_breadth(start_str, end_str)    # (start,end)
-    f06 = factor6_volatility(k200)               # (k200_df)
-    f08 = factor8_foreign_netbuy(start_str, end_str)  # (start,end)
-
-    for df in [f01, f02, f03, f06, f08]:
+    for df in [f01, f02, f03, f06, f07, f08]:
         safe_to_datetime(df, "date")
 
-    # f07 requires usdkrw level df; if missing, return empty -> NaN
-    if usdkrw is not None and not usdkrw.empty and {"date", "usdkrw"}.issubset(set(usdkrw.columns)):
-        f07 = factor7_safe_haven(k200, usdkrw)
-        safe_to_datetime(f07, "date")
-    else:
-        f07 = pd.DataFrame(columns=["date", "f07_raw"])
-
-    # --- Factor 4 (Put/Call) recent 14 days refetch ---
+    # ---- Factor4 Put/Call (recent refresh) ----
     f04 = fetch_putcall_ratio_by_date(start, today)
     f04 = safe_to_datetime(f04, "date")
 
-    # --- Factor 5/10 from existing index parquet if present ---
+    # ---- Factor5/10 existing in index parquet (optional) ----
     f05f10 = load_existing_f05_f10(old)
 
-    # --- Merge ---
     base = k200[["date", "k200_close"]].copy()
     for add in [f01, f02, f03, f04, f06, f07, f08, f05f10]:
         if add is None or add.empty:
             continue
         base = base.merge(add, on="date", how="left")
-
     base = base.sort_values("date").reset_index(drop=True)
 
-    # --- K200 derived ---
+    # ---- Derived K200 ----
     base["k200_ret_3d"] = base["k200_close"].pct_change(3)
     base["k200_ret_5d"] = base["k200_close"].pct_change(5)
     base["k200_ret_7d"] = base["k200_close"].pct_change(7)
     base["k200_fwd_10d_return"] = forward_return(base["k200_close"], 10)
     base["k200_fwd_10d_win"] = forward_win(base["k200_close"], 10)
 
-    # --- Scores ---
+    # ---- Scores ----
     for raw, score in [
         ("f01_raw", "f01_score"),
         ("f02_raw", "f02_score"),
@@ -300,18 +280,15 @@ def main():
         else:
             base[score] = np.nan
 
-    # --- Index aggregation (renormalized weights) ---
     w_norm = renormalize_weights(base, cfg.W)
     score_cols = list(cfg.W.keys())
     base["index_score_total"] = (base[score_cols] * w_norm).sum(axis=1)
-
     base["bucket_5pt"] = (np.floor(base["index_score_total"] / 5.0) * 5.0).clip(0, 100)
 
-    # --- Upsert and save ---
     out = upsert_timeseries(old, base, "date")
     save_parquet(out, index_path)
 
-    # --- Report ---
+    # ---- Report ----
     last = out.dropna(subset=["index_score_total"]).tail(1)
     if last.empty:
         today_date = "-"
