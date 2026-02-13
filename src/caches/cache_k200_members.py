@@ -1,72 +1,78 @@
 from __future__ import annotations
 import os
-from datetime import datetime, timedelta
-from pathlib import Path
+import requests
 import pandas as pd
-from pykrx import stock
+from pathlib import Path
+from datetime import datetime
 
 def ensure_dir(p: Path):
     p.mkdir(parents=True, exist_ok=True)
+
+def get_k200_members_from_krx_web(target_date: str):
+    """
+    KRX 정보데이터시스템 웹사이트의 API를 직접 호출하여 
+    KOSPI 200 구성 종목 리스트를 가져옵니다.
+    """
+    url = "http://data.krx.co.kr/comm/bldMng/getDesent.do"
+    
+    # KRX 웹사이트 호출에 필요한 파라미터 (지수구성종목 내역)
+    # 1028은 KOSPI 200의 표준 코드입니다.
+    data = {
+        "bld": "dbms/MVD/04/04060100/mvd04060100_01",
+        "indIdx": "1",
+        "indIdx2": "028",
+        "trdDd": target_date,
+        "money": "1",
+        "csvExport": "false"
+    }
+    
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Referer": "http://data.krx.co.kr/contents/MDC/MDI/mdiLoader/index.do?menuId=MDC0201030104"
+    }
+
+    try:
+        response = requests.post(url, data=data, headers=headers, timeout=30)
+        js = response.json()
+        output = js.get("output", [])
+        
+        if not output:
+            return pd.DataFrame()
+            
+        # ISU_SRT_CD(종목코드), ISU_ABBRV(종목명) 추출
+        df = pd.DataFrame(output)
+        res = pd.DataFrame({
+            "asof_date": target_date,
+            "isu_cd": df["ISU_SRT_CD"],
+            "isu_nm": df["ISU_ABBRV"]
+        })
+        return res
+    except Exception as e:
+        print(f"[Error] KRX Web Direct Call Failed: {e}")
+        return pd.DataFrame()
 
 def main():
     out_path = Path("data/k200_members.csv")
     ensure_dir(out_path.parent)
 
-    # 1. 날짜 설정: 확실히 데이터가 존재하는 가장 최근 평일(금요일)
-    # 한국 시간 기준 금요일 데이터를 가져오기 위해 날짜를 20260213으로 고정하거나 계산
-    today = datetime.now()
-    # 안전하게 금요일(2026-02-13) 혹은 그 이전 영업일을 타겟팅
-    target_date = "20260213" 
-    
-    print(f"[cache_k200_members] Target Date: {target_date}")
-    
-    tickers = []
-    # [시도 1] 표준 인덱스 구성 종목 함수
-    try:
-        tickers = stock.get_index_portfolio_deposit_file(target_date, "1028")
-        tickers = list(tickers) if tickers is not None else []
-    except:
-        tickers = []
+    # 1. 확실한 최근 영업일 (금요일) 설정
+    target_date = "20260213"
+    print(f"[cache_k200_members] Direct calling KRX for {target_date}...")
 
-    # [시도 2] 실패 시, 대체 인덱스 함수 사용
-    if len(tickers) < 150:
-        print("[cache_k200_members] Attempt 2: get_index_ticker_list")
-        try:
-            tickers = stock.get_index_ticker_list(target_date, market="KOSPI")
-            # KOSPI 전체 중 상위 200개를 가져오거나 필터링 (비상용)
-            if len(tickers) > 200: tickers = tickers[:200]
-        except:
-            tickers = []
+    # 2. 직접 수집 시도
+    df = get_k200_members_from_krx_web(target_date)
 
-    # [시도 3] 최후의 수단: 시가총액 기반으로 강제 수집 (에러 방지용)
-    if len(tickers) < 150:
-        print("[cache_k200_members] Attempt 3: Market Cap sorting (Emergency)")
-        try:
-            df_cap = stock.get_market_cap_by_ticker(target_date, market="KOSPI")
-            tickers = df_cap.sort_values("시가총액", ascending=False).index[:200].tolist()
-        except:
-            pass
+    # 3. 만약 실패했다면 어제 날짜로 한 번 더 시도
+    if df.empty:
+        target_date = "20260212"
+        print(f"[cache_k200_members] Retrying with {target_date}...")
+        df = get_k200_members_from_krx_web(target_date)
 
-    # 최종 확인: 여전히 0개면 에러를 내어 덮어쓰기 방지
-    if not tickers or len(tickers) < 50:
-        raise RuntimeError("CRITICAL: 모든 수집 수단이 실패했습니다. 0행 파일을 생성하지 않습니다.")
+    # 4. 최종 검증 및 저장
+    if df.empty or len(df) < 150:
+        raise RuntimeError("CRITICAL: KRX 웹사이트로부터 데이터를 가져오지 못했습니다. 서버 상태를 확인하세요.")
 
-    # 2. 종목명 매핑
-    print(f"[cache_k200_members] Successfully found {len(tickers)} tickers. Mapping names...")
-    names = []
-    for t in tickers:
-        try:
-            names.append(stock.get_market_ticker_name(t))
-        except:
-            names.append("")
-
-    # 3. 데이터프레임 저장
-    df = pd.DataFrame({
-        "asof_date": target_date,
-        "isu_cd": tickers,
-        "isu_nm": names,
-    }).sort_values("isu_cd")
-
+    df = df.sort_values("isu_cd")
     df.to_csv(out_path, index=False, encoding="utf-8-sig")
     print(f"[cache_k200_members] Success! {len(df)} rows saved to {out_path}")
 
