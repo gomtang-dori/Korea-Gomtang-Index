@@ -1,0 +1,159 @@
+name: backfill_v2
+
+on:
+  workflow_dispatch:
+
+jobs:
+  chunk:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        chunk:
+          - { label: "2018_2019", start: "20180102", end: "20191230" }
+          - { label: "2020_2021", start: "20200102", end: "20211230" }
+          - { label: "2022_2023", start: "20220103", end: "20231228" }
+          - { label: "2024_2026p", start: "20240102", end: "20261230" }
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      # ---- caches ----
+      - name: Cache USD/KRW (existing)
+        env:
+          ECOS_KEY: ${{ secrets.ECOS_KEY }}
+          ECOS_USDKRW_CYCLE: ${{ secrets.ECOS_USDKRW_CYCLE }}
+          ECOS_USDKRW_ITEM_CODE1: ${{ secrets.ECOS_USDKRW_ITEM_CODE1 }}
+          ECOS_USDKRW_STAT_CODE: ${{ secrets.ECOS_USDKRW_STAT_CODE }}
+        run: |
+          export PYTHONPATH=src
+          python src/usdkrw_fetch.py
+
+      - name: Cache VKOSPI (existing)
+        env:
+          KRX_AUTH_KEY: ${{ secrets.KRX_AUTH_KEY }}
+          KRX_DVRPROD_DD_TRD_URL: ${{ secrets.KRX_DVRPROD_DD_TRD_URL }}
+        run: |
+          export PYTHONPATH=src
+          python src/vkospi_fetch.py
+
+      - name: Cache K200 close (chunk+buffer)
+        env:
+          KRX_AUTH_KEY: ${{ secrets.KRX_AUTH_KEY }}
+          KRX_KOSPI_DD_TRD_URL: ${{ secrets.KRX_KOSPI_DD_TRD_URL }}
+          BACKFILL_START: ${{ matrix.chunk.start }}
+          BACKFILL_END: ${{ matrix.chunk.end }}
+          CACHE_BUFFER_DAYS: "450"
+          K200_CACHE_PATH: data/cache/k200_close.parquet
+        run: |
+          export PYTHONPATH=src
+          python src/caches/cache_k200_close.py
+
+      - name: Cache Put/Call (chunk)
+        env:
+          KRX_AUTH_KEY: ${{ secrets.KRX_AUTH_KEY }}
+          KRX_EQSOP_URL: ${{ secrets.KRX_EQSOP_URL }}
+          KRX_EQKOP_URL: ${{ secrets.KRX_EQKOP_URL }}
+          BACKFILL_START: ${{ matrix.chunk.start }}
+          BACKFILL_END: ${{ matrix.chunk.end }}
+          PUTCALL_CACHE_PATH: data/cache/putcall_ratio.parquet
+        run: |
+          export PYTHONPATH=src
+          python src/caches/cache_putcall.py
+
+      - name: Cache K200 OHLCV via stk_bydd_trd (chunk+buffer)
+        env:
+          KRX_AUTH_KEY: ${{ secrets.KRX_AUTH_KEY }}
+          KRX_STK_BYDD_TRD_URL: ${{ secrets.KRX_STK_BYDD_TRD_URL }}
+          BACKFILL_START: ${{ matrix.chunk.start }}
+          BACKFILL_END: ${{ matrix.chunk.end }}
+          CACHE_BUFFER_DAYS: "450"
+          K200_MEMBERS_PATH: data/k200_members.csv
+          K200_OHLCV_CACHE_PATH: data/cache/k200_ohlcv.parquet
+          PROGRESS_EVERY_N_DAYS: "25"
+        run: |
+          export PYTHONPATH=src
+          python src/caches/cache_k200_ohlcv.py
+
+      # ---- factors (cache only) ----
+      - name: Factor 01/02/03/06 (chunk)
+        env:
+          ROLLING_DAYS: "1260"
+          MIN_OBS: "252"
+          K200_CACHE_PATH: data/cache/k200_close.parquet
+          K200_OHLCV_CACHE_PATH: data/cache/k200_ohlcv.parquet
+        run: |
+          export PYTHONPATH=src
+          python src/factors/f01_momentum.py
+          python src/factors/f02_strength.py
+          python src/factors/f03_breadth.py
+          python src/factors/f06_vkospi.py
+
+      - name: Upload factors artifact (chunk)
+        uses: actions/upload-artifact@v4
+        with:
+          name: factors_${{ matrix.chunk.label }}
+          path: |
+            data/factors/f01.parquet
+            data/factors/f02.parquet
+            data/factors/f03.parquet
+            data/factors/f06.parquet
+          if-no-files-found: error
+
+  assemble_report:
+    runs-on: ubuntu-latest
+    needs: chunk
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Download factor artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: chunks
+
+      - name: Collect factor files into data/factors
+        run: |
+          mkdir -p data/factors
+          find chunks -name "*.parquet" -maxdepth 4 -print -exec cp {} data/factors/ \;
+
+      - name: Assemble index
+        run: |
+          export PYTHONPATH=src
+          python src/assemble/assemble_index.py
+
+      - name: Render report
+        run: |
+          export PYTHONPATH=src
+          python src/report/render_report.py
+
+      - name: Convert parquet to CSV (index_daily)
+        run: |
+          export PYTHONPATH=src
+          python src/parquet_to_csv.py
+
+      - name: Commit & push outputs
+        run: |
+          git config user.name "github-actions"
+          git config user.email "github-actions@github.com"
+          git add data/index_daily.parquet data/index_daily.csv docs/index.html data/factors || true
+          git commit -m "Backfill v2 (caches->factors->assemble->report)" || echo "No changes"
+          git push
