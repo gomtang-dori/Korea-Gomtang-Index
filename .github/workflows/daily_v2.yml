@@ -65,25 +65,28 @@ jobs:
       # - 아래는 "파일 있으면 실행" 형태로 안전하게
       # -------------------------
 
-      - name: Factors (lite)
+      - name: Factors (F01/F04/F06/F10) - fail fast
+        env:
+          # 공통 롤링(운영값). Daily 짧게 확인만이면 MIN_OBS 낮춰도 됨
+          ROLLING_DAYS: "1260"
+          MIN_OBS: "252"
+
+          # F01
+          K200_CACHE_PATH: data/cache/k200_close.parquet
+
+          # F04
+          PUTCALL_CACHE_PATH: data/cache/putcall_ratio.parquet
+
+          # F10
+          USDKRW_CACHE_PATH: data/cache/usdkrw_level.parquet
+          VOL_WINDOW_DAYS: "20"
         run: |
-          set -e
           export PYTHONPATH=src
+          python src/factors/f01_momentum.py
+          python src/factors/f04_putcall.py
+          python src/factors/f06_vkospi.py
+          python src/factors/f10_fxvol.py
 
-          # VKOSPI (f06) - 스펙상 종가 컬럼은 CLSPRC_IDX [Source](https://www.genspark.ai/api/files/s/uX7923Iq)
-          python src/factors/f06_vkospi.py || true
-
-          # Put/Call (f04)
-          python src/factors/f04_putcall.py || true
-
-          # FX Vol (f10) - 구현돼 있으면
-          python src/factors/f10_fxvol.py || true
-
-          # 기타(있으면)
-          python src/factors/f05_junk_spread.py || true
-          python src/factors/f07_safe_haven.py || true
-          python src/factors/f08_foreign_flow.py || true
-          python src/factors/f09_margin.py || true
 
       # -------------------------
       # assemble & report
