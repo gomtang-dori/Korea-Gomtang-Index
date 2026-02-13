@@ -33,6 +33,22 @@ jobs:
           export PYTHONPATH=src
           python src/daily_update.py
 
+      - name: Convert parquet to CSV (index_daily)
+        run: |
+          python - << 'PY'
+          import pandas as pd
+          from pathlib import Path
+
+          p = Path("data/index_daily.parquet")
+          out = Path("data/index_daily.csv")
+
+          if not p.exists():
+              raise SystemExit("data/index_daily.parquet not found (daily_update may have failed).")
+
+          df = pd.read_parquet(p)
+          df.to_csv(out, index=False, encoding="utf-8-sig")
+          print(f"wrote {out} rows={len(df)} cols={len(df.columns)}")
+          PY
 
       - name: Commit & push report
         run: |
