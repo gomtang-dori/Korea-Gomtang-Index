@@ -8,7 +8,6 @@ import numpy as np
 import pandas as pd
 
 from lib.pykrx_factors import (
-    fetch_kospi200_ohlcv,
     factor1_momentum,
     factor2_strength,
     factor3_breadth,
@@ -17,6 +16,7 @@ from lib.pykrx_factors import (
     factor8_foreign_netbuy,
 )
 from lib.krx_putcall import fetch_putcall_ratio_by_date
+from lib.krx_kospi_index import KRXKospiIndexAPI
 
 
 @dataclass
@@ -25,6 +25,7 @@ class CFG:
     MIN_OBS: int = 252
     DATA_DIR: str = "data"
     USDKRW_LEVEL_PATH: str = "data/usdkrw_level.parquet"
+    K200_LOOKBACK_EXTRA_DAYS: int = 60  # holidays buffer in range calls
     W: dict = None
 
     def __post_init__(self):
@@ -111,16 +112,16 @@ def main():
     usdkrw["usdkrw"] = pd.to_numeric(usdkrw["usdkrw"], errors="coerce")
     usdkrw = usdkrw.dropna(subset=["date", "usdkrw"]).sort_values("date").reset_index(drop=True)
 
-    # ---- KOSPI200 proxy ----
-    k200 = fetch_kospi200_ohlcv(start_str, end_str)
+    # ---- KOSPI200 Close from KRX OpenAPI (stable) ----
+    api = KRXKospiIndexAPI.from_env()
+    # For backfill, call per-day across years (may take time). It's the most stable method.
+    k200 = api.fetch_k200_close_range(start, end)
     k200 = safe_to_datetime(k200, "date")
-    if "k200_close" not in k200.columns:
-        for cand in ["종가", "close", "Close"]:
-            if cand in k200.columns:
-                k200 = k200.rename(columns={cand: "k200_close"})
-                break
     k200["k200_close"] = pd.to_numeric(k200.get("k200_close"), errors="coerce")
     k200 = k200.dropna(subset=["date", "k200_close"]).sort_values("date").reset_index(drop=True)
+
+    if k200.empty:
+        raise RuntimeError("K200 close series is empty. Check KRX_KOSPI_DD_TRD_URL / KRX_AUTH_KEY / API approval.")
 
     # ---- Factors ----
     f01 = factor1_momentum(k200)
@@ -147,6 +148,8 @@ def main():
     for add in [f01, f02, f03, f04, f06, f07, f08, f05f10]:
         if add is None or add.empty:
             continue
+        if "k200_close" in add.columns and "k200_close" in base.columns:
+            add = add.drop(columns=["k200_close"])
         base = base.merge(add, on="date", how="left")
     base = base.sort_values("date").reset_index(drop=True)
 
