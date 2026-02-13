@@ -16,41 +16,48 @@ def _as_date_index(df):
 
 def fetch_kospi200_ohlcv(start_date: str, end_date: str) -> pd.DataFrame:
     """
-    KOSPI200 지수(또는 대표지수) 가격 시계열.
-    pykrx는 지수 자체보다 ETF/지수 시계열 접근이 제한될 때가 있어,
-    가장 안정적인 방식은 'KOSPI200 추종 ETF(예: 069500)'를 프록시로 쓰는 것입니다.
-    - 기본은 069500(KODEX 200)을 사용.
-    반환 컬럼: date, k200_close
+    KOSPI200 프록시: 069500(KODEX 200) OHLCV에서 종가를 k200_close로 표준화.
+    반환: date, k200_close
+    - 어떤 예외가 나도 UnboundLocalError 없이 '빈 DF'를 반환
     """
-    ticker = "069500"  # KODEX 200 (프록시)
-    df = stock.get_market_ohlcv_by_date(start_date, end_date, ticker)
-    df = _as_date_index(df)
-        # ... (기존 코드로 df 만들고 난 뒤)
+    import pandas as pd
+    from pykrx import stock
 
-    # 표준 컬럼명 강제
-    if "k200_close" not in out.columns:
-        # 혹시 종가/close 같은 이름이면 매핑
-        for cand in ["종가", "close", "Close", "종가가", "종가 "]:
-            if cand in out.columns:
-                out = out.rename(columns={cand: "k200_close"})
-                break
+    ticker = "069500"
 
-    # date 컬럼 강제
-    if "date" not in out.columns:
-        # index가 날짜라면 date로 내리기
-        out = out.reset_index().rename(columns={"index": "date"})
+    # 항상 out을 먼저 안전하게 초기화
+    out = pd.DataFrame(columns=["date", "k200_close"])
 
-    out["date"] = pd.to_datetime(out["date"], errors="coerce")
-    out["k200_close"] = pd.to_numeric(out["k200_close"], errors="coerce")
+    try:
+        df = stock.get_market_ohlcv_by_date(start_date, end_date, ticker)
+        if df is None or df.empty:
+            return out
 
-    out = out.dropna(subset=["date", "k200_close"]).sort_values("date").reset_index(drop=True)
-    return out[["date", "k200_close"]]
+        df = df.copy()
+        df.index = pd.to_datetime(df.index)
+        df = df.sort_index()
 
-    out = pd.DataFrame({
-        "date": df.index,
-        "k200_close": pd.to_numeric(df["종가"], errors="coerce"),
-    }).dropna()
-    return out
+        # pykrx OHLCV의 종가 컬럼명은 보통 "종가"
+        if "종가" in df.columns:
+            close = pd.to_numeric(df["종가"], errors="coerce")
+        else:
+            # 혹시 컬럼명이 다른 경우를 대비
+            # (가능한 후보들)
+            for cand in ["Close", "close", "종가 "]:
+                if cand in df.columns:
+                    close = pd.to_numeric(df[cand], errors="coerce")
+                    break
+            else:
+                return out
+
+        out = pd.DataFrame({"date": df.index, "k200_close": close}).dropna()
+        out = out.sort_values("date").reset_index(drop=True)
+        return out
+
+    except Exception:
+        # 어떤 실패든 빈 DF 반환(파이프라인 중단 방지)
+        return out
+
 
 def factor1_momentum(k200: pd.DataFrame) -> pd.DataFrame:
     # ① 모멘텀: 252일 수익률(1Y) 퍼센타일용 raw
