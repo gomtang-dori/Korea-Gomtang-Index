@@ -1,15 +1,11 @@
 # -*- coding: utf-8 -*-
 """
-backfill_max.py (v2 안정판)
-- ①/②/③/⑥/⑦/⑧: pykrx (src/lib/pykrx_factors.py 사용)
-- ⑤: data.go.kr (소매채권수익률요약) AA-3Y - A-3Y 스프레드
-- ⑩: ECOS USD/KRW 기반 변동성
-- ⑨: 이번 단계에서 제외(없어도 동작) + 가중치 자동 재정규화
-
-산출:
-- data/index_daily.parquet
-- data/f05.parquet, data/f10.parquet
-- (리포트는 daily_update가 생성)
+backfill_max.py (v3 안정판)
+- 목적: 가능한 긴 기간(실제로는 12년)으로 지수/팩터 원시값과 점수를 1회 생성해 data/index_daily.parquet로 저장
+- ①/②/③/⑥/⑦/⑧: pykrx 기반 (src/lib/pykrx_factors.py)
+- ⑤: data.go.kr 소매채권수익률요약(AA-3Y - A-3Y)
+- ⑩: ECOS USD/KRW 변동성
+- ⑨ 제외(합의대로)
 """
 import os
 import math
@@ -34,10 +30,11 @@ from lib.pykrx_factors import (
 DATA_DIR = Path("data")
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 
-# ---------------- config ----------------
 @dataclass(frozen=True)
 class CFG:
-    START_DATE: str = "20000101"        # 가능한 최대 시작(실제 데이터는 pykrx가 가능한 범위에서 채움)
+    # 히트맵(최근 10년~)을 위해 12년 확보
+    YEARS: int = 12
+
     ROLLING_DAYS: int = 252 * 5
     MIN_OBS: int = 252
 
@@ -51,7 +48,7 @@ class CFG:
     ECOS_CYCLE: str = "D"
     ECOS_ITEM_USDKRW: str = "0000003"
 
-    # weights (⑨ 제외, ④는 다음 단계(KRX)에서 붙일 예정이지만, 지금은 미포함)
+    # ⑨ 제외, ④는 추후 KRX 옵션으로 추가
     W = {
         "f01": 0.10,
         "f02": 0.10,
@@ -64,14 +61,17 @@ class CFG:
     }
 
 cfg = CFG()
+fear_keys = {"f05", "f06", "f10"}  # 공포성
 
-# ---------------- utils ----------------
+def yyyymmdd(d: date) -> str:
+    return d.strftime("%Y%m%d")
+
 def save_parquet(df: pd.DataFrame, path: Path):
     path.parent.mkdir(parents=True, exist_ok=True)
     df.to_parquet(path, index=False)
 
 def rolling_percentile(series: pd.Series, window: int, min_obs: int) -> pd.Series:
-    x = series.astype(float)
+    x = pd.to_numeric(series, errors="coerce")
     out = np.full(len(x), np.nan)
     for i in range(len(x)):
         start = max(0, i - window + 1)
@@ -82,13 +82,13 @@ def rolling_percentile(series: pd.Series, window: int, min_obs: int) -> pd.Serie
     return pd.Series(out, index=series.index)
 
 def forward_return(s: pd.Series, n: int) -> pd.Series:
-    s = s.astype(float)
+    s = pd.to_numeric(s, errors="coerce")
     return s.shift(-n) / s - 1.0
 
 def forward_win(s: pd.Series, n: int) -> pd.Series:
     return (forward_return(s, n) > 0).astype(float)
 
-# ---------------- fetch ⑤ ----------------
+# ---------------- ⑤ data.go.kr ----------------
 def fetch_f05(begin: str, end: str) -> pd.DataFrame:
     base = "https://apis.data.go.kr/1160100/service/GetBondInfoService/getBondSecurityBenefitRate"
     service_key = os.environ.get("SERVICE_KEY", "").strip()
@@ -111,21 +111,26 @@ def fetch_f05(begin: str, end: str) -> pd.DataFrame:
     df = pd.DataFrame(items)
     if df.empty:
         return df
+    # ⑤ 필드 구조: basDt/crdtSc/ctg/bnfRt [Source](https://www.genspark.ai/api/files/s/S7VQug0I)
     df = df.rename(columns={"basDt": "date", "crdtSc": "grade", "ctg": "bucket", "bnfRt": "yield"})
     df["date"] = pd.to_datetime(df["date"], format="%Y%m%d", errors="coerce")
     df["yield"] = pd.to_numeric(df["yield"], errors="coerce")
     return df[["date", "grade", "bucket", "yield"]].dropna(subset=["date"])
 
 def build_f05_raw(f05: pd.DataFrame) -> pd.DataFrame:
+    if f05.empty:
+        return pd.DataFrame(columns=["date", "f05_raw"])
     df = f05.copy()
     df = df[df["bucket"].astype(str) == cfg.F05_CTG_3Y]
     hi = df[df["grade"].astype(str) == cfg.F05_GRADE_HI][["date", "yield"]].rename(columns={"yield": "y_hi"})
     lo = df[df["grade"].astype(str) == cfg.F05_GRADE_LO][["date", "yield"]].rename(columns={"yield": "y_lo"})
     m = pd.merge(hi, lo, on="date", how="inner")
+    if m.empty:
+        return pd.DataFrame(columns=["date", "f05_raw"])
     m["f05_raw"] = m["y_hi"] - m["y_lo"]
     return m[["date", "f05_raw"]]
 
-# ---------------- fetch ⑩ ----------------
+# ---------------- ⑩ ECOS ----------------
 def fetch_f10(begin: str, end: str) -> pd.DataFrame:
     ecos_key = os.environ.get("ECOS_KEY", "").strip()
     if not ecos_key:
@@ -142,87 +147,102 @@ def fetch_f10(begin: str, end: str) -> pd.DataFrame:
     return df[["date", "usdkrw"]].dropna(subset=["date"])
 
 def build_f10_raw(f10: pd.DataFrame) -> pd.DataFrame:
+    if f10.empty:
+        return pd.DataFrame(columns=["date", "f10_raw"])
     df = f10.sort_values("date").reset_index(drop=True).copy()
     df["ret"] = np.log(df["usdkrw"] / df["usdkrw"].shift(1))
     df["f10_raw"] = df["ret"].rolling(20).std() * math.sqrt(252)
     return df[["date", "f10_raw"]]
 
-# ---------------- main ----------------
 def main():
-    end = datetime.utcnow().date()
-    start = datetime.strptime(cfg.START_DATE, "%Y%m%d").date()
-    start_s = start.strftime("%Y%m%d")
-    end_s = end.strftime("%Y%m%d")
+    today = datetime.utcnow().date()
+    end_s = yyyymmdd(today)
+    start_long_s = yyyymmdd(today - timedelta(days=365 * cfg.YEARS))
 
-    # pykrx long window: 12년 정도면 히트맵(10년) 충분
-    start_long = (end - timedelta(days=365 * 12)).strftime("%Y%m%d")
+    # 1) K200 (프록시 069500) — fetch_kospi200_ohlcv는 이제 안정판이어야 함
+    k200 = fetch_kospi200_ohlcv(start_long_s, end_s)
+    k200_ok = (not k200.empty) and ("k200_close" in k200.columns) and (k200["k200_close"].dropna().size > 10)
 
-    # 1) K200 proxy (KODEX200)
-    k200 = fetch_kospi200_ohlcv(start_long, end_s)  # date, k200_close
+    # 2) ⑤/⑩ long window
+    f05 = fetch_f05(start_long_s, end_s)
+    f10 = fetch_f10(start_long_s, end_s)
 
-    # 2) ⑤/⑩
-    f05 = fetch_f05(start_s, end_s)
-    f10 = fetch_f10(start_s, end_s)
+    # 원시 저장(선택)
     if not f05.empty:
         save_parquet(f05, DATA_DIR / "f05.parquet")
     if not f10.empty:
         save_parquet(f10, DATA_DIR / "f10.parquet")
 
-    f05_raw = build_f05_raw(f05) if not f05.empty else pd.DataFrame()
-    f10_raw = build_f10_raw(f10) if not f10.empty else pd.DataFrame()
+    f05_raw = build_f05_raw(f05)
+    f10_raw = build_f10_raw(f10)
 
-    # 3) pykrx factors
-    f01 = factor1_momentum(k200).rename(columns={0: "f01_raw"})
-    f02 = factor2_strength(start_long, end_s)
-    f03 = factor3_breadth(start_long, end_s)
-    f06 = factor6_volatility(k200).rename(columns={0: "f06_raw"})
-    f07 = factor7_safe_haven(k200, f10).rename(columns={0: "f07_raw"})
-    f08 = factor8_foreign_netbuy(start_long, end_s)
+    # 3) pykrx factors (안전 처리)
+    f01 = factor1_momentum(k200).rename(columns={0: "f01_raw"}) if k200_ok else pd.DataFrame(columns=["date", "f01_raw"])
+    f06 = factor6_volatility(k200).rename(columns={0: "f06_raw"}) if k200_ok else pd.DataFrame(columns=["date", "f06_raw"])
+
+    # Strength/Breadth는 시간이 길거나 실패할 수 있으니 try/except
+    try:
+        f02 = factor2_strength(start_long_s, end_s)
+    except Exception:
+        f02 = pd.DataFrame(columns=["date", "f02_raw"])
+    try:
+        f03 = factor3_breadth(start_long_s, end_s)
+    except Exception:
+        f03 = pd.DataFrame(columns=["date", "f03_raw"])
+
+    # ⑦ SafeHaven
+    try:
+        f07 = factor7_safe_haven(k200, f10).rename(columns={0: "f07_raw"}) if (k200_ok and not f10.empty) else pd.DataFrame(columns=["date", "f07_raw"])
+    except Exception:
+        f07 = pd.DataFrame(columns=["date", "f07_raw"])
+
+    # ⑧ Foreign netbuy
+    try:
+        f08 = factor8_foreign_netbuy(start_long_s, end_s)
+        if "f08_raw" not in f08.columns:
+            f08 = pd.DataFrame(columns=["date", "f08_raw"])
+    except Exception:
+        f08 = pd.DataFrame(columns=["date", "f08_raw"])
 
     # 4) merge
-    base = k200.copy()
+    base = k200.copy() if k200_ok else (f10[["date"]].drop_duplicates().copy() if not f10.empty else pd.DataFrame(columns=["date"]))
     for dfx in [f01, f02, f03, f05_raw, f06, f07, f08, f10_raw]:
         if dfx is None or dfx.empty:
             continue
         base = pd.merge(base, dfx, on="date", how="outer")
     base = base.sort_values("date").reset_index(drop=True)
 
-    if "k200_close" not in base.columns or base["k200_close"].dropna().empty:
-    # K200이 없으면 이후 K200 파생/히트맵 섹션 스킵 가능하도록 NaN 컬럼만 만들어 둠
-    base["k200_close"] = np.nan
+    # 5) K200 derived (없으면 NaN)
+    if "k200_close" not in base.columns:
+        base["k200_close"] = np.nan
 
-    # 5) K200 derived (trend & forward)
-if base["k200_close"].notna().sum() > 10:
-    base["k200_ret_3d"] = base["k200_close"].pct_change(3)
-    base["k200_ret_5d"] = base["k200_close"].pct_change(5)
-    base["k200_ret_7d"] = base["k200_close"].pct_change(7)
-    base["k200_fwd_10d_return"] = forward_return(base["k200_close"], 10)
-    base["k200_fwd_10d_win"] = forward_win(base["k200_close"], 10)
-else:
-    base["k200_ret_3d"] = np.nan
-    base["k200_ret_5d"] = np.nan
-    base["k200_ret_7d"] = np.nan
-    base["k200_fwd_10d_return"] = np.nan
-    base["k200_fwd_10d_win"] = np.nan
+    if base["k200_close"].notna().sum() > 10:
+        base["k200_ret_3d"] = base["k200_close"].pct_change(3)
+        base["k200_ret_5d"] = base["k200_close"].pct_change(5)
+        base["k200_ret_7d"] = base["k200_close"].pct_change(7)
+        base["k200_fwd_10d_return"] = forward_return(base["k200_close"], 10)
+        base["k200_fwd_10d_win"] = forward_win(base["k200_close"], 10)
+    else:
+        base["k200_ret_3d"] = np.nan
+        base["k200_ret_5d"] = np.nan
+        base["k200_ret_7d"] = np.nan
+        base["k200_fwd_10d_return"] = np.nan
+        base["k200_fwd_10d_win"] = np.nan
 
-
-    # 6) percentile scores
+    # 6) scores
     for key in ["f01", "f02", "f03", "f05", "f06", "f07", "f08", "f10"]:
         raw = f"{key}_raw"
         sc = f"{key}_score"
         if raw in base.columns:
             base[sc] = rolling_percentile(base[raw], cfg.ROLLING_DAYS, cfg.MIN_OBS)
 
-    # 7) final index (greed direction; fear factors inverted)
-    fear_keys = {"f05", "f06", "f10"}  # 공포성: 높을수록 공포 -> 탐욕점수는 100-pct
-    weights = cfg.W
+    # 7) index (결측 자동 재정규화)
     base["index_score_total"] = np.nan
-
     for i in range(len(base)):
         row = base.iloc[i]
         acc = 0.0
         wsum = 0.0
-        for k, w in weights.items():
+        for k, w in cfg.W.items():
             sc = row.get(f"{k}_score", np.nan)
             if pd.isna(sc):
                 continue
