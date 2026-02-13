@@ -1,5 +1,4 @@
 name: Backfill (max) - Gomtang Index
-
 on:
   workflow_dispatch:
 
@@ -13,12 +12,15 @@ jobs:
       SERVICE_KEY: ${{ secrets.SERVICE_KEY }}
       ECOS_KEY: ${{ secrets.ECOS_KEY }}
 
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      # KRX Put/Call (factor 4) secrets
+      KRX_AUTH_KEY: ${{ secrets.KRX_AUTH_KEY }}
+      KRX_EQSOP_URL: ${{ secrets.KRX_EQSOP_URL }}
+      KRX_EQKOP_URL: ${{ secrets.KRX_EQKOP_URL }}
 
-      - name: Setup Python
-        uses: actions/setup-python@v5
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
 
@@ -30,10 +32,24 @@ jobs:
           export PYTHONPATH=src
           python src/backfill_max.py
 
+      - name: Convert parquet to CSV (index_daily)
+        run: |
+          python - << 'PY'
+          import pandas as pd
+          from pathlib import Path
+          p = Path("data/index_daily.parquet")
+          out = Path("data/index_daily.csv")
+          if not p.exists():
+              raise SystemExit("data/index_daily.parquet not found (backfill may have failed).")
+          df = pd.read_parquet(p)
+          df.to_csv(out, index=False, encoding="utf-8-sig")
+          print(f"wrote {out} rows={len(df)} cols={len(df.columns)}")
+          PY
+
       - name: Commit & push outputs
         run: |
           git config user.name "github-actions"
           git config user.email "actions@users.noreply.github.com"
-          git add data/*.parquet data/*.csv docs/index.html || true
+          git add data/index_daily.parquet data/index_daily.csv docs/index.html docs/assets/style.css || true
           git commit -m "backfill max" || echo "no changes"
           git push
