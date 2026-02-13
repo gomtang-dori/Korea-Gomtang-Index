@@ -33,11 +33,22 @@ class KRXKospiIndexAPI:
 
     def _get(self, basDt: str) -> dict:
         headers = {"AUTH_KEY": self.auth_key, "Accept": "application/json"}
-        params = {"basDt": basDt}
-        r = requests.get(self.url, headers=headers, params=params, timeout=self.timeout)
+    
+        # 1) try basDt (spec)
+        r = requests.get(self.url, headers=headers, params={"basDt": basDt}, timeout=self.timeout)
         r.raise_for_status()
-        return r.json()
+        js = r.json()
+    
+        # 2) if empty, try basDd (compat fallback)
+        if isinstance(js, dict) and js.get("OutBlock_1") == []:
+            r2 = requests.get(self.url, headers=headers, params={"basDd": basDt}, timeout=self.timeout)
+            r2.raise_for_status()
+            return r2.json()
+    
+        return js
 
+
+    
     @staticmethod
     def _to_frame(js: dict) -> pd.DataFrame:
         # Most KRX OpenAPI returns dict with OutBlock_1 list.
