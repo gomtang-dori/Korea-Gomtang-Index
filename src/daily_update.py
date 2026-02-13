@@ -3,13 +3,13 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+import os
 import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
 from jinja2 import Template
 
 from lib.pykrx_factors import (
-    fetch_kospi200_ohlcv,
     factor1_momentum,          # (k200_df)
     factor2_strength,          # (start_date, end_date)
     factor3_breadth,           # (start_date, end_date)
@@ -17,8 +17,8 @@ from lib.pykrx_factors import (
     factor7_safe_haven,        # (k200_df, usdkrw_df)
     factor8_foreign_netbuy,    # (start_date, end_date)
 )
-
 from lib.krx_putcall import fetch_putcall_ratio_by_date
+from lib.krx_kospi_index import KRXKospiIndexAPI
 
 
 @dataclass
@@ -30,6 +30,8 @@ class CFG:
     DOCS_DIR: str = "docs"
     ASSETS_DIR: str = "docs/assets"
     USDKRW_LEVEL_PATH: str = "data/usdkrw_level.parquet"
+    # K200 OpenAPI lookback: fetch a bit more than REFRESH_DAYS to cover holidays
+    K200_LOOKBACK_EXTRA_DAYS: int = 30
 
     W: dict = None
 
@@ -158,10 +160,7 @@ HTML_TMPL = Template(
     <div class="card">
       <h2>데이터 소스</h2>
       <div class="muted">
-        ECOS 일일환율(731Y001[D]) + 원/달러 종가 15:30(0000003) 사용 [Source](https://www.genspark.ai/api/files/s/4TDXM2NX)
-      </div>
-      <div class="muted">
-        KRX 옵션 Put/Call: OutBlock_1의 RGHT_TP_NM, ACC_TRDVAL 확인 [Source](https://www.genspark.ai/api/files/s/6ynCkTUc)
+        KRX OpenAPI: KOSPI 시리즈 일별시세정보(kospi_dd_trd)에서 IDX_NM='KOSPI 200' 행의 CLS_PRC를 종가로 사용. [Source](https://www.genspark.ai/api/files/s/KiCp9sYv)
       </div>
     </div>
   </div>
@@ -204,7 +203,7 @@ def main():
     old = safe_to_datetime(old, "date")
 
     today = pd.Timestamp.utcnow().tz_localize(None).normalize()
-    start = today - pd.Timedelta(days=cfg.REFRESH_DAYS + 30)
+    start = today - pd.Timedelta(days=cfg.REFRESH_DAYS + cfg.K200_LOOKBACK_EXTRA_DAYS)
     start_str = start.strftime("%Y%m%d")
     end_str = today.strftime("%Y%m%d")
 
@@ -219,18 +218,17 @@ def main():
     usdkrw["usdkrw"] = pd.to_numeric(usdkrw["usdkrw"], errors="coerce")
     usdkrw = usdkrw.dropna(subset=["date", "usdkrw"]).sort_values("date").reset_index(drop=True)
 
-    # ---- KOSPI200 proxy ----
-    k200 = fetch_kospi200_ohlcv(start_str, end_str)
+    # ---- KOSPI200 Close from KRX OpenAPI (stable) ----
+    api = KRXKospiIndexAPI.from_env()
+    k200 = api.fetch_k200_close_range(start, today)
     k200 = safe_to_datetime(k200, "date")
-    if "k200_close" not in k200.columns:
-        for cand in ["종가", "close", "Close"]:
-            if cand in k200.columns:
-                k200 = k200.rename(columns={cand: "k200_close"})
-                break
     k200["k200_close"] = pd.to_numeric(k200.get("k200_close"), errors="coerce")
     k200 = k200.dropna(subset=["date", "k200_close"]).sort_values("date").reset_index(drop=True)
 
-    # ---- Factors (pykrx_factors signatures) ----
+    if k200.empty:
+        raise RuntimeError("K200 close series is empty. Check KRX_KOSPI_DD_TRD_URL / KRX_AUTH_KEY / API approval.")
+
+    # ---- Factors ----
     f01 = factor1_momentum(k200)
     f02 = factor2_strength(start_str, end_str)
     f03 = factor3_breadth(start_str, end_str)
@@ -248,11 +246,16 @@ def main():
     # ---- Factor5/10 existing in index parquet (optional) ----
     f05f10 = load_existing_f05_f10(old)
 
+    # ---- Build base (NO duplicate merge => no _x/_y) ----
     base = k200[["date", "k200_close"]].copy()
     for add in [f01, f02, f03, f04, f06, f07, f08, f05f10]:
         if add is None or add.empty:
             continue
+        # Defensive: if add contains k200_close too, drop it to avoid _x/_y
+        if "k200_close" in add.columns and "k200_close" in base.columns:
+            add = add.drop(columns=["k200_close"])
         base = base.merge(add, on="date", how="left")
+
     base = base.sort_values("date").reset_index(drop=True)
 
     # ---- Derived K200 ----
