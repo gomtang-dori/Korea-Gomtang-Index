@@ -1,78 +1,68 @@
 from __future__ import annotations
 import os
-import requests
 import pandas as pd
 from pathlib import Path
-from datetime import datetime
+from datetime import datetime, timedelta
+from pykrx import stock
 
 def ensure_dir(p: Path):
     p.mkdir(parents=True, exist_ok=True)
-
-def get_k200_members_from_krx_web(target_date: str):
-    """
-    KRX 정보데이터시스템 웹사이트의 API를 직접 호출하여 
-    KOSPI 200 구성 종목 리스트를 가져옵니다.
-    """
-    url = "http://data.krx.co.kr/comm/bldMng/getDesent.do"
-    
-    # KRX 웹사이트 호출에 필요한 파라미터 (지수구성종목 내역)
-    # 1028은 KOSPI 200의 표준 코드입니다.
-    data = {
-        "bld": "dbms/MVD/04/04060100/mvd04060100_01",
-        "indIdx": "1",
-        "indIdx2": "028",
-        "trdDd": target_date,
-        "money": "1",
-        "csvExport": "false"
-    }
-    
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-        "Referer": "http://data.krx.co.kr/contents/MDC/MDI/mdiLoader/index.do?menuId=MDC0201030104"
-    }
-
-    try:
-        response = requests.post(url, data=data, headers=headers, timeout=30)
-        js = response.json()
-        output = js.get("output", [])
-        
-        if not output:
-            return pd.DataFrame()
-            
-        # ISU_SRT_CD(종목코드), ISU_ABBRV(종목명) 추출
-        df = pd.DataFrame(output)
-        res = pd.DataFrame({
-            "asof_date": target_date,
-            "isu_cd": df["ISU_SRT_CD"],
-            "isu_nm": df["ISU_ABBRV"]
-        })
-        return res
-    except Exception as e:
-        print(f"[Error] KRX Web Direct Call Failed: {e}")
-        return pd.DataFrame()
 
 def main():
     out_path = Path("data/k200_members.csv")
     ensure_dir(out_path.parent)
 
-    # 1. 확실한 최근 영업일 (금요일) 설정
+    # 1. 날짜 설정 (최근 확실한 평일인 금요일)
+    # 현재 실행 시간이 토요일이므로 금요일 데이터를 가져옵니다.
     target_date = "20260213"
-    print(f"[cache_k200_members] Direct calling KRX for {target_date}...")
+    print(f"[cache_k200_members] Fetching K200 members via pykrx for {target_date}...")
 
-    # 2. 직접 수집 시도
-    df = get_k200_members_from_krx_web(target_date)
+    tickers = []
+    try:
+        # 방법 A: 지수 구성 종목 (가장 정확함)
+        # 'KOSPI 200' 명칭을 직접 사용하여 내부 'market' 옵션 충돌 방지
+        tickers = stock.get_index_portfolio_deposit_file(target_date, "KOSPI 200")
+    except Exception as e:
+        print(f"[Log] Method A failed: {e}")
 
-    # 3. 만약 실패했다면 어제 날짜로 한 번 더 시도
-    if df.empty:
+    if tickers is None or len(tickers) < 150:
+        try:
+            # 방법 B: 지수 티커 리스트
+            tickers = stock.get_index_ticker_list(target_date, market="KOSPI")
+            # KOSPI 전체 중 상위 200개를 가져옴 (비상용)
+            if len(tickers) > 200: tickers = tickers[:200]
+        except Exception as e:
+            print(f"[Log] Method B failed: {e}")
+
+    # 2. 최종 확인 및 저장
+    if tickers is None or len(tickers) < 50:
+        # 만약 여기까지 실패했다면, 날짜를 하루 더 뒤로 미뤄서 시도 (목요일)
         target_date = "20260212"
         print(f"[cache_k200_members] Retrying with {target_date}...")
-        df = get_k200_members_from_krx_web(target_date)
+        tickers = stock.get_index_portfolio_deposit_file(target_date, "KOSPI 200")
 
-    # 4. 최종 검증 및 저장
-    if df.empty or len(df) < 150:
-        raise RuntimeError("CRITICAL: KRX 웹사이트로부터 데이터를 가져오지 못했습니다. 서버 상태를 확인하세요.")
+    if tickers is None or len(tickers) < 50:
+        raise RuntimeError("모든 데이터 수집 시도가 실패했습니다. KRX 서버 점검 중일 수 있습니다.")
 
-    df = df.sort_values("isu_cd")
+    # 3. 종목 정보 정리
+    print(f"[cache_k200_members] Found {len(tickers)} tickers. Mapping names...")
+    
+    # 리스트 형태로 변환하여 데이터프레임 생성
+    ticker_list = list(tickers)
+    names = []
+    for t in ticker_list:
+        try:
+            names.append(stock.get_market_ticker_name(t))
+        except:
+            names.append("")
+
+    df = pd.DataFrame({
+        "asof_date": target_date,
+        "isu_cd": ticker_list,
+        "isu_nm": names
+    }).sort_values("isu_cd")
+
+    # 4. 저장
     df.to_csv(out_path, index=False, encoding="utf-8-sig")
     print(f"[cache_k200_members] Success! {len(df)} rows saved to {out_path}")
 
