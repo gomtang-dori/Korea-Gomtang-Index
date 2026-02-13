@@ -2,70 +2,61 @@ import os
 import json
 import requests
 
-def main():
-    key = os.environ.get("SERVICE_KEY")
-    if not key:
-        raise SystemExit("SERVICE_KEY missing (GitHub Secrets에 등록 필요)")
 
-    # TODO: 여기에 'KRX OpenAPI 파생상품(옵션) 일별 지표'의 정확한 endpoint URL을 넣어야 합니다.
-    # 지금 단계에서는 URL/파라미터를 확정하기 위해 'probe'만 합니다.
-    #
-    # 예시 형태(가짜 URL 아님): 사용 중인 KRX OpenAPI 문서의 "호출 URL"을 그대로 넣으세요.
-    url = os.environ.get("KRX_PUTCALL_URL", "").strip()
-    if not url:
-        raise SystemExit(
-            "KRX_PUTCALL_URL env missing. \n"
-            "방법: repo Settings → Secrets and variables → Actions → New secret 로\n"
-            "KRX_PUTCALL_URL에 실제 호출 URL을 넣어주세요.\n"
-            "(또는 이 파일에서 url=... 로 직접 하드코딩도 가능하지만 비추천)"
-        )
+def _probe_one(url: str, auth_key: str, basDd: str, tag: str):
+    headers = {"AUTH_KEY": auth_key, "Accept": "application/json"}
+    params = {"basDd": basDd}
 
-    # 일반적으로 공공데이터포털 계열은 serviceKey를 querystring으로 받습니다.
-    # KRX OpenAPI도 유사한 경우가 많아 우선 serviceKey만 붙여 probe 합니다.
-    params = {
-        "serviceKey": key,
-        "resultType": "json",
-        # 아래 날짜/기타 파라미터는 KRX API 스펙에 맞게 바꿔야 합니다.
-        # probe 목적: "일단 성공 응답을 받고 outBlock 필드명을 알아내기"
-    }
-
-    print("[probe] GET", url)
-    r = requests.get(url, params=params, timeout=30)
-    print("[probe] status:", r.status_code)
-    print("[probe] first 800 chars:\n", r.text[:800])
+    print(f"\n[{tag}] url={url}")
+    r = requests.get(url, headers=headers, params=params, timeout=30)
+    print(f"[{tag}] status={r.status_code}")
+    print(f"[{tag}] text(head)={r.text[:800]}")
 
     try:
         js = r.json()
     except Exception as e:
-        raise SystemExit(f"[probe] not json: {e}")
+        print(f"[{tag}] not json: {e}")
+        return None
 
-    # 구조를 최대한 덤프
-    print("[probe] top keys:", list(js.keys()) if isinstance(js, dict) else type(js))
-
-    # 공공데이터포털 스타일(response/body/items/item)을 가정해 최대한 찾기
-    def find_first_item(obj):
+    # 첫 row 찾기(응답 구조가 달라도 최대한 견고하게)
+    def find_first_row(obj):
         if isinstance(obj, dict):
-            for k, v in obj.items():
-                if k.lower() == "item" and isinstance(v, list) and v:
-                    return v[0]
-                got = find_first_item(v)
+            for v in obj.values():
+                got = find_first_row(v)
                 if got is not None:
                     return got
         elif isinstance(obj, list) and obj:
-            return find_first_item(obj[0])
+            if isinstance(obj[0], dict):
+                return obj[0]
+            return find_first_row(obj[0])
         return None
 
-    item = find_first_item(js)
-    if item is None:
-        print("[probe] Could not find item list. Dump full json:")
-        print(json.dumps(js, ensure_ascii=False)[:3000])
-        return
+    row = find_first_row(js)
+    if isinstance(js, dict):
+        print(f"[{tag}] top keys={list(js.keys())}")
+    if row is None:
+        print(f"[{tag}] first row not found. dump(head)={json.dumps(js, ensure_ascii=False)[:1500]}")
+        return js
 
-    if isinstance(item, dict):
-        print("[probe] item keys:", list(item.keys()))
-        print("[probe] sample item:", json.dumps(item, ensure_ascii=False)[:1200])
-    else:
-        print("[probe] item type:", type(item))
+    print(f"[{tag}] first-row keys={list(row.keys())}")
+    print(f"[{tag}] first-row sample={json.dumps(row, ensure_ascii=False)[:800]}")
+    return js
+
+
+def main():
+    auth_key = (os.environ.get("KRX_AUTH_KEY") or "").strip()
+    eqsop_url = (os.environ.get("KRX_EQSOP_URL") or "").strip()
+    eqkop_url = (os.environ.get("KRX_EQKOP_URL") or "").strip()
+    basDd = (os.environ.get("KRX_BASDD") or "20200414").strip()
+
+    if not auth_key:
+        raise SystemExit("Missing KRX_AUTH_KEY (GitHub Secrets에 등록 필요)")
+    if not eqsop_url or not eqkop_url:
+        raise SystemExit("Missing KRX_EQSOP_URL or KRX_EQKOP_URL (GitHub Secrets에 등록 필요)")
+
+    _probe_one(eqsop_url, auth_key, basDd, "EQSOP(KOSPI)")
+    _probe_one(eqkop_url, auth_key, basDd, "EQKOP(KOSDAQ)")
+
 
 if __name__ == "__main__":
     main()
