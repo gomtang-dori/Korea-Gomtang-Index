@@ -20,7 +20,6 @@ from lib.krx_putcall import fetch_putcall_ratio_by_date
 from lib.krx_kospi_index import KRXKospiIndexAPI
 
 
-# ------------------- CFG -------------------
 @dataclass
 class CFG:
     ROLLING_DAYS: int = 252 * 5
@@ -48,7 +47,6 @@ class CFG:
 cfg = CFG()
 
 
-# ------------------- helpers -------------------
 def ensure_dir(p: str | Path):
     Path(p).mkdir(parents=True, exist_ok=True)
 
@@ -119,72 +117,10 @@ def _finalize_missing(name: str, missing_days: list[str], total_days: int, max_r
         raise RuntimeError(f"{name} missing rate {rate:.3%} exceeds threshold {max_rate:.3%}")
 
 
-def _progress_line(tag: str, i: int, n: int, bas: str, t0: float, every: int):
-    if every <= 0:
-        return
-    if i % every != 0 and i != n:
-        return
-    elapsed = time.time() - t0
-    speed = i / elapsed if elapsed > 0 else 0.0
-    remain = n - i
-    eta = remain / speed if speed > 0 else float("inf")
-    pct = 100.0 * i / max(n, 1)
-    print(
-        f"[progress:{tag}] {pct:6.2f}% ({i}/{n}) bas={bas} "
-        f"elapsed={_fmt_hhmmss(elapsed)} speed={speed:.2f} days/s eta={_fmt_hhmmss(eta if np.isfinite(eta) else 0)}"
-    )
-
-
-# ------------------- K200 chunk fetch (skip empty day) -------------------
-def fetch_k200_close_range_chunked(
-    api: KRXKospiIndexAPI,
-    start: pd.Timestamp,
-    end: pd.Timestamp,
-    progress_every: int,
-) -> tuple[pd.DataFrame, list[str], int]:
-    days = pd.date_range(start, end, freq="D")
-    missing = []
-    frames = []
-    t0 = time.time()
-    err_samples = 0
-
-    for i, d in enumerate(days, start=1):
-        bas = d.strftime("%Y%m%d")
-        try:
-            df_day = api.fetch_k200_close_by_date(bas)
-
-            if df_day is None or df_day.empty:
-                missing.append(bas)
-            else:
-                frames.append(df_day)
-
-        except Exception as e:
-            missing.append(bas)
-            if err_samples < 5:
-                print(f"[k200_err_sample] bas={bas} err={repr(e)}")
-                err_samples += 1
-
-        _progress_line("k200", i, len(days), bas, t0, progress_every)
-
-    if frames:
-        out = pd.concat(frames, ignore_index=True)
-        out = safe_to_datetime(out, "date")
-        if "k200_close" in out.columns:
-            out["k200_close"] = pd.to_numeric(out["k200_close"], errors="coerce")
-        out = out.dropna(subset=["date", "k200_close"]).drop_duplicates("date", keep="last").sort_values("date").reset_index(drop=True)
-    else:
-        out = pd.DataFrame(columns=["date", "k200_close"])
-
-    return out, missing, len(days)
-
-
-
-# ------------------- main -------------------
 def main():
     ensure_dir(cfg.DATA_DIR)
 
     # ---- chunk mode required ----
-    # workflow matrix가 이 값을 주입합니다.
     start_s = _env("BACKFILL_START")
     end_s = _env("BACKFILL_END")
     chunk_out = _env("CHUNK_OUT")
@@ -192,8 +128,6 @@ def main():
         raise RuntimeError("Chunk mode requires BACKFILL_START, BACKFILL_END, CHUNK_OUT env vars.")
 
     missing_rate_max = float(_env("MISSING_RATE_MAX", "0.02"))  # 2%
-    progress_every = int(_env("PROGRESS_EVERY_N_DAYS", "25"))
-
     start = pd.to_datetime(start_s, format="%Y%m%d")
     end = pd.to_datetime(end_s, format="%Y%m%d")
 
@@ -224,11 +158,11 @@ def main():
     vkospi["vkospi"] = pd.to_numeric(vkospi["vkospi"], errors="coerce")
     vkospi = vkospi.dropna(subset=["date", "vkospi"]).sort_values("date").reset_index(drop=True)
 
-    # ---- KOSPI200 close (daily-skip mode) ----
+    # ---- KOSPI200 close (MONTHLY + 429 backoff inside API) ----
     api = KRXKospiIndexAPI.from_env()
-    k200, miss_k200, req_days = fetch_k200_close_range_chunked(api, start, end, progress_every)
 
-    # 누락률 검사(2% 초과 시 실패). 이번 에러의 원인인 'empty로 전체 실패'를 방지 [Source](https://www.genspark.ai/api/files/s/jxj4XzKF)
+    # 월 단위로 수집 (요청일수는 청크 전체 캘린더 일수 기준으로 계산)
+    k200, miss_k200, req_days = api.fetch_k200_close_range_monthly(start, end, progress_every=3)
     _finalize_missing("k200", miss_k200, req_days, missing_rate_max)
 
     if k200.empty:
