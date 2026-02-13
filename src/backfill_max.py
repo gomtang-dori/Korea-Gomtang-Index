@@ -187,12 +187,24 @@ def main():
         base = pd.merge(base, dfx, on="date", how="outer")
     base = base.sort_values("date").reset_index(drop=True)
 
+    if "k200_close" not in base.columns or base["k200_close"].dropna().empty:
+    # K200이 없으면 이후 K200 파생/히트맵 섹션 스킵 가능하도록 NaN 컬럼만 만들어 둠
+    base["k200_close"] = np.nan
+
     # 5) K200 derived (trend & forward)
+if base["k200_close"].notna().sum() > 10:
     base["k200_ret_3d"] = base["k200_close"].pct_change(3)
     base["k200_ret_5d"] = base["k200_close"].pct_change(5)
     base["k200_ret_7d"] = base["k200_close"].pct_change(7)
     base["k200_fwd_10d_return"] = forward_return(base["k200_close"], 10)
     base["k200_fwd_10d_win"] = forward_win(base["k200_close"], 10)
+else:
+    base["k200_ret_3d"] = np.nan
+    base["k200_ret_5d"] = np.nan
+    base["k200_ret_7d"] = np.nan
+    base["k200_fwd_10d_return"] = np.nan
+    base["k200_fwd_10d_win"] = np.nan
+
 
     # 6) percentile scores
     for key in ["f01", "f02", "f03", "f05", "f06", "f07", "f08", "f10"]:
