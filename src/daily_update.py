@@ -1,11 +1,11 @@
 # -*- coding: utf-8 -*-
 """
-daily_update.py (v2)
-- ①/②/③/⑥/⑦/⑧: pykrx
-- ⑤: data.go.kr
-- ⑩: ECOS
-- ⑨ 제외(자동 재정규화)
-- 리포트: docs/index.html 생성 (차트 + 히트맵 + 장기통계)
+daily_update.py (v3 안정판)
+- ①/②/③/⑥/⑦/⑧: pykrx 기반 (src/lib/pykrx_factors.py 사용)
+- ⑤: data.go.kr 소매채권수익률요약(AA-3Y - A-3Y)
+- ⑩: ECOS USD/KRW 변동성
+- ⑨: 이번 단계에서 제외(없어도 동작)
+- 리포트: docs/index.html 생성
 """
 import os
 import math
@@ -42,16 +42,15 @@ class CFG:
     ROLLING_DAYS: int = 252 * 5
     MIN_OBS: int = 252
 
-    # ⑤
     F05_CTG_3Y: str = "2년~3년미만"
     F05_GRADE_HI: str = "AA-"
     F05_GRADE_LO: str = "A-"
 
-    # ⑩
     ECOS_STAT_CODE_USDKRW: str = "731Y003"
     ECOS_CYCLE: str = "D"
     ECOS_ITEM_USDKRW: str = "0000003"
 
+    # ⑨ 제외, ④는 추후 KRX 옵션으로 추가 예정
     W = {
         "f01": 0.10,
         "f02": 0.10,
@@ -64,7 +63,7 @@ class CFG:
     }
 
 cfg = CFG()
-fear_keys = {"f05", "f06", "f10"}  # 공포성 팩터
+fear_keys = {"f05", "f06", "f10"}  # 공포성: 점수 높을수록 공포 -> 탐욕점수는 100-pct
 
 def yyyymmdd(d: date) -> str:
     return d.strftime("%Y%m%d")
@@ -74,7 +73,7 @@ def save_parquet(df: pd.DataFrame, path: Path):
     df.to_parquet(path, index=False)
 
 def rolling_percentile(series: pd.Series, window: int, min_obs: int) -> pd.Series:
-    x = series.astype(float)
+    x = pd.to_numeric(series, errors="coerce")
     out = np.full(len(x), np.nan)
     for i in range(len(x)):
         start = max(0, i - window + 1)
@@ -85,13 +84,13 @@ def rolling_percentile(series: pd.Series, window: int, min_obs: int) -> pd.Serie
     return pd.Series(out, index=series.index)
 
 def forward_return(s: pd.Series, n: int) -> pd.Series:
-    s = s.astype(float)
+    s = pd.to_numeric(s, errors="coerce")
     return s.shift(-n) / s - 1.0
 
 def forward_win(s: pd.Series, n: int) -> pd.Series:
     return (forward_return(s, n) > 0).astype(float)
 
-# ---------------- ⑤ ----------------
+# ---------------- ⑤ data.go.kr ----------------
 def fetch_f05(begin: str, end: str) -> pd.DataFrame:
     base = "https://apis.data.go.kr/1160100/service/GetBondInfoService/getBondSecurityBenefitRate"
     service_key = os.environ.get("SERVICE_KEY", "").strip()
@@ -114,21 +113,26 @@ def fetch_f05(begin: str, end: str) -> pd.DataFrame:
     df = pd.DataFrame(items)
     if df.empty:
         return df
+    # ⑤ 필드 구조: basDt/crdtSc/ctg/bnfRt [Source](https://www.genspark.ai/api/files/s/S7VQug0I)
     df = df.rename(columns={"basDt": "date", "crdtSc": "grade", "ctg": "bucket", "bnfRt": "yield"})
     df["date"] = pd.to_datetime(df["date"], format="%Y%m%d", errors="coerce")
     df["yield"] = pd.to_numeric(df["yield"], errors="coerce")
     return df[["date", "grade", "bucket", "yield"]].dropna(subset=["date"])
 
 def build_f05_raw(f05: pd.DataFrame) -> pd.DataFrame:
+    if f05.empty:
+        return pd.DataFrame(columns=["date", "f05_raw"])
     df = f05.copy()
     df = df[df["bucket"].astype(str) == cfg.F05_CTG_3Y]
     hi = df[df["grade"].astype(str) == cfg.F05_GRADE_HI][["date", "yield"]].rename(columns={"yield": "y_hi"})
     lo = df[df["grade"].astype(str) == cfg.F05_GRADE_LO][["date", "yield"]].rename(columns={"yield": "y_lo"})
     m = pd.merge(hi, lo, on="date", how="inner")
+    if m.empty:
+        return pd.DataFrame(columns=["date", "f05_raw"])
     m["f05_raw"] = m["y_hi"] - m["y_lo"]
     return m[["date", "f05_raw"]]
 
-# ---------------- ⑩ ----------------
+# ---------------- ⑩ ECOS ----------------
 def fetch_f10(begin: str, end: str) -> pd.DataFrame:
     ecos_key = os.environ.get("ECOS_KEY", "").strip()
     if not ecos_key:
@@ -145,12 +149,14 @@ def fetch_f10(begin: str, end: str) -> pd.DataFrame:
     return df[["date", "usdkrw"]].dropna(subset=["date"])
 
 def build_f10_raw(f10: pd.DataFrame) -> pd.DataFrame:
+    if f10.empty:
+        return pd.DataFrame(columns=["date", "f10_raw"])
     df = f10.sort_values("date").reset_index(drop=True).copy()
     df["ret"] = np.log(df["usdkrw"] / df["usdkrw"].shift(1))
     df["f10_raw"] = df["ret"].rolling(20).std() * math.sqrt(252)
     return df[["date", "f10_raw"]]
 
-# ---------------- heatmap helpers ----------------
+# ---------------- heatmap bins ----------------
 X_ORDER = ["7day 하락", "5day 하락", "3day 하락", "보합", "3day 상승", "5day 상승", "7day 상승"]
 
 def classify_x_k200(ret3, ret5, ret7) -> str:
@@ -177,6 +183,9 @@ def build_heatmaps(df: pd.DataFrame, years=10):
 
 def plotly_div(fig) -> str:
     return fig.to_html(full_html=False, include_plotlyjs="cdn")
+
+def fmt_num(x): return "-" if pd.isna(x) else f"{x:.2f}"
+def fmt_pct(x): return "-" if pd.isna(x) else f"{x*100:.2f}%"
 
 def make_index_fig(df):
     s = df.dropna(subset=["index_score_total"]).copy()
@@ -219,169 +228,122 @@ def annotate_today(fig, xbin, ybin):
     ))
     return fig
 
-def fmt_num(x): return "-" if pd.isna(x) else f"{x:.2f}"
-def fmt_pct(x): return "-" if pd.isna(x) else f"{x*100:.2f}%"
-
 HTML = Template(r"""
-<!doctype html>
-<html lang="ko">
-<head>
-  <meta charset="utf-8"/>
-  <meta name="viewport" content="width=device-width,initial-scale=1"/>
-  <title>한국 곰탕 지수 리포트</title>
-  <link rel="stylesheet" href="assets/style.css"/>
-</head>
-<body>
-<header class="topbar">
-  <div class="wrap">
-    <div class="brand">
-      <div class="title">한국 곰탕 지수</div>
-      <div class="subtitle">Daily Report (자동 업데이트)</div>
-    </div>
-    <div class="meta">
-      <div>업데이트(UTC): <b>{{ updated }}</b></div>
-      <div>데이터 최신일: <b>{{ latest }}</b></div>
-    </div>
-  </div>
-</header>
-
+<!doctype html><html lang="ko"><head>
+<meta charset="utf-8"/><meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>한국 곰탕 지수 리포트</title>
+<link rel="stylesheet" href="assets/style.css"/>
+</head><body>
+<header class="topbar"><div class="wrap">
+  <div class="brand"><div class="title">한국 곰탕 지수</div><div class="subtitle">Daily Report (자동 업데이트)</div></div>
+  <div class="meta"><div>업데이트(UTC): <b>{{ updated }}</b></div><div>데이터 최신일: <b>{{ latest }}</b></div></div>
+</div></header>
 <main class="wrap">
-  <section class="grid cards">
-    <div class="card">
-      <div class="k">오늘의 지수</div>
-      <div class="v">{{ score }}</div>
-      <div class="s">구간: <b>{{ bucket }}</b> (높을수록 탐욕)</div>
-    </div>
-    <div class="card">
-      <div class="k">지수 추세</div>
-      <div class="s">3일: <b>{{ chg3 }}</b> / 5일: <b>{{ chg5 }}</b> / 7일: <b>{{ chg7 }}</b></div>
-    </div>
-    <div class="card">
-      <div class="k">KOSPI200 수익률(프록시: 069500)</div>
-      <div class="s">3일: <b>{{ k3 }}</b> / 5일: <b>{{ k5 }}</b> / 7일: <b>{{ k7 }}</b></div>
-    </div>
-    <div class="card">
-      <div class="k">데이터 기반 원인(전일 대비)</div>
-      <div class="s"><b>{{ driver }}</b></div>
-      <div class="mini muted">|Δscore| 큰 팩터부터</div>
-    </div>
-  </section>
+<section class="grid cards">
+  <div class="card"><div class="k">오늘의 지수</div><div class="v">{{ score }}</div><div class="s">구간: <b>{{ bucket }}</b> (높을수록 탐욕)</div></div>
+  <div class="card"><div class="k">지수 추세</div><div class="s">3일: <b>{{ chg3 }}</b> / 5일: <b>{{ chg5 }}</b> / 7일: <b>{{ chg7 }}</b></div></div>
+  <div class="card"><div class="k">KOSPI200 수익률(프록시: 069500)</div><div class="s">3일: <b>{{ k3 }}</b> / 5일: <b>{{ k5 }}</b> / 7일: <b>{{ k7 }}</b></div></div>
+  <div class="card"><div class="k">상태</div><div class="s"><b>{{ status }}</b></div><div class="mini muted">{{ status2 }}</div></div>
+</section>
 
-  <section class="card block"><h2>지수 라인차트</h2>{{ fig_index | safe }}</section>
-  <section class="card block"><h2>구성요소(팩터 점수) 라인차트</h2>{{ fig_comp | safe }}</section>
+<section class="card block"><h2>지수 라인차트</h2>{{ fig_index | safe }}</section>
+<section class="card block"><h2>구성요소(팩터 점수) 라인차트</h2>{{ fig_comp | safe }}</section>
 
-  <section class="grid heatmaps">
-    <section class="card block"><h2>히트맵1: 10일 후 KOSPI200 평균 수익률</h2>{{ hm1 | safe }}</section>
-    <section class="card block"><h2>히트맵2: 10일 후 KOSPI200 승률</h2>{{ hm2 | safe }}</section>
-  </section>
+<section class="grid heatmaps">
+  <section class="card block"><h2>히트맵1: 10일 후 KOSPI200 평균 수익률</h2>{{ hm1 | safe }}</section>
+  <section class="card block"><h2>히트맵2: 10일 후 KOSPI200 승률</h2>{{ hm2 | safe }}</section>
+</section>
 
-  <section class="card block">
-    <h2>오늘 위치한 히트맵 셀의 장기 통계(최근 10년~)</h2>
-    <div class="grid two">
-      <div class="stat"><div class="k">오늘 X 상태</div><div class="v">{{ xbin }}</div></div>
-      <div class="stat"><div class="k">오늘 Y 구간</div><div class="v">{{ ybin }}</div></div>
-      <div class="stat"><div class="k">표본 수</div><div class="v">{{ n }}</div></div>
-      <div class="stat"><div class="k">10일 후 평균 수익률</div><div class="v">{{ retm }}</div></div>
-      <div class="stat"><div class="k">10일 후 승률</div><div class="v">{{ win }}</div></div>
-    </div>
-  </section>
-
-  <footer class="footer">
-    <div class="muted">
-      ⑤ data.go.kr 소매채권수익률요약(필드 basDt/crdtSc/ctg/bnfRt) · ⑩ ECOS(USD/KRW) 기반.
-      [Source](https://www.genspark.ai/api/files/s/S7VQug0I) [Source](https://www.genspark.ai/api/files/s/QCBnq072)
-    </div>
-  </footer>
-</main>
-</body>
-</html>
+<footer class="footer">
+  <div class="muted">
+    ⑤ data.go.kr 소매채권수익률요약(필드 basDt/crdtSc/ctg/bnfRt) · ⑩ ECOS(USD/KRW) 기반.
+    [Source](https://www.genspark.ai/api/files/s/S7VQug0I)
+  </div>
+</footer>
+</main></body></html>
 """)
 
-def driver_text(df: pd.DataFrame) -> str:
-    if len(df) < 2:
-        return "데이터 부족"
-    a, b = df.iloc[-2], df.iloc[-1]
-    parts = []
-    for k in ["f01_score","f02_score","f03_score","f05_score","f06_score","f07_score","f08_score","f10_score"]:
-        if pd.notna(a.get(k)) and pd.notna(b.get(k)):
-            parts.append((k, float(b[k] - a[k])))
-    parts = sorted(parts, key=lambda x: abs(x[1]), reverse=True)[:4]
-    return ", ".join([f"{k} {v:+.1f}" for k, v in parts]) if parts else "데이터 부족"
-
 def main():
-    # 날짜 범위
     today = datetime.utcnow().date()
     end_s = yyyymmdd(today)
-    begin_recent = today - timedelta(days=cfg.REFETCH_DAYS)
-    begin_recent_s = yyyymmdd(begin_recent)
+    begin_recent_s = yyyymmdd(today - timedelta(days=cfg.REFETCH_DAYS))
+    start_long_s = yyyymmdd(today - timedelta(days=365 * 12))
 
-    # long window for pykrx (10년 히트맵 위해 12년)
-    start_long = yyyymmdd(today - timedelta(days=365 * 12))
+    # 1) K200 (프록시) — 없으면 비활성
+    k200 = fetch_kospi200_ohlcv(start_long_s, end_s)
+    k200_ok = (not k200.empty) and ("k200_close" in k200.columns) and (k200["k200_close"].dropna().size > 10)
 
-    # (A) pykrx: k200 proxy
-    k200 = fetch_kospi200_ohlcv(start_long, end_s)
+    # 2) ⑤/⑩ long window로 점수 안정화
+    f05 = fetch_f05(start_long_s, end_s)
+    f10 = fetch_f10(start_long_s, end_s)
+    f05_raw = build_f05_raw(f05)
+    f10_raw = build_f10_raw(f10)
 
-    # (B) ⑤/⑩ 최신 14일 재조회
-    f05_new = fetch_f05(begin_recent_s, end_s)
-    f10_new = fetch_f10(begin_recent_s, end_s)
+    # 3) pykrx factors (외국인 순매수는 버전 차이로 실패 가능하므로 안전 처리)
+    f01 = factor1_momentum(k200).rename(columns={0: "f01_raw"}) if k200_ok else pd.DataFrame(columns=["date", "f01_raw"])
+    f06 = factor6_volatility(k200).rename(columns={0: "f06_raw"}) if k200_ok else pd.DataFrame(columns=["date", "f06_raw"])
+    try:
+        f08 = factor8_foreign_netbuy(start_long_s, end_s)
+        if "f08_raw" not in f08.columns:
+            # 혹시 컬럼명이 다르면 안전하게 비움
+            f08 = pd.DataFrame(columns=["date", "f08_raw"])
+    except Exception:
+        f08 = pd.DataFrame(columns=["date", "f08_raw"])
 
-    # 저장용(선택)
-    if not f05_new.empty:
-        save_parquet(f05_new, DATA_DIR / "f05_recent.parquet")
-    if not f10_new.empty:
-        save_parquet(f10_new, DATA_DIR / "f10_recent.parquet")
+    # Strength/Breadth는 느릴 수 있으니 실패해도 파이프라인이 죽지 않게
+    try:
+        f02 = factor2_strength(start_long_s, end_s)
+    except Exception:
+        f02 = pd.DataFrame(columns=["date", "f02_raw"])
+    try:
+        f03 = factor3_breadth(start_long_s, end_s)
+    except Exception:
+        f03 = pd.DataFrame(columns=["date", "f03_raw"])
 
-    # (C) 팩터 raw 생성
-    f01 = factor1_momentum(k200).rename(columns={0: "f01_raw"})
-    f02 = factor2_strength(start_long, end_s)
-    f03 = factor3_breadth(start_long, end_s)
+    # SafeHaven은 K200/FX 모두 필요
+    try:
+        f07 = factor7_safe_haven(k200, f10).rename(columns={0: "f07_raw"}) if k200_ok and (not f10.empty) else pd.DataFrame(columns=["date", "f07_raw"])
+    except Exception:
+        f07 = pd.DataFrame(columns=["date", "f07_raw"])
 
-    f05_raw = build_f05_raw(fetch_f05(start_long, end_s))  # long window로 점수 안정화
-    f06 = factor6_volatility(k200).rename(columns={0: "f06_raw"})
-    f07 = factor7_safe_haven(k200, fetch_f10(start_long, end_s)).rename(columns={0: "f07_raw"})
-    f08 = factor8_foreign_netbuy(start_long, end_s)
+    # 4) merge (base = k200, 없으면 date 축을 f10으로)
+    if k200_ok:
+        base = k200.copy()
+    else:
+        base = f10[["date"]].drop_duplicates().copy() if not f10.empty else pd.DataFrame(columns=["date"])
 
-    f10_raw = build_f10_raw(fetch_f10(start_long, end_s))
-
-    # merge
-    base = k200.copy()
     for dfx in [f01, f02, f03, f05_raw, f06, f07, f08, f10_raw]:
         if dfx is None or dfx.empty:
             continue
         base = pd.merge(base, dfx, on="date", how="outer")
+
     base = base.sort_values("date").reset_index(drop=True)
 
-    if "k200_close" not in base.columns or base["k200_close"].dropna().empty:
-    # K200이 없으면 이후 K200 파생/히트맵 섹션 스킵 가능하도록 NaN 컬럼만 만들어 둠
-    base["k200_close"] = np.nan
+    # 5) K200 derived (K200 없으면 NaN)
+    if "k200_close" not in base.columns:
+        base["k200_close"] = np.nan
 
-# ---- k200 derived (안전장치 포함) ----
-if ("k200_close" not in base.columns) or (base["k200_close"].dropna().empty):
-    # K200 데이터가 없으면 이후 계산/히트맵을 안전하게 스킵할 수 있도록 NaN 컬럼만 준비
-    base["k200_close"] = np.nan
+    if base["k200_close"].notna().sum() > 10:
+        base["k200_ret_3d"] = base["k200_close"].pct_change(3)
+        base["k200_ret_5d"] = base["k200_close"].pct_change(5)
+        base["k200_ret_7d"] = base["k200_close"].pct_change(7)
+        base["k200_fwd_10d_return"] = forward_return(base["k200_close"], 10)
+        base["k200_fwd_10d_win"] = forward_win(base["k200_close"], 10)
+    else:
+        base["k200_ret_3d"] = np.nan
+        base["k200_ret_5d"] = np.nan
+        base["k200_ret_7d"] = np.nan
+        base["k200_fwd_10d_return"] = np.nan
+        base["k200_fwd_10d_win"] = np.nan
 
-if base["k200_close"].notna().sum() > 10:
-    base["k200_ret_3d"] = base["k200_close"].pct_change(3)
-    base["k200_ret_5d"] = base["k200_close"].pct_change(5)
-    base["k200_ret_7d"] = base["k200_close"].pct_change(7)
-    base["k200_fwd_10d_return"] = forward_return(base["k200_close"], 10)
-    base["k200_fwd_10d_win"] = forward_win(base["k200_close"], 10)
-else:
-    base["k200_ret_3d"] = np.nan
-    base["k200_ret_5d"] = np.nan
-    base["k200_ret_7d"] = np.nan
-    base["k200_fwd_10d_return"] = np.nan
-    base["k200_fwd_10d_win"] = np.nan
-
-
-    # scores
-    for key in ["f01","f02","f03","f05","f06","f07","f08","f10"]:
+    # 6) score
+    for key in ["f01", "f02", "f03", "f05", "f06", "f07", "f08", "f10"]:
         raw = f"{key}_raw"
         sc = f"{key}_score"
         if raw in base.columns:
             base[sc] = rolling_percentile(base[raw], cfg.ROLLING_DAYS, cfg.MIN_OBS)
 
-    # index (결측 자동 재정규화)
+    # 7) index (결측 자동 재정규화)
     base["index_score_total"] = np.nan
     for i in range(len(base)):
         row = base.iloc[i]
@@ -404,47 +366,64 @@ else:
 
     save_parquet(base, DATA_DIR / "index_daily.parquet")
 
-    # ---- report ----
+    # 8) report (K200 없으면 히트맵 비활성)
     df = base.dropna(subset=["index_score_total"]).copy()
-    latest = df.iloc[-1]
-    latest_date = str(latest["date"].date())
-    today_bucket = latest["bucket_5pt"]
-    xbin = classify_x_k200(latest["k200_ret_3d"], latest["k200_ret_5d"], latest["k200_ret_7d"])
-    ybin = int(today_bucket) if pd.notna(today_bucket) else None
+    if df.empty:
+        status = "데이터 부족(점수 산출 전)"
+        status2 = "backfill을 먼저 실행하거나 기간을 늘려주세요."
+        latest = base.iloc[-1] if not base.empty else None
+        latest_date = "-" if latest is None else str(latest["date"].date())
+        fig_index = "<div class='muted'>데이터 부족</div>"
+        fig_comp = "<div class='muted'>데이터 부족</div>"
+        hm1 = "<div class='muted'>K200 데이터 부족으로 히트맵 생성 불가</div>"
+        hm2 = "<div class='muted'>K200 데이터 부족으로 히트맵 생성 불가</div>"
+        score = "-"
+        bucket = "-"
+        chg3 = chg5 = chg7 = "-"
+        k3 = k5 = k7 = "-"
+    else:
+        latest = df.iloc[-1]
+        latest_date = str(latest["date"].date())
+        score = fmt_num(latest["index_score_total"])
+        b = latest["bucket_5pt"]
+        bucket = f"{int(b)}~{int(b)+5}" if pd.notna(b) else "-"
+        chg3 = fmt_num(latest["index_chg_3d"])
+        chg5 = fmt_num(latest["index_chg_5d"])
+        chg7 = fmt_num(latest["index_chg_7d"])
+        k3 = fmt_pct(latest["k200_ret_3d"])
+        k5 = fmt_pct(latest["k200_ret_5d"])
+        k7 = fmt_pct(latest["k200_ret_7d"])
+        fig_index = make_index_fig(df)
+        fig_comp = make_components_fig(df)
 
-    ret_pv, win_pv, sub = build_heatmaps(df, years=10)
-    hm1 = annotate_today(make_heatmap(ret_pv, "10일 후 평균 수익률"), xbin, ybin)
-    hm2 = annotate_today(make_heatmap(win_pv, "10일 후 승률"), xbin, ybin)
-
-    cell = sub[(sub["xbin"] == xbin) & (sub["ybin"] == ybin)] if ybin is not None else pd.DataFrame()
-    n = int(len(cell))
-    retm = cell["k200_fwd_10d_return"].mean() if n else np.nan
-    win = cell["k200_fwd_10d_win"].mean() if n else np.nan
-
-    fig_index = make_index_fig(df)
-    fig_comp = make_components_fig(df)
+        if base["k200_fwd_10d_return"].notna().sum() > 200:
+            ret_pv, win_pv, _sub = build_heatmaps(df, years=10)
+            hm1_fig = make_heatmap(ret_pv, "10일 후 평균 수익률")
+            hm2_fig = make_heatmap(win_pv, "10일 후 승률")
+            xbin = classify_x_k200(latest["k200_ret_3d"], latest["k200_ret_5d"], latest["k200_ret_7d"])
+            ybin = int(b) if pd.notna(b) else None
+            hm1_fig = annotate_today(hm1_fig, xbin, ybin)
+            hm2_fig = annotate_today(hm2_fig, xbin, ybin)
+            hm1 = plotly_div(hm1_fig)
+            hm2 = plotly_div(hm2_fig)
+            status = "정상"
+            status2 = "K200 기반 히트맵/장기통계 활성"
+        else:
+            hm1 = "<div class='muted'>K200(프록시) 데이터가 부족해 히트맵을 생성하지 않습니다.</div>"
+            hm2 = "<div class='muted'>K200(프록시) 데이터가 부족해 히트맵을 생성하지 않습니다.</div>"
+            status = "부분 정상"
+            status2 = "히트맵 비활성(데이터 부족)"
 
     html = HTML.render(
         updated=datetime.utcnow().strftime("%Y-%m-%d %H:%M"),
         latest=latest_date,
-        score=fmt_num(latest["index_score_total"]),
-        bucket=f"{int(today_bucket)}~{int(today_bucket)+5}" if pd.notna(today_bucket) else "-",
-        chg3=fmt_num(latest["index_chg_3d"]),
-        chg5=fmt_num(latest["index_chg_5d"]),
-        chg7=fmt_num(latest["index_chg_7d"]),
-        k3=fmt_pct(latest["k200_ret_3d"]),
-        k5=fmt_pct(latest["k200_ret_5d"]),
-        k7=fmt_pct(latest["k200_ret_7d"]),
-        driver=driver_text(df),
-        fig_index=fig_index,
-        fig_comp=fig_comp,
-        hm1=plotly_div(hm1),
-        hm2=plotly_div(hm2),
-        xbin=xbin,
-        ybin=f"{int(ybin)}~{int(ybin)+5}" if ybin is not None else "-",
-        n=n,
-        retm=fmt_pct(retm),
-        win="-" if pd.isna(win) else f"{win*100:.1f}%",
+        score=score,
+        bucket=bucket,
+        chg3=chg3, chg5=chg5, chg7=chg7,
+        k3=k3, k5=k5, k7=k7,
+        status=status, status2=status2,
+        fig_index=fig_index, fig_comp=fig_comp,
+        hm1=hm1, hm2=hm2,
     )
     (DOCS_DIR / "index.html").write_text(html, encoding="utf-8")
     print("[daily_update] OK: docs/index.html 생성 완료")
