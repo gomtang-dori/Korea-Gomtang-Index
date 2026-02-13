@@ -4,6 +4,7 @@ from __future__ import annotations
 import os
 import json
 from dataclasses import dataclass
+from lib.krx_http import KRXHTTP
 
 import pandas as pd
 import requests
@@ -40,10 +41,13 @@ class KRXKospiIndexAPI:
             print(*args)
 
     def _get_json(self, params: dict) -> dict:
-        headers = {"AUTH_KEY": self.auth_key, "Accept": "application/json"}
-        r = requests.get(self.url, headers=headers, params=params, timeout=self.timeout)
-        r.raise_for_status()
-        return r.json()
+        # 1) http client가 없으면 만든다(안전장치)
+        if not hasattr(self, "http") or self.http is None:
+            self.http = KRXHTTP(auth_key=self.auth_key, timeout=self.timeout)
+    
+        # 2) 429/5xx 자동 재시도 + 백오프로 JSON을 받는다
+        return self.http.get_json(self.url, params)
+
 
     def _get(self, basDt: str) -> dict:
         """
