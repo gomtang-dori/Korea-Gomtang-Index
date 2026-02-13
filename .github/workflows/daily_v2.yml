@@ -21,13 +21,14 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: Set date range (recent 30d)
+      - name: Set date range (recent 30d + buffer)
         run: |
           echo "BACKFILL_END=$(date -u +%Y%m%d)" >> $GITHUB_ENV
           echo "BACKFILL_START=$(date -u -d '30 days ago' +%Y%m%d)" >> $GITHUB_ENV
+          echo "CACHE_BUFFER_DAYS=450" >> $GITHUB_ENV
 
       # -------------------------
-      # caches (K200 close / K200 OHLCV 제거)
+      # caches
       # -------------------------
 
       - name: Cache USD/KRW
@@ -59,29 +60,27 @@ jobs:
         run: |
           export PYTHONPATH=src
           python src/caches/cache_putcall.py
-          
+
       - name: Cache K200 close (recent+buffer)
         env:
           KRX_AUTH_KEY: ${{ secrets.KRX_AUTH_KEY }}
           KRX_KOSPI_DD_TRD_URL: ${{ secrets.KRX_KOSPI_DD_TRD_URL }}
           BACKFILL_START: ${{ env.BACKFILL_START }}
           BACKFILL_END: ${{ env.BACKFILL_END }}
-          CACHE_BUFFER_DAYS: "450"
+          CACHE_BUFFER_DAYS: ${{ env.CACHE_BUFFER_DAYS }}
           K200_CACHE_PATH: data/cache/k200_close.parquet
           PROGRESS_EVERY_N_DAYS: "25"
         run: |
           export PYTHONPATH=src
           python src/caches/cache_k200_close.py
-  
 
       # -------------------------
-      # factors (f02/f03 제거)
-      # - 아래는 "파일 있으면 실행" 형태로 안전하게
+      # factors (F01/F04/F06/F10) - fail fast
       # -------------------------
 
       - name: Factors (F01/F04/F06/F10) - fail fast
         env:
-          # 공통 롤링(운영값). Daily 짧게 확인만이면 MIN_OBS 낮춰도 됨
+          # 운영 기본값(Backfill과 동일)
           ROLLING_DAYS: "1260"
           MIN_OBS: "252"
 
@@ -100,7 +99,6 @@ jobs:
           python src/factors/f04_putcall.py
           python src/factors/f06_vkospi.py
           python src/factors/f10_fxvol.py
-
 
       # -------------------------
       # assemble & report
@@ -126,5 +124,5 @@ jobs:
           git config user.name "github-actions"
           git config user.email "github-actions@github.com"
           git add data/cache data/factors data/index_daily.parquet data/index_daily.csv docs/index.html || true
-          git commit -m "Daily v2 update (lite: skip strength+breadth)" || echo "No changes"
+          git commit -m "Daily v2 update (F01+F04+F06+F10)" || echo "No changes"
           git push
