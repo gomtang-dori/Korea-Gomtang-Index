@@ -12,10 +12,18 @@ jobs:
       SERVICE_KEY: ${{ secrets.SERVICE_KEY }}
       ECOS_KEY: ${{ secrets.ECOS_KEY }}
 
-      # KRX Put/Call (factor 4) secrets
+      # ECOS USD/KRW level settings (Variables)
+      ECOS_USDKRW_STAT_CODE: ${{ vars.ECOS_USDKRW_STAT_CODE }}
+      ECOS_USDKRW_CYCLE: ${{ vars.ECOS_USDKRW_CYCLE }}
+      ECOS_USDKRW_ITEM_CODE1: ${{ vars.ECOS_USDKRW_ITEM_CODE1 }}
+
+      # KRX Put/Call (factor 4)
       KRX_AUTH_KEY: ${{ secrets.KRX_AUTH_KEY }}
       KRX_EQSOP_URL: ${{ secrets.KRX_EQSOP_URL }}
       KRX_EQKOP_URL: ${{ secrets.KRX_EQKOP_URL }}
+
+      # Optional backfill window (years)
+      BACKFILL_YEARS: "12"
 
     steps:
       - uses: actions/checkout@v4
@@ -26,6 +34,11 @@ jobs:
 
       - name: Install deps
         run: pip install -r requirements.txt
+
+      - name: Fetch USD/KRW level (for f07)
+        run: |
+          export PYTHONPATH=src
+          python src/usdkrw_fetch.py
 
       - name: Run backfill
         run: |
@@ -50,6 +63,6 @@ jobs:
         run: |
           git config user.name "github-actions"
           git config user.email "actions@users.noreply.github.com"
-          git add data/index_daily.parquet data/index_daily.csv docs/index.html docs/assets/style.css || true
+          git add docs/index.html docs/assets/style.css data/index_daily.parquet data/index_daily.csv data/usdkrw_level.parquet data/usdkrw_level.csv || true
           git commit -m "backfill max" || echo "no changes"
           git push
