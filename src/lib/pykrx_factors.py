@@ -25,6 +25,27 @@ def fetch_kospi200_ohlcv(start_date: str, end_date: str) -> pd.DataFrame:
     ticker = "069500"  # KODEX 200 (프록시)
     df = stock.get_market_ohlcv_by_date(start_date, end_date, ticker)
     df = _as_date_index(df)
+        # ... (기존 코드로 df 만들고 난 뒤)
+
+    # 표준 컬럼명 강제
+    if "k200_close" not in out.columns:
+        # 혹시 종가/close 같은 이름이면 매핑
+        for cand in ["종가", "close", "Close", "종가가", "종가 "]:
+            if cand in out.columns:
+                out = out.rename(columns={cand: "k200_close"})
+                break
+
+    # date 컬럼 강제
+    if "date" not in out.columns:
+        # index가 날짜라면 date로 내리기
+        out = out.reset_index().rename(columns={"index": "date"})
+
+    out["date"] = pd.to_datetime(out["date"], errors="coerce")
+    out["k200_close"] = pd.to_numeric(out["k200_close"], errors="coerce")
+
+    out = out.dropna(subset=["date", "k200_close"]).sort_values("date").reset_index(drop=True)
+    return out[["date", "k200_close"]]
+
     out = pd.DataFrame({
         "date": df.index,
         "k200_close": pd.to_numeric(df["종가"], errors="coerce"),
