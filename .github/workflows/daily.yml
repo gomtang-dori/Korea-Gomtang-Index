@@ -24,6 +24,9 @@ jobs:
       KRX_EQKOP_URL: ${{ secrets.KRX_EQKOP_URL }}
       KRX_KOSPI_DD_TRD_URL: ${{ secrets.KRX_KOSPI_DD_TRD_URL }}
 
+      # KRX Derivative Index (VKOSPI)
+      KRX_DVRPROD_DD_TRD_URL: ${{ secrets.KRX_DVRPROD_DD_TRD_URL }}
+
     steps:
       - uses: actions/checkout@v4
 
@@ -38,6 +41,11 @@ jobs:
         run: |
           export PYTHONPATH=src
           python src/usdkrw_fetch.py
+
+      - name: Fetch VKOSPI level (for f06)
+        run: |
+          export PYTHONPATH=src
+          python src/vkospi_fetch.py
 
       - name: Run daily update
         run: |
@@ -62,6 +70,6 @@ jobs:
         run: |
           git config user.name "github-actions"
           git config user.email "github-actions@users.noreply.github.com"
-          git add data/index_daily.parquet data/index_daily.csv docs/index.html || true
+          git add data/index_daily.parquet data/index_daily.csv data/vkospi_level.parquet docs/index.html || true
           git commit -m "daily update" || echo "nothing to commit"
           git push
