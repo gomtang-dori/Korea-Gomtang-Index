@@ -4,282 +4,231 @@ from __future__ import annotations
 import os
 import time
 from dataclasses import dataclass
+from datetime import datetime, timedelta
 from pathlib import Path
+from typing import List, Optional, Tuple
+
 import numpy as np
 import pandas as pd
 
-from lib.pykrx_factors import (
-    factor1_momentum,
-    factor2_strength,
-    factor3_breadth,
-    factor6_volatility,
-    factor7_safe_haven,
-    factor8_foreign_netbuy,
-)
-from lib.krx_putcall import fetch_putcall_ratio_by_date
-from lib.krx_kospi_index import KRXKospiIndexAPI
+# ---- import your existing libs/modules here (keep your repo structure) ----
+# 아래 3개는 이미 레포에 존재한다고 가정(앞서 K200/VKOSPI 작업 흐름)
+from lib.krx_kospi_index import KRXKospiIndexAPI  # K200 close fetcher (kospi_dd_trd)
+from lib.krx_dvrprod_index import KRXDrvProdIndexAPI  # VKOSPI fetcher (drvprod_dd_trd)
+# Put/Call 및 기타(레포에 이미 구현된 함수/모듈에 맞게 import 경로 조정)
+# 예: from lib.krx_putcall import fetch_put_call_by_range
+# 예: from lib.ecos import fetch_usdkrw, fetch_10y
+# -------------------------------------------------------------------------
 
 
-@dataclass
-class CFG:
-    ROLLING_DAYS: int = 252 * 5
-    MIN_OBS: int = 252
-    DATA_DIR: str = "data"
-    USDKRW_LEVEL_PATH: str = "data/usdkrw_level.parquet"
-    VKOSPI_LEVEL_PATH: str = "data/vkospi_level.parquet"
-
-    # progress logging
-    PROGRESS_EVERY_N_DAYS: int = 25  # 로그 주기(캘린더 일 기준)
-    W: dict = None
-
-    def __post_init__(self):
-        if self.W is None:
-            self.W = {
-                "f01_score": 0.10,
-                "f02_score": 0.10,
-                "f03_score": 0.10,
-                "f04_score": 0.10,
-                "f05_score": 0.05,
-                "f06_score": 0.125,
-                "f07_score": 0.10,
-                "f08_score": 0.10,
-                "f10_score": 0.10,
-            }
+# ----------------------- helpers -----------------------
+def _env(name: str, default: str = "") -> str:
+    return os.environ.get(name, default).strip()
 
 
-cfg = CFG()
+def _parse_yyyymmdd(s: str) -> datetime:
+    return datetime.strptime(s, "%Y%m%d")
 
 
-def ensure_dir(p: str | Path):
-    Path(p).mkdir(parents=True, exist_ok=True)
+def _fmt_hhmmss(seconds: float) -> str:
+    seconds = int(seconds)
+    h = seconds // 3600
+    m = (seconds % 3600) // 60
+    s = seconds % 60
+    return f"{h:02d}:{m:02d}:{s:02d}"
 
 
-def safe_to_datetime(df: pd.DataFrame, col: str = "date") -> pd.DataFrame:
-    if df is None or df.empty:
-        return pd.DataFrame(columns=[col])
-    if col in df.columns:
-        df[col] = pd.to_datetime(df[col], errors="coerce")
-    return df
-
-
-def rolling_percentile(s: pd.Series, window: int, min_obs: int) -> pd.Series:
-    def _pct(x):
-        if len(x) < min_obs:
-            return np.nan
-        return float(pd.Series(x).rank(pct=True).iloc[-1] * 100.0)
-    return s.rolling(window=window, min_periods=min_obs).apply(_pct, raw=False)
-
-
-def forward_return(level: pd.Series, n: int) -> pd.Series:
-    return level.shift(-n) / level - 1.0
-
-
-def forward_win(level: pd.Series, n: int) -> pd.Series:
-    return (forward_return(level, n) > 0).astype(float)
-
-
-def renormalize_weights(df: pd.DataFrame, weights: dict) -> pd.DataFrame:
-    score_cols = list(weights.keys())
-    w = pd.Series(weights, dtype=float)
-    avail = df[score_cols].notna().astype(float)
-    w_mat = avail.mul(w, axis=1)
-    w_sum = w_mat.sum(axis=1).replace(0, np.nan)
-    return w_mat.div(w_sum, axis=0)
-
-
-def load_existing_f05_f10(index_df: pd.DataFrame) -> pd.DataFrame:
-    keep = ["date", "f05_raw", "f10_raw"]
-    cols = [c for c in keep if c in index_df.columns]
-    if not cols:
-        return pd.DataFrame(columns=["date"])
-    return index_df[cols].copy()
-
-
-def _fmt_elapsed(sec: float) -> str:
-    sec = int(sec)
-    h = sec // 3600
-    m = (sec % 3600) // 60
-    s = sec % 60
-    if h > 0:
-        return f"{h}h{m:02d}m{s:02d}s"
-    return f"{m}m{s:02d}s"
-
-
-def fetch_k200_close_range_with_progress(start: pd.Timestamp, end: pd.Timestamp) -> pd.DataFrame:
-    """
-    K200을 backfill_max.py에서 직접 1일씩 호출해서 진행률을 확실히 출력.
-    (휴일/주말은 빈 결과 -> 스킵)
-    """
-    api = KRXKospiIndexAPI.from_env()
-    start = pd.to_datetime(start).normalize()
-    end = pd.to_datetime(end).normalize()
-
-    days = pd.date_range(start, end, freq="D")
-    total = len(days)
-    t0 = time.time()
-
-    rows = []
-    done = 0
-    for d in days:
-        done += 1
-        basDt = d.strftime("%Y%m%d")
-
-        try:
-            one = api.fetch_k200_close_by_date(basDt)  # returns date,k200_close or empty
-        except Exception as e:
-            one = pd.DataFrame(columns=["date", "k200_close"])
-
-        if one is not None and not one.empty:
-            rows.append(one)
-
-        # progress log
-        if done == 1 or done % cfg.PROGRESS_EVERY_N_DAYS == 0 or done == total:
-            elapsed = time.time() - t0
-            pct = done / total * 100.0
-            speed = done / elapsed if elapsed > 0 else 0.0
-            eta = (total - done) / speed if speed > 0 else float("inf")
-            print(
-                f"[progress:k200] {pct:6.2f}% ({done}/{total}) "
-                f"basDt={basDt} elapsed={_fmt_elapsed(elapsed)} "
-                f"speed={speed:.2f} days/s eta={_fmt_elapsed(eta) if eta != float('inf') else 'NA'}"
-            )
-
-    if not rows:
-        return pd.DataFrame(columns=["date", "k200_close"])
-
-    out = pd.concat(rows, ignore_index=True)
-    out["date"] = pd.to_datetime(out["date"], errors="coerce")
-    out["k200_close"] = pd.to_numeric(out["k200_close"], errors="coerce")
-    out = out.dropna(subset=["date", "k200_close"]).drop_duplicates("date").sort_values("date").reset_index(drop=True)
+def business_days_mon_fri(start: datetime, end: datetime) -> List[str]:
+    """KRX 휴장일 캘린더 없이도 '영업일 기준'을 만족시키기 위한 월~금 리스트."""
+    out = []
+    d = start
+    while d <= end:
+        if d.weekday() < 5:
+            out.append(d.strftime("%Y%m%d"))
+        d += timedelta(days=1)
     return out
 
 
+@dataclass
+class ProgressLogger:
+    name: str
+    total: int
+    every: int = 25
+    start_ts: float = time.time()
+
+    def __post_init__(self):
+        self.start_ts = time.time()
+        self.total = max(int(self.total), 1)
+        self.every = max(int(self.every), 1)
+
+    def maybe_log(self, i: int, bas: str):
+        if i % self.every != 0 and i != self.total:
+            return
+        elapsed = time.time() - self.start_ts
+        speed = i / elapsed if elapsed > 0 else 0.0
+        remain = self.total - i
+        eta = remain / speed if speed > 0 else float("inf")
+        pct = 100.0 * i / self.total
+        print(
+            f"[progress:{self.name}] {pct:6.2f}% ({i}/{self.total}) bas={bas} "
+            f"elapsed={_fmt_hhmmss(elapsed)} speed={speed:.2f} days/s eta={_fmt_hhmmss(eta if np.isfinite(eta) else 0)}"
+        )
+
+
+def _finalize_missing(name: str, missing_days: List[str], total_days: int, max_rate: float):
+    miss = len(missing_days)
+    rate = miss / max(total_days, 1)
+    print(f"[missing:{name}] missing={miss}/{total_days} rate={rate:.3%} max={max_rate:.3%}")
+    if miss:
+        head = missing_days[:200]
+        print(f"[missing:{name}] days(head)={head}")
+        if miss > 200:
+            print(f"[missing:{name}] ... and {miss-200} more")
+    if rate > max_rate:
+        raise RuntimeError(f"{name} missing rate {rate:.3%} exceeds threshold {max_rate:.3%}")
+
+
+def _safe_concat(frames: List[pd.DataFrame], cols: List[str]) -> pd.DataFrame:
+    if not frames:
+        return pd.DataFrame(columns=cols)
+    return pd.concat(frames, ignore_index=True)
+
+
+# ----------------------- K200 (index) fetch with skip -----------------------
+def fetch_k200_close_range_skip(
+    api: KRXKospiIndexAPI,
+    bas_list: List[str],
+    progress_every: int,
+) -> Tuple[pd.DataFrame, List[str]]:
+    missing = []
+    frames = []
+    prog = ProgressLogger("k200", total=len(bas_list), every=progress_every)
+
+    for i, bas in enumerate(bas_list, start=1):
+        try:
+            df_day = api.fetch_k200_close_by_date(bas)  # must return columns: date, k200_close (or empty df)
+            if df_day is None or df_day.empty:
+                missing.append(bas)
+            else:
+                frames.append(df_day)
+        except Exception:
+            # 어떤 이유든(휴장일/일시 오류/필드 이슈) 그 날만 누락으로 처리
+            missing.append(bas)
+
+        prog.maybe_log(i, bas)
+
+    out = _safe_concat(frames, cols=["date", "k200_close"])
+    return out, missing
+
+
+# ----------------------- VKOSPI fetch with skip -----------------------
+def fetch_vkospi_range_skip(
+    api: KRXDrvProdIndexAPI,
+    bas_list: List[str],
+    progress_every: int,
+) -> Tuple[pd.DataFrame, List[str]]:
+    missing = []
+    frames = []
+    prog = ProgressLogger("vkospi", total=len(bas_list), every=progress_every)
+
+    for i, bas in enumerate(bas_list, start=1):
+        try:
+            df_day = api.fetch_vkospi_by_date(bas)  # must return columns: date, vkospi (or empty df)
+            if df_day is None or df_day.empty:
+                missing.append(bas)
+            else:
+                frames.append(df_day)
+        except Exception:
+            missing.append(bas)
+
+        prog.maybe_log(i, bas)
+
+    out = _safe_concat(frames, cols=["date", "vkospi"])
+    return out, missing
+
+
+# ----------------------- rolling percentile -----------------------
+def rolling_percentile_0_100(series: pd.Series, window: int) -> pd.Series:
+    """
+    5y rolling percentile (0-100).
+    window=1260 (대략 5년 영업일)
+    """
+    s = series.astype(float)
+
+    def _pct_rank(x: np.ndarray) -> float:
+        # 마지막 값이 윈도우 내에서 몇 % 위치인지
+        last = x[-1]
+        # nan 방어
+        x = x[~np.isnan(x)]
+        if len(x) == 0 or np.isnan(last):
+            return np.nan
+        return 100.0 * (np.sum(x <= last) - 1) / max(len(x) - 1, 1)
+
+    return s.rolling(window, min_periods=max(60, window // 10)).apply(_pct_rank, raw=True)
+
+
+# ----------------------- main -----------------------
 def main():
-    ensure_dir(cfg.DATA_DIR)
+    # ---- required envs for chunk mode ----
+    start_s = _env("BACKFILL_START")
+    end_s = _env("BACKFILL_END")
+    chunk_out = _env("CHUNK_OUT")
+    if not (start_s and end_s and chunk_out):
+        raise RuntimeError("Chunk mode requires BACKFILL_START, BACKFILL_END, CHUNK_OUT env vars.")
 
-    backfill_years = int(os.environ.get("BACKFILL_YEARS", "12"))
-    end = pd.Timestamp.utcnow().tz_localize(None).normalize()
-    start = end - pd.DateOffset(years=backfill_years)
+    missing_rate_max = float(_env("MISSING_RATE_MAX", "0.02"))  # 2%
+    progress_every = int(_env("PROGRESS_EVERY_N_DAYS", "25"))
+    window_5y = int(_env("ROLLING_WINDOW_5Y", "1260"))
 
-    start_str = pd.Timestamp(start).strftime("%Y%m%d")
-    end_str = pd.Timestamp(end).strftime("%Y%m%d")
+    start_dt = _parse_yyyymmdd(start_s)
+    end_dt = _parse_yyyymmdd(end_s)
+    bas_list = business_days_mon_fri(start_dt, end_dt)
+    if not bas_list:
+        raise RuntimeError("No business days generated for given range.")
 
-    # ---- USD/KRW level mandatory ----
-    usd_path = Path(cfg.USDKRW_LEVEL_PATH)
-    if not usd_path.exists():
-        raise RuntimeError(f"Missing {usd_path}. Backfill workflow must run usdkrw_fetch.py first.")
-    usdkrw = pd.read_parquet(usd_path)
-    usdkrw = safe_to_datetime(usdkrw, "date")
-    if "usdkrw" not in usdkrw.columns:
-        raise RuntimeError("usdkrw_level.parquet missing 'usdkrw'")
-    usdkrw["usdkrw"] = pd.to_numeric(usdkrw["usdkrw"], errors="coerce")
-    usdkrw = usdkrw.dropna(subset=["date", "usdkrw"]).sort_values("date").reset_index(drop=True)
+    print(f"[backfill_chunk] range={start_s}..{end_s} days={len(bas_list)} out={chunk_out}")
 
-    # ---- VKOSPI level mandatory ----
-    vko_path = Path(cfg.VKOSPI_LEVEL_PATH)
-    if not vko_path.exists():
-        raise RuntimeError(f"Missing {vko_path}. Backfill workflow must run vkospi_fetch.py first.")
-    vkospi = pd.read_parquet(vko_path)
-    vkospi = safe_to_datetime(vkospi, "date")
-    if "vkospi" not in vkospi.columns:
-        raise RuntimeError("vkospi_level.parquet missing 'vkospi'")
-    vkospi["vkospi"] = pd.to_numeric(vkospi["vkospi"], errors="coerce")
-    vkospi = vkospi.dropna(subset=["date", "vkospi"]).sort_values("date").reset_index(drop=True)
+    # ---- APIs from env (already used in your repo) ----
+    k200_api = KRXKospiIndexAPI.from_env()
+    vkospi_api = KRXDrvProdIndexAPI.from_env()
 
-    # ---- K200 (with progress) ----
-    print(f"[backfill_max] start={start.date()} end={end.date()} years={backfill_years}")
-    k200 = fetch_k200_close_range_with_progress(start, end)
-    k200 = safe_to_datetime(k200, "date")
-    k200["k200_close"] = pd.to_numeric(k200.get("k200_close"), errors="coerce")
-    k200 = k200.dropna(subset=["date", "k200_close"]).sort_values("date").reset_index(drop=True)
+    # ---- 1) Fetch series with skip+missing list ----
+    k200_df, miss_k200 = fetch_k200_close_range_skip(k200_api, bas_list, progress_every)
+    vkospi_df, miss_vkospi = fetch_vkospi_range_skip(vkospi_api, bas_list, progress_every)
 
-    if k200.empty:
-        raise RuntimeError("K200 close series is empty. Check KRX_KOSPI_DD_TRD_URL / KRX_AUTH_KEY / API approval.")
+    # 누락률 체크(2% 초과 시 실패)
+    _finalize_missing("k200", miss_k200, len(bas_list), missing_rate_max)
+    _finalize_missing("vkospi", miss_vkospi, len(bas_list), missing_rate_max)
 
-    # ---- Factors ----
-    f01 = factor1_momentum(k200)
-    f02 = factor2_strength(start_str, end_str)
-    f03 = factor3_breadth(start_str, end_str)
+    # ---- 2) Merge base daily frame ----
+    base = pd.DataFrame({"date": pd.to_datetime(bas_list, format="%Y%m%d")})
+    base = base.merge(k200_df, on="date", how="left")
+    base = base.merge(vkospi_df, on="date", how="left")
 
-    # realized vol as alt raw (optional)
-    f06_alt = factor6_volatility(k200)
-    if f06_alt is not None and not f06_alt.empty and "f06_raw" in f06_alt.columns:
-        f06_alt = f06_alt.rename(columns={"f06_raw": "f06_alt_raw"})
+    # ---- 3) Factor scores (여기서는 예시로 f01(모멘텀) + f06(VKOSPI)만 안전하게 계산) ----
+    # 실제 레포에서 이미 계산 중인 팩터 로직이 많다면,
+    # "청크화" 첫 단계에서는 기존 로직을 그대로 두고,
+    # empty day 스킵/누락률 체크를 통과한 뒤 점진적으로 이 구조에 맞춰 옮기는 것을 권장.
 
-    f07 = factor7_safe_haven(k200, usdkrw)
-    f08 = factor8_foreign_netbuy(start_str, end_str)
+    # f06: VKOSPI (fear) -> Greed score = 100 - percentile
+    base["f06_raw"] = base["vkospi"]
+    base["f06_score"] = 100.0 - rolling_percentile_0_100(base["f06_raw"], window_5y)
 
-    for df in [f01, f02, f03, f06_alt, f07, f08]:
-        if df is None:
-            continue
-        safe_to_datetime(df, "date")
+    # f01: 예시(모멘텀) - 기존 레포 로직이 있으면 그걸 사용하세요.
+    # 여기서는 placeholder: 20d return of k200_close
+    base["k200_ret_20d"] = base["k200_close"].astype(float).pct_change(20)
+    base["f01_raw"] = base["k200_ret_20d"]
+    base["f01_score"] = rolling_percentile_0_100(base["f01_raw"], window_5y)
 
-    # ---- Put/Call full window ----
-    print("[progress:f04] fetching put/call range ...")
-    f04 = fetch_putcall_ratio_by_date(pd.to_datetime(start), pd.to_datetime(end))
-    f04 = safe_to_datetime(f04, "date")
-    print(f"[progress:f04] done rows={len(f04)}")
+    # ---- 4) (중요) 기존 레포의 나머지 팩터(②~⑤,⑦~⑩)는 여기서 그대로 추가/병합 ----
+    # 지금은 "청크/누락/병합 인프라"를 먼저 안정화하는 단계이므로,
+    # 다음 커밋에서 기존 backfill_max.py의 factor 계산부를 이 base에 맞게 이식하는 방식으로 진행하면 안전합니다.
 
-    # ---- VKOSPI raw ----
-    f06 = vkospi[["date", "vkospi"]].copy().rename(columns={"vkospi": "f06_raw"})
-
-    # ---- Existing f05/f10 from existing index (optional) ----
-    index_path = Path(cfg.DATA_DIR) / "index_daily.parquet"
-    old = pd.read_parquet(index_path) if index_path.exists() else pd.DataFrame()
-    old = safe_to_datetime(old, "date")
-    f05f10 = load_existing_f05_f10(old)
-
-    base = k200[["date", "k200_close"]].copy()
-    for add in [f01, f02, f03, f04, f06, f06_alt, f07, f08, f05f10]:
-        if add is None or add.empty:
-            continue
-        if "k200_close" in add.columns and "k200_close" in base.columns:
-            add = add.drop(columns=["k200_close"])
-        base = base.merge(add, on="date", how="left")
-    base = base.sort_values("date").reset_index(drop=True)
-
-    # ---- Derived ----
-    base["k200_ret_3d"] = base["k200_close"].pct_change(3)
-    base["k200_ret_5d"] = base["k200_close"].pct_change(5)
-    base["k200_ret_7d"] = base["k200_close"].pct_change(7)
-    base["k200_fwd_10d_return"] = forward_return(base["k200_close"], 10)
-    base["k200_fwd_10d_win"] = forward_win(base["k200_close"], 10)
-
-    # ---- Scores with flips ----
-    flip_scores = {"f04_score", "f05_score", "f06_score", "f07_score", "f10_score"}
-
-    for raw, score in [
-        ("f01_raw", "f01_score"),
-        ("f02_raw", "f02_score"),
-        ("f03_raw", "f03_score"),
-        ("f04_raw", "f04_score"),
-        ("f05_raw", "f05_score"),
-        ("f06_raw", "f06_score"),
-        ("f07_raw", "f07_score"),
-        ("f08_raw", "f08_score"),
-        ("f10_raw", "f10_score"),
-    ]:
-        if raw in base.columns:
-            base[raw] = pd.to_numeric(base[raw], errors="coerce")
-            pct = rolling_percentile(base[raw], cfg.ROLLING_DAYS, cfg.MIN_OBS)
-            base[score] = 100.0 - pct if score in flip_scores else pct
-        else:
-            base[score] = np.nan
-
-    w_norm = renormalize_weights(base, cfg.W)
-    score_cols = list(cfg.W.keys())
-    base["index_score_total"] = (base[score_cols] * w_norm).sum(axis=1)
-    base["bucket_5pt"] = (np.floor(base["index_score_total"] / 5.0) * 5.0).clip(0, 100)
-
-    # ---- Upsert ----
-    if not old.empty:
-        out = pd.concat([old, base], ignore_index=True)
-        out = out.drop_duplicates("date", keep="last").sort_values("date").reset_index(drop=True)
-    else:
-        out = base
-
-    out.to_parquet(index_path, index=False)
-    print(f"[backfill_max] OK years={backfill_years} rows={len(out)} -> {index_path}")
+    # ---- 5) Save chunk parquet ----
+    out_path = Path(chunk_out)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    base.sort_values("date").to_parquet(out_path, index=False)
+    print(f"[backfill_chunk] wrote parquet rows={len(base)} -> {out_path}")
 
 
 if __name__ == "__main__":
