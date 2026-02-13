@@ -47,6 +47,57 @@ class KRXKospiIndexAPI:
     
         # 2) 429/5xx 자동 재시도 + 백오프로 JSON을 받는다
         return self.http.get_json(self.url, params)
+    def fetch_k200_close_range_monthly(self, start, end, progress_every: int = 3):
+        """
+        backfill에서 사용: start~end를 월 단위로 끊어 처리
+        반환: (k200_df, missing_days, requested_day_count)
+        """
+        import pandas as pd
+    
+        start = pd.to_datetime(start).tz_localize(None).normalize()
+        end = pd.to_datetime(end).tz_localize(None).normalize()
+    
+        months = pd.period_range(start=start, end=end, freq="M")
+        frames = []
+        missing = []
+    
+        for i, p in enumerate(months, start=1):
+            y, m = int(p.year), int(p.month)
+            m_start = pd.Timestamp(y, m, 1)
+            m_end = (m_start + pd.offsets.MonthEnd(1)).normalize()
+            days = pd.date_range(m_start, m_end, freq="D")
+    
+            for d in days:
+                bas = d.strftime("%Y%m%d")
+                try:
+                    df_day = self.fetch_k200_close_by_date(bas)
+                    if df_day is None or df_day.empty:
+                        missing.append(bas)
+                    else:
+                        frames.append(df_day)
+                except Exception:
+                    missing.append(bas)
+    
+            if progress_every and (i % progress_every == 0 or i == len(months)):
+                print(f"[k200_monthly] {i}/{len(months)} y={y} m={m:02d} frames={len(frames)} miss={len(missing)}")
+    
+        if frames:
+            out = pd.concat(frames, ignore_index=True)
+            out["date"] = pd.to_datetime(out["date"], errors="coerce")
+            out["k200_close"] = pd.to_numeric(out["k200_close"], errors="coerce")
+            out = (
+                out.dropna(subset=["date", "k200_close"])
+                   .drop_duplicates("date", keep="last")
+                   .sort_values("date")
+                   .reset_index(drop=True)
+            )
+        else:
+            out = pd.DataFrame(columns=["date", "k200_close"])
+    
+        requested = len(pd.date_range(start, end, freq="D"))
+        missing = [d for d in missing if start.strftime("%Y%m%d") <= d <= end.strftime("%Y%m%d")]
+        return out, missing, requested
+
 
 
     def _get(self, basDt: str) -> dict:
