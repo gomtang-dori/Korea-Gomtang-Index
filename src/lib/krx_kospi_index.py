@@ -70,7 +70,7 @@ class KRXKospiIndexAPI:
         # CLS_PRC may contain commas or '-' etc.
         return pd.to_numeric(s.astype(str).str.replace(",", "", regex=False), errors="coerce")
 
-    def fetch_k200_close_by_date(self, basDt: str) -> pd.DataFrame:
+def fetch_k200_close_by_date(self, basDt: str) -> pd.DataFrame:
     """
     Returns: DataFrame columns: date, k200_close
     date is YYYY-MM-DD (datetime)
@@ -123,6 +123,7 @@ class KRXKospiIndexAPI:
     close = self._parse_close(df["CLS_PRC"]).iloc[0]
     print(f"[k200_debug] basDt={basDt} PICKED IDX_NM={df.get('IDX_NM').iloc[0] if 'IDX_NM' in df.columns else 'NA'} CLS_PRC={close}")
     return pd.DataFrame({"date": [dt], "k200_close": [close]})
+
 
 
     def fetch_k200_close_range(self, start: pd.Timestamp, end: pd.Timestamp) -> pd.DataFrame:
