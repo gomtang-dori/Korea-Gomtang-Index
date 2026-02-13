@@ -3,7 +3,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-import os
 import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
@@ -13,10 +12,11 @@ from lib.pykrx_factors import (
     factor1_momentum,          # (k200_df)
     factor2_strength,          # (start_date, end_date)
     factor3_breadth,           # (start_date, end_date)
-    factor6_volatility,        # (k200_df)
+    factor6_volatility,        # (k200_df)  -> will be saved as f06_alt_raw (optional)
     factor7_safe_haven,        # (k200_df, usdkrw_df)
     factor8_foreign_netbuy,    # (start_date, end_date)
 )
+
 from lib.krx_putcall import fetch_putcall_ratio_by_date
 from lib.krx_kospi_index import KRXKospiIndexAPI
 
@@ -30,7 +30,7 @@ class CFG:
     DOCS_DIR: str = "docs"
     ASSETS_DIR: str = "docs/assets"
     USDKRW_LEVEL_PATH: str = "data/usdkrw_level.parquet"
-    # K200 OpenAPI lookback: fetch a bit more than REFRESH_DAYS to cover holidays
+    VKOSPI_LEVEL_PATH: str = "data/vkospi_level.parquet"
     K200_LOOKBACK_EXTRA_DAYS: int = 30
 
     W: dict = None
@@ -43,7 +43,7 @@ class CFG:
                 "f03_score": 0.10,
                 "f04_score": 0.10,
                 "f05_score": 0.05,
-                "f06_score": 0.125,
+                "f06_score": 0.125,  # VKOSPI score
                 "f07_score": 0.10,
                 "f08_score": 0.10,
                 "f10_score": 0.10,
@@ -160,7 +160,7 @@ HTML_TMPL = Template(
     <div class="card">
       <h2>데이터 소스</h2>
       <div class="muted">
-        KRX OpenAPI: KOSPI 시리즈 일별시세정보(kospi_dd_trd)에서 IDX_NM='KOSPI 200' 행의 CLS_PRC를 종가로 사용. [Source](https://www.genspark.ai/api/files/s/KiCp9sYv)
+        VKOSPI(코스피 200 변동성지수)는 KRX OpenAPI 파생상품지수 시세정보에서 IDX_NM 필터로 수집 (종가=CLSPRC_IDX). [Source](https://www.genspark.ai/api/files/s/uX7923Iq)
       </div>
     </div>
   </div>
@@ -218,6 +218,17 @@ def main():
     usdkrw["usdkrw"] = pd.to_numeric(usdkrw["usdkrw"], errors="coerce")
     usdkrw = usdkrw.dropna(subset=["date", "usdkrw"]).sort_values("date").reset_index(drop=True)
 
+    # ---- VKOSPI level (mandatory for f06) ----
+    vko_path = Path(cfg.VKOSPI_LEVEL_PATH)
+    if not vko_path.exists():
+        raise RuntimeError(f"Missing {vko_path}. Workflow must run vkospi_fetch.py before daily_update.py")
+    vkospi = pd.read_parquet(vko_path)
+    vkospi = safe_to_datetime(vkospi, "date")
+    if "vkospi" not in vkospi.columns:
+        raise RuntimeError("vkospi_level.parquet missing 'vkospi' column")
+    vkospi["vkospi"] = pd.to_numeric(vkospi["vkospi"], errors="coerce")
+    vkospi = vkospi.dropna(subset=["date", "vkospi"]).sort_values("date").reset_index(drop=True)
+
     # ---- KOSPI200 Close from KRX OpenAPI (stable) ----
     api = KRXKospiIndexAPI.from_env()
     k200 = api.fetch_k200_close_range(start, today)
@@ -232,26 +243,35 @@ def main():
     f01 = factor1_momentum(k200)
     f02 = factor2_strength(start_str, end_str)
     f03 = factor3_breadth(start_str, end_str)
-    f06 = factor6_volatility(k200)
+
+    # (optional) keep realized volatility as alt raw (not used in index)
+    f06_alt = factor6_volatility(k200)
+    if f06_alt is not None and not f06_alt.empty and "f06_raw" in f06_alt.columns:
+        f06_alt = f06_alt.rename(columns={"f06_raw": "f06_alt_raw"})
+
     f07 = factor7_safe_haven(k200, usdkrw)
     f08 = factor8_foreign_netbuy(start_str, end_str)
 
-    for df in [f01, f02, f03, f06, f07, f08]:
+    for df in [f01, f02, f03, f06_alt, f07, f08]:
+        if df is None:
+            continue
         safe_to_datetime(df, "date")
 
     # ---- Factor4 Put/Call (recent refresh) ----
     f04 = fetch_putcall_ratio_by_date(start, today)
     f04 = safe_to_datetime(f04, "date")
 
+    # ---- Factor6 VKOSPI raw (level) ----
+    f06 = vkospi[["date", "vkospi"]].copy().rename(columns={"vkospi": "f06_raw"})
+
     # ---- Factor5/10 existing in index parquet (optional) ----
     f05f10 = load_existing_f05_f10(old)
 
-    # ---- Build base (NO duplicate merge => no _x/_y) ----
+    # ---- Build base ----
     base = k200[["date", "k200_close"]].copy()
-    for add in [f01, f02, f03, f04, f06, f07, f08, f05f10]:
+    for add in [f01, f02, f03, f04, f06, f06_alt, f07, f08, f05f10]:
         if add is None or add.empty:
             continue
-        # Defensive: if add contains k200_close too, drop it to avoid _x/_y
         if "k200_close" in add.columns and "k200_close" in base.columns:
             add = add.drop(columns=["k200_close"])
         base = base.merge(add, on="date", how="left")
@@ -265,7 +285,10 @@ def main():
     base["k200_fwd_10d_return"] = forward_return(base["k200_close"], 10)
     base["k200_fwd_10d_win"] = forward_win(base["k200_close"], 10)
 
-    # ---- Scores ----
+    # ---- Scores (Fear->Greed flip applied where needed) ----
+    # flip list: f04 (PCR), f05 (spread), f06 (VKOSPI), f07 (safehaven raw), f10 (fx vol) => 100 - percentile
+    flip_scores = {"f04_score", "f05_score", "f06_score", "f07_score", "f10_score"}
+
     for raw, score in [
         ("f01_raw", "f01_score"),
         ("f02_raw", "f02_score"),
@@ -279,7 +302,8 @@ def main():
     ]:
         if raw in base.columns:
             base[raw] = pd.to_numeric(base[raw], errors="coerce")
-            base[score] = rolling_percentile(base[raw], cfg.ROLLING_DAYS, cfg.MIN_OBS)
+            pct = rolling_percentile(base[raw], cfg.ROLLING_DAYS, cfg.MIN_OBS)
+            base[score] = 100.0 - pct if score in flip_scores else pct
         else:
             base[score] = np.nan
 
@@ -294,9 +318,7 @@ def main():
     # ---- Report ----
     last = out.dropna(subset=["index_score_total"]).tail(1)
     if last.empty:
-        today_date = "-"
-        today_score = "-"
-        today_bucket = "-"
+        today_date = today_score = today_bucket = "-"
         k3 = k5 = k7 = "-"
         idx3 = idx5 = idx7 = "-"
     else:
@@ -323,11 +345,11 @@ def main():
         ("f02_score", "F02"),
         ("f03_score", "F03"),
         ("f04_score", "F04 Put/Call"),
-        ("f05_score", "F05"),
-        ("f06_score", "F06"),
+        ("f05_score", "F05 Spread"),
+        ("f06_score", "F06 VKOSPI"),
         ("f07_score", "F07 SafeHaven"),
         ("f08_score", "F08 Foreign"),
-        ("f10_score", "F10"),
+        ("f10_score", "F10 FXVol"),
     ]:
         if c in out.columns:
             fig2.add_trace(go.Scatter(x=out["date"], y=out[c], mode="lines", name=n))
