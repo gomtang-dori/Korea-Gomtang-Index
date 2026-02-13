@@ -9,7 +9,10 @@ jobs:
   probe:
     runs-on: ubuntu-latest
     env:
-      SERVICE_KEY: ${{ secrets.SERVICE_KEY }}
+      KRX_AUTH_KEY: ${{ secrets.KRX_AUTH_KEY }}
+      KRX_EQSOP_URL: ${{ secrets.KRX_EQSOP_URL }}
+      KRX_EQKOP_URL: ${{ secrets.KRX_EQKOP_URL }}
+      KRX_BASDD: "20200414"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
