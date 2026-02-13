@@ -58,16 +58,16 @@ def pick_recent_business_day_kr(max_lookback_days: int = 30) -> tuple[str, list[
 
 
 def main():
-    out_path = Path(os.environ.get("K200_MEMBERS_PATH", "data/k200_members.csv"))
-    ensure_dir(out_path.parent)
-
-    asof, tickers = pick_recent_business_day_kr()
-
+    # ... 기존 로직 ...
+    # 코스피 200 구성 종목을 가져오는 정확한 방법 (지수 코드 '1028' 사용)
+    tickers = stock.get_index_portfolio_deposit_file(date, "1028")
+    
     if not tickers:
-        raise RuntimeError(
-            "Failed to fetch KOSPI200 members from pykrx (empty for last 30 days). "
-            "Check pykrx availability / index code / network."
-        )
+        # 지수 코드가 바뀌었을 경우를 대비한 대체 코드
+        tickers = stock.get_index_portfolio_deposit_file(date, "KOSPI 200")
+        
+    if not tickers:
+        raise RuntimeError("Failed to fetch KOSPI200 members...")
 
     # 종목명은 optional (속도/실패 방지)
     names = {}
