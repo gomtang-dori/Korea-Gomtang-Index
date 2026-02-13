@@ -25,7 +25,7 @@ class CFG:
     MIN_OBS: int = 252
     DATA_DIR: str = "data"
     USDKRW_LEVEL_PATH: str = "data/usdkrw_level.parquet"
-    K200_LOOKBACK_EXTRA_DAYS: int = 60  # holidays buffer in range calls
+    VKOSPI_LEVEL_PATH: str = "data/vkospi_level.parquet"
     W: dict = None
 
     def __post_init__(self):
@@ -112,9 +112,19 @@ def main():
     usdkrw["usdkrw"] = pd.to_numeric(usdkrw["usdkrw"], errors="coerce")
     usdkrw = usdkrw.dropna(subset=["date", "usdkrw"]).sort_values("date").reset_index(drop=True)
 
-    # ---- KOSPI200 Close from KRX OpenAPI (stable) ----
+    # ---- VKOSPI level mandatory ----
+    vko_path = Path(cfg.VKOSPI_LEVEL_PATH)
+    if not vko_path.exists():
+        raise RuntimeError(f"Missing {vko_path}. Backfill workflow must run vkospi_fetch.py first.")
+    vkospi = pd.read_parquet(vko_path)
+    vkospi = safe_to_datetime(vkospi, "date")
+    if "vkospi" not in vkospi.columns:
+        raise RuntimeError("vkospi_level.parquet missing 'vkospi'")
+    vkospi["vkospi"] = pd.to_numeric(vkospi["vkospi"], errors="coerce")
+    vkospi = vkospi.dropna(subset=["date", "vkospi"]).sort_values("date").reset_index(drop=True)
+
+    # ---- KOSPI200 close ----
     api = KRXKospiIndexAPI.from_env()
-    # For backfill, call per-day across years (may take time). It's the most stable method.
     k200 = api.fetch_k200_close_range(start, end)
     k200 = safe_to_datetime(k200, "date")
     k200["k200_close"] = pd.to_numeric(k200.get("k200_close"), errors="coerce")
@@ -127,16 +137,26 @@ def main():
     f01 = factor1_momentum(k200)
     f02 = factor2_strength(start_str, end_str)
     f03 = factor3_breadth(start_str, end_str)
-    f06 = factor6_volatility(k200)
+
+    # keep realized vol as alt raw
+    f06_alt = factor6_volatility(k200)
+    if f06_alt is not None and not f06_alt.empty and "f06_raw" in f06_alt.columns:
+        f06_alt = f06_alt.rename(columns={"f06_raw": "f06_alt_raw"})
+
     f07 = factor7_safe_haven(k200, usdkrw)
     f08 = factor8_foreign_netbuy(start_str, end_str)
 
-    for df in [f01, f02, f03, f06, f07, f08]:
+    for df in [f01, f02, f03, f06_alt, f07, f08]:
+        if df is None:
+            continue
         safe_to_datetime(df, "date")
 
     # ---- Put/Call full window ----
     f04 = fetch_putcall_ratio_by_date(pd.to_datetime(start), pd.to_datetime(end))
     f04 = safe_to_datetime(f04, "date")
+
+    # ---- VKOSPI raw (level) ----
+    f06 = vkospi[["date", "vkospi"]].copy().rename(columns={"vkospi": "f06_raw"})
 
     # ---- Existing f05/f10 from existing index (optional) ----
     index_path = Path(cfg.DATA_DIR) / "index_daily.parquet"
@@ -145,7 +165,7 @@ def main():
     f05f10 = load_existing_f05_f10(old)
 
     base = k200[["date", "k200_close"]].copy()
-    for add in [f01, f02, f03, f04, f06, f07, f08, f05f10]:
+    for add in [f01, f02, f03, f04, f06, f06_alt, f07, f08, f05f10]:
         if add is None or add.empty:
             continue
         if "k200_close" in add.columns and "k200_close" in base.columns:
@@ -160,7 +180,9 @@ def main():
     base["k200_fwd_10d_return"] = forward_return(base["k200_close"], 10)
     base["k200_fwd_10d_win"] = forward_win(base["k200_close"], 10)
 
-    # ---- Scores ----
+    # ---- Scores with flips ----
+    flip_scores = {"f04_score", "f05_score", "f06_score", "f07_score", "f10_score"}
+
     for raw, score in [
         ("f01_raw", "f01_score"),
         ("f02_raw", "f02_score"),
@@ -174,7 +196,8 @@ def main():
     ]:
         if raw in base.columns:
             base[raw] = pd.to_numeric(base[raw], errors="coerce")
-            base[score] = rolling_percentile(base[raw], cfg.ROLLING_DAYS, cfg.MIN_OBS)
+            pct = rolling_percentile(base[raw], cfg.ROLLING_DAYS, cfg.MIN_OBS)
+            base[score] = 100.0 - pct if score in flip_scores else pct
         else:
             base[score] = np.nan
 
