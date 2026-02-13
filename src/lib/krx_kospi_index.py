@@ -7,6 +7,7 @@ from typing import Optional, Iterable
 
 import pandas as pd
 import requests
+import json
 
 
 @dataclass
