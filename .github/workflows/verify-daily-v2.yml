@@ -1,6 +1,4 @@
-name: Daily v2 - Verify
-
-
+name: verify_daily_v2
 
 on:
   workflow_dispatch:
@@ -29,6 +27,7 @@ on:
         description: "Python version"
         required: true
         default: "3.11"
+
 
 jobs:
   verify:
