@@ -30,7 +30,9 @@ def main():
     min_obs = int(os.environ.get("MIN_OBS", "252"))            # 최소 1년
 
     if not cache_path.exists():
-        raise RuntimeError(f"Missing {cache_path}. Run cache_usdkrw_level_fdr first.")
+        raise RuntimeError(
+            f"Missing {cache_path}. Run usdkrw_fetch.py (ECOS) first or set USDKRW_CACHE_PATH correctly."
+        )
 
     df = pd.read_parquet(cache_path)
     if "date" not in df.columns:
