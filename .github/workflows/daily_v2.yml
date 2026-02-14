@@ -163,6 +163,44 @@ jobs:
           PUTCALL_CACHE_PATH: data/cache/putcall_ratio.parquet
           RATES_3Y_BUNDLE_PATH: data/cache/rates_3y_bundle.parquet
           F07_HORIZON_DAYS: "20"
+        run: |
+          set -e
+          export PYTHONPATH=src
+          python src/factors/f01_momentum.py
+          python src/factors/f04_putcall.py
+          python src/factors/f06_vkospi.py
+          python src/factors/f08_foreigner_flow.py
+          python src/factors/f09_margin_ratio.py
+          python src/factors/f10_fxvol.py
+
+          
+      - name: Cache Adv/Dec daily (KRX -> SQLite)
+        env:
+          # SQLite는 커밋하지 않고 런타임 캐시로만 사용
+          ADVDEC_DB_PATH: data/cache/adv_dec_daily.sqlite
+          ADVDEC_MODE: incremental
+          ADVDEC_BLD: dbms/MDC/STAT/standard/MDCSTAT01602
+          ADVDEC_REFERER: https://data.krx.co.kr/contents/MDC/MDI/mdiLoader/index.cmd?menuId=MDC0201020102
+        run: |
+          set -e
+          export PYTHONPATH=src
+          python src/caches/cache_adv_dec_daily_krx_sqlite.py
+          
+      - name: Calculate Factors (F02,F03) from adv/dec SQLite
+        env:
+          ADVDEC_DB_PATH: data/cache/adv_dec_daily.sqlite
+          ROLLING_DAYS: "1260"
+          MIN_OBS: "252"
+          F02_PATH: data/factors/f02.parquet
+          F03_PATH: data/factors/f03.parquet
+        run: |
+          set -e
+          export PYTHONPATH=src
+          python src/factors/f02_strength.py
+          python src/factors/f03_breadth.py
+
+          
+        
 
         run: |
           set -e
@@ -196,5 +234,5 @@ jobs:
           set -e
           git config user.name "github-actions"
           git config user.email "github-actions@github.com"
-          git add data/cache/ data/factors/ data/index_daily.* docs/index.html || true
+          git add data/factors/ data/index_daily.* docs/index.html || true
           git diff --quiet && git diff --staged --quiet || (git commit -m "Daily update $(date +%Y-%m-%d)" && git push)
