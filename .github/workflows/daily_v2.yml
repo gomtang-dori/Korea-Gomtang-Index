@@ -1,9 +1,9 @@
 name: daily_v2
 
 on:
-  workflow_dispatch:  # 수동 실행 버튼 활성화
+  workflow_dispatch:
   schedule:
-    - cron: "15 1 * * 1-5"  # 평일 한국시간 오전 10:15 (UTC 01:15)
+    - cron: "15 1 * * 1-5"  # 평일 UTC 01:15
 
 jobs:
   daily:
@@ -16,40 +16,38 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: "3.11" #
+          python-version: "3.11"
 
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
           pip install --upgrade setuptools wheel
-          # 패키지 명칭 오타 수정: finance-datareader
-          pip install pykrx pandas pandas-datareader finance-datareader pyarrow fastparquet jinja2 plotly requests
+          pip install -r requirements.txt
 
       - name: Set date range
         run: |
-          # 어제(영업일 기준 안전)와 30일 전 날짜 계산
-          # 주말 실행 시 에러 방지를 위해 하루 전(금요일)을 종료일로 설정
           END=$(date -u -d '1 day ago' +%Y%m%d)
           START=$(date -u -d '31 days ago' +%Y%m%d)
-          
+
           echo "BACKFILL_END=$END" >> $GITHUB_ENV
           echo "BACKFILL_START=$START" >> $GITHUB_ENV
           echo "CACHE_BUFFER_DAYS=450" >> $GITHUB_ENV
-          
+
           echo "[date_range] START=$START END=$END"
 
       # -------------------------
-      # 데이터 수집 (Caches)
+      # caches
       # -------------------------
 
-      - name: Cache K200 close (FDR 사용으로 '지수명' 에러 우회)
+      - name: Cache K200 close (FDR: KS200)
         env:
           BACKFILL_START: ${{ env.BACKFILL_START }}
           BACKFILL_END: ${{ env.BACKFILL_END }}
           CACHE_BUFFER_DAYS: ${{ env.CACHE_BUFFER_DAYS }}
-          F01_MADAYS: "125"
           K200_CACHE_PATH: data/cache/k200_close.parquet
+          K200_SYMBOL: "KS200"
         run: |
+          set -e
           export PYTHONPATH=src
           python src/caches/cache_k200_close_fdr.py
 
@@ -58,7 +56,7 @@ jobs:
           ECOS_KEY: ${{ secrets.ECOS_KEY }}
           ECOS_USDKRW_STAT_CODE: ${{ secrets.ECOS_USDKRW_STAT_CODE }}
           ECOS_USDKRW_ITEM_CODE1: ${{ secrets.ECOS_USDKRW_ITEM_CODE1 }}
-          # 아래 1개는 필요하면만 추가(usdkrw_fetch.py가 요구할 때)
+          # 필요 시만 추가:
           # ECOS_USDKRW_CYCLE: ${{ secrets.ECOS_USDKRW_CYCLE }}
         run: |
           set -e
@@ -74,32 +72,63 @@ jobs:
           export PYTHONPATH=src
           python src/vkospi_fetch.py
 
-
-      # -------------------------
-      # 분석 알고리즘 실행 (버피 기업분석 1번, CAN SLIM 2번)
-      # -------------------------
-
-      - name: Calculate Factors (Momentum, Put/Call, VKOSPI)
+      - name: Cache Put/Call (recent)
+        env:
+          KRX_AUTH_KEY: ${{ secrets.KRX_AUTH_KEY }}
+          KRX_EQSOP_URL: ${{ secrets.KRX_EQSOP_URL }}
+          KRX_EQKOP_URL: ${{ secrets.KRX_EQKOP_URL }}
+          BACKFILL_START: ${{ env.BACKFILL_START }}
+          BACKFILL_END: ${{ env.BACKFILL_END }}
+          PUTCALL_CACHE_PATH: data/cache/putcall_ratio.parquet
         run: |
+          set -e
+          export PYTHONPATH=src
+          python src/caches/cache_putcall.py
+
+      # -------------------------
+      # factors (fail fast)
+      # -------------------------
+
+      - name: Calculate Factors (F01=MA125 on KS200 / F04 / F06 / F10) - fail fast
+        env:
+          ROLLING_DAYS: "1260"
+          MIN_OBS: "252"
+
+          # ✅ F01
+          F01_MA_DAYS: "125"
+          K200_CACHE_PATH: data/cache/k200_close.parquet
+
+          # ✅ F04
+          PUTCALL_CACHE_PATH: data/cache/putcall_ratio.parquet
+
+          # ✅ F10
+          USDKRW_CACHE_PATH: data/cache/usdkrw_level.parquet
+          VOL_WINDOW_DAYS: "20"
+        run: |
+          set -e
           export PYTHONPATH=src
           python src/factors/f01_momentum.py
           python src/factors/f04_putcall.py
           python src/factors/f06_vkospi.py
+          python src/factors/f10_fxvol.py
 
       - name: Assemble & Report Generation
         run: |
+          set -e
           export PYTHONPATH=src
           python src/assemble/assemble_index.py
           python src/report/render_report.py
 
-      # -------------------------
-      # 결과 저장 및 푸시
-      # -------------------------
+      - name: Convert parquet to CSV (index_daily)
+        run: |
+          set -e
+          export PYTHONPATH=src
+          python src/parquet_to_csv.py
 
       - name: Commit & push outputs
         run: |
+          set -e
           git config user.name "github-actions"
           git config user.email "github-actions@github.com"
           git add data/cache/ data/factors/ data/index_daily.* docs/index.html || true
-          # 변경사항이 실제 있을 때만 커밋하여 불필요한 실패 방지
           git diff --quiet && git diff --staged --quiet || (git commit -m "Daily update $(date +%Y-%m-%d)" && git push)
