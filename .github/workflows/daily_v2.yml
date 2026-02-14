@@ -61,15 +61,14 @@ jobs:
           export PYTHONPATH=src
           python src/caches/cache_putcall.py
 
-      - name: Cache K200 close (recent+buffer)
+      # ✅ 핵심 변경: K200 close를 pykrx로 기간 조회 (일별 호출 제거)
+      - name: Cache K200 close (recent+buffer) [pykrx]
         env:
-          KRX_AUTH_KEY: ${{ secrets.KRX_AUTH_KEY }}
-          KRX_KOSPI_DD_TRD_URL: ${{ secrets.KRX_KOSPI_DD_TRD_URL }}
           BACKFILL_START: ${{ env.BACKFILL_START }}
           BACKFILL_END: ${{ env.BACKFILL_END }}
           CACHE_BUFFER_DAYS: ${{ env.CACHE_BUFFER_DAYS }}
           K200_CACHE_PATH: data/cache/k200_close.parquet
-          PROGRESS_EVERY_N_DAYS: "25"
+          K200_INDEX_CODE: "1028"   # KOSPI200
         run: |
           export PYTHONPATH=src
           python src/caches/cache_k200_close.py
@@ -95,6 +94,7 @@ jobs:
           USDKRW_CACHE_PATH: data/cache/usdkrw_level.parquet
           VOL_WINDOW_DAYS: "20"
         run: |
+          set -e
           export PYTHONPATH=src
           python src/factors/f01_momentum.py
           python src/factors/f04_putcall.py
@@ -107,23 +107,27 @@ jobs:
 
       - name: Assemble index
         run: |
+          set -e
           export PYTHONPATH=src
           python src/assemble/assemble_index.py
 
       - name: Render report
         run: |
+          set -e
           export PYTHONPATH=src
           python src/report/render_report.py
 
       - name: Convert parquet to CSV (index_daily)
         run: |
+          set -e
           export PYTHONPATH=src
           python src/parquet_to_csv.py
 
       - name: Commit & push outputs
         run: |
+          set -e
           git config user.name "github-actions"
           git config user.email "github-actions@github.com"
           git add data/cache data/factors data/index_daily.parquet data/index_daily.csv docs/index.html || true
-          git commit -m "Daily v2 update (F01=MA125 + F04 + F06 + F10)" || echo "No changes"
+          git commit -m "Daily v2 update (pykrx K200 close + F01=MA125 + F04 + F06 + F10)" || echo "No changes"
           git push
