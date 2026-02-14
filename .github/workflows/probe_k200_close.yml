@@ -1,0 +1,39 @@
+name: probe_k200_close
+
+on:
+  workflow_dispatch:
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Set date range (force safe)
+        run: |
+          END=$(date -u -d '1 day ago' +%Y%m%d)
+          START=$(date -u -d '31 days ago' +%Y%m%d)
+          echo "BACKFILL_END=$END" >> $GITHUB_ENV
+          echo "BACKFILL_START=$START" >> $GITHUB_ENV
+          echo "CACHE_BUFFER_DAYS=450" >> $GITHUB_ENV
+          echo "[date_range] $START ~ $END"
+
+      - name: Cache K200 close only
+        env:
+          BACKFILL_START: ${{ env.BACKFILL_START }}
+          BACKFILL_END: ${{ env.BACKFILL_END }}
+          CACHE_BUFFER_DAYS: ${{ env.CACHE_BUFFER_DAYS }}
+          K200_CACHE_PATH: data/cache/k200_close.parquet
+          K200_INDEX_CODE: "1028"
+        run: |
+          set -e
+          export PYTHONPATH=src
+          python src/caches/cache_k200_close.py
