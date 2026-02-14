@@ -114,6 +114,7 @@ jobs:
           VOL_WINDOW_DAYS: "20"
           K200_CACHE_PATH: data/cache/k200_close.parquet
           USDKRW_CACHE_PATH: data/usdkrw_level.parquet
+          VKOSPI_CACHE_PATH: data/vkospi_level.parquet
         run: |
           set -e
           export PYTHONPATH=src
@@ -121,6 +122,7 @@ jobs:
           python src/factors/f04_putcall.py
           python src/factors/f06_vkospi.py
           python src/factors/f10_fxvol.py
+
 
       - name: Assemble & Report Generation
         run: |
