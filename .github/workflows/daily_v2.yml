@@ -130,7 +130,7 @@ jobs:
       
               
       
-      - name: Calculate Factors (F01,F04,F06,F10)
+      - name: Calculate Factors (F01,F04,F06,F08,F09,F10)
         env:
           ROLLING_DAYS: "1260"
           MIN_OBS: "252"
