@@ -21,21 +21,39 @@ def _as_yyyymmdd(d: pd.Timestamp) -> str:
     return d.strftime("%Y%m%d")
 
 
+def _to_naive_utc(ts: pd.Timestamp) -> pd.Timestamp:
+    """tz-aware/naive 혼재 방지: 항상 tz-naive(UTC 기준)로 통일"""
+    if getattr(ts, "tzinfo", None) is not None:
+        ts = ts.tz_convert("UTC").tz_localize(None)
+    return ts
+
+
 def main():
     out_path = Path(os.environ.get("K200_CACHE_PATH", "data/cache/k200_close.parquet"))
     index_code = os.environ.get("K200_INDEX_CODE", "1028")  # KOSPI200
 
+    # 입력 날짜 파싱 (대부분 tz-naive로 들어오지만, 방어적으로 통일)
     backfill_start = pd.to_datetime(_env("BACKFILL_START"), format="%Y%m%d", errors="raise")
     backfill_end = pd.to_datetime(_env("BACKFILL_END"), format="%Y%m%d", errors="raise")
+    backfill_start = _to_naive_utc(backfill_start).normalize()
+    backfill_end = _to_naive_utc(backfill_end).normalize()
+
     buffer_days = int(os.environ.get("CACHE_BUFFER_DAYS", "450"))
 
+    # "오늘"은 장중/주말/휴일 문제를 줄이기 위해 기본은 "어제(UTC)"로 둠
+    today_utc = pd.Timestamp.utcnow().tz_localize(None).normalize()
+    safe_end = today_utc - pd.Timedelta(days=1)
+
+    # 미래 end 방지 (여기서 backfill_end를 먼저 클램프하고, 이후 end를 계산해야 함)
+    if backfill_end > safe_end:
+        print(
+            f"[cache_k200_close:pykrx] WARN: BACKFILL_END {backfill_end:%Y%m%d} > safe_end {safe_end:%Y%m%d}. clamp to safe_end."
+        )
+        backfill_end = safe_end
+
+    # 이제 start/end 계산 (클램프 반영됨)
     start = (backfill_start - pd.Timedelta(days=buffer_days)).normalize()
     end = backfill_end.normalize()
-    today = pd.Timestamp.utcnow().normalize()
-    if backfill_end > today:
-        print(f"[cache_k200_close:pykrx] WARN: BACKFILL_END {backfill_end:%Y%m%d} > today {today:%Y%m%d}. clamp to today.")
-        backfill_end = today
-
 
     start_s = _as_yyyymmdd(start)
     end_s = _as_yyyymmdd(end)
@@ -45,35 +63,45 @@ def main():
     # --- 핵심: pykrx 내부 '지수명' 매핑(KeyError) 우회 ---
     # pykrx가 IndexTicker().get_name() 호출에 실패하면 KeyError('지수명')로 죽는 케이스가 있음.
     # 우리는 지수명은 필요 없으므로, get_index_ticker_name을 안전한 fallback으로 바꾼다.
+    # 관련 이슈 보고: [Source](https://github.com/sharebook-kr/pykrx/issues/229)
     try:
         import pykrx.stock.stock_api as stock_api
+
         _orig = stock_api.get_index_ticker_name
 
         def _safe_get_index_ticker_name(ticker: str) -> str:
             try:
                 return _orig(ticker)
-            except Exception as e:
-                # 이름 못 가져와도 데이터는 충분함. columns.name만 대체 문자열로.
+            except Exception:
                 return f"INDEX_{ticker}"
 
         stock_api.get_index_ticker_name = _safe_get_index_ticker_name
         print("[cache_k200_close:pykrx] patched get_index_ticker_name() to avoid KeyError('지수명')")
     except Exception as e:
-        # 패치 실패해도 일단 시도는 해보되, 여기서 실패하면 원인 로그 확인
         print(f"[cache_k200_close:pykrx] WARN: patch failed: {type(e).__name__}: {e}")
 
-    # 기간 한 번에 조회 (월/분기보다 더 강력: 전체기간 1~수회 호출)
+    # 기간 한 번에 조회
     df = stock.get_index_ohlcv(start_s, end_s, index_code)
+
+    # empty면 날짜를 하루씩 뒤로 당겨 3회 재시도 (휴일/당일 미반영/일시적 문제 방어)
+    if df is None or len(df) == 0:
+        print(f"[cache_k200_close:pykrx] WARN: empty result on {start_s}~{end_s}, retry by shifting end back")
+        for k in (1, 2, 3):
+            end_retry = (end - pd.Timedelta(days=k)).normalize()
+            end_retry_s = _as_yyyymmdd(end_retry)
+            print(f"[cache_k200_close:pykrx] retry{k}: range={start_s}~{end_retry_s}")
+            df = stock.get_index_ohlcv(start_s, end_retry_s, index_code)
+            if df is not None and len(df) > 0:
+                end_s = end_retry_s
+                end = end_retry
+                break
+
     if df is None or len(df) == 0:
         raise RuntimeError(f"[cache_k200_close:pykrx] empty result index_code={index_code} range={start_s}~{end_s}")
 
-    # pykrx index ohlcv는 인덱스가 날짜 형태로 들어오므로 reset_index
     df = df.reset_index()
-
-    # 첫 컬럼이 날짜
     date_col = df.columns[0]
 
-    # 종가 컬럼 탐색 (pykrx 문서 예시 기준으로 한글/영문 혼재 가능)
     close_col = None
     for c in ["종가", "Close", "종가 "]:
         if c in df.columns:
