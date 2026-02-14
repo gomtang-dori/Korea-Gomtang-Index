@@ -26,14 +26,13 @@ jobs:
           echo "CACHE_BUFFER_DAYS=450" >> $GITHUB_ENV
           echo "[date_range] $START ~ $END"
 
-      - name: Cache K200 close only
+      - name: Probe K200 OHLCV (pykrx, last 7 trading days)
         env:
-          BACKFILL_START: ${{ env.BACKFILL_START }}
-          BACKFILL_END: ${{ env.BACKFILL_END }}
-          CACHE_BUFFER_DAYS: ${{ env.CACHE_BUFFER_DAYS }}
-          K200_CACHE_PATH: data/cache/k200_close.parquet
           K200_INDEX_CODE: "1028"
+          DAYS: "7"
+          OUT_PATH: data/cache/probe_k200_ohlcv_pykrx.parquet
         run: |
           set -e
           export PYTHONPATH=src
-          python src/caches/cache_k200_close.py
+          python src/caches/probe_k200_ohlcv_pykrx.py
+
