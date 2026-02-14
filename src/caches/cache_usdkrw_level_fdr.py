@@ -51,12 +51,9 @@ def main():
     if "Close" not in df.columns:
         raise RuntimeError(f"[cache_usdkrw:fdr] cannot find Close. cols={list(df.columns)}")
 
-    out = (
-        df[["Close"]]
-        .rename(columns={"Close": "usdkrw"})
-        .reset_index()
-        .rename(columns={"Date": "date"})
-    )
+    out = df[["Close"]].rename(columns={"Close": "usdkrw"}).reset_index()
+    out.columns = [str(c).lower() for c in out.columns]
+    
     out["date"] = pd.to_datetime(out["date"], errors="coerce")
     out["usdkrw"] = pd.to_numeric(out["usdkrw"], errors="coerce")
     out = out.dropna(subset=["date", "usdkrw"]).sort_values("date").reset_index(drop=True)
