@@ -47,7 +47,8 @@ def _fetch_series(ecos_key: str, stat_code: str, cycle: str,
     )
     if df is None or df.empty:
         raise RuntimeError(f"[cache_rates_3y] empty series item_code1={item_code1}")
-    # fetch_ecos_statisticsearch는 value 컬럼명이 usdkrw로 고정이므로 value로 통일
+
+    # fetch_ecos_statisticsearch의 value 컬럼명이 usdkrw로 고정 → 캐시에서만 rename (요청사항)
     df = df.rename(columns={"usdkrw": "value"})[["date", "value"]].copy()
     df["value"] = pd.to_numeric(df["value"], errors="coerce")
     df = df.dropna(subset=["date", "value"]).sort_values("date").reset_index(drop=True)
@@ -62,7 +63,7 @@ def main():
     stat_code = (os.environ.get("RATES_STAT_CODE") or "817Y002").strip()
     cycle = (os.environ.get("RATES_CYCLE") or "D").strip()
 
-    # 사용자 제공 코드(권장 기본값)
+    # 기본값을 코드로 박아두되, env로도 override 가능
     code_k_tb3y = (os.environ.get("ECOS_KTB3Y_ITEM_CODE1") or "010200000").strip()
     code_corp_aa = (os.environ.get("ECOS_CORP3Y_AA_ITEM_CODE1") or "010300000").strip()
     code_corp_bbb = (os.environ.get("ECOS_CORP3Y_BBB_ITEM_CODE1") or "010320000").strip()
@@ -97,12 +98,10 @@ def main():
                 old[c] = pd.to_numeric(old[c], errors="coerce")
 
     merged = upsert(old, merged_new)
-
     merged.to_parquet(out_path, index=False)
     merged.to_csv(out_path.with_suffix(".csv"), index=False, encoding="utf-8-sig")
 
     print(f"[cache_rates_3y] OK rows={len(merged)} -> {out_path}")
-    print("[cache_rates_3y] tail:")
     print(merged.tail(5).to_string(index=False))
 
 
