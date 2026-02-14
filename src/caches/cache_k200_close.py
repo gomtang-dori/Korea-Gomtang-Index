@@ -2,11 +2,10 @@
 from __future__ import annotations
 
 import os
-import time
 from pathlib import Path
 
 import pandas as pd
-import requests
+from pykrx import stock
 
 
 def _env(name: str, default: str | None = None) -> str:
@@ -22,50 +21,9 @@ def _as_yyyymmdd(d: pd.Timestamp) -> str:
     return d.strftime("%Y%m%d")
 
 
-def fetch_index_ohlcv_krx_direct(start_yyyymmdd: str, end_yyyymmdd: str, idx_code: str) -> pd.DataFrame:
-    """
-    KRX 지수 OHLCV를 기간으로 반환하는 웹 엔드포인트를 직접 호출.
-    pykrx 내부의 IndexTicker().get_name() (지수명 매핑) 단계를 우회하기 위함.
-    """
-    # KRX가 쓰는 지수 조회 엔드포인트(웹) - pykrx가 내부적으로 접근하는 계열을 직접 사용
-    url = "https://data.krx.co.kr/comm/bldAttendant/getJsonData.cmd"
-
-    headers = {
-        "User-Agent": "Mozilla/5.0",
-        "Referer": "https://data.krx.co.kr/",
-    }
-
-    # NOTE: 이 bld 값은 KOSPI/KOSDAQ/기타 지수별로 다를 수 있습니다.
-    # KOSPI200은 통상 '전체지수 > KOSPI200' 경로에서 동일 폼으로 내려옵니다.
-    # 만약 아래 bld로 빈 값이 오면, (A) 제가 다음 단계에서 bld를 자동탐색하도록 바꿔드릴게요.
-    data = {
-        "bld": "dbms/MDC/STAT/standard/MDCSTAT00301",  # 지수 시세(일별) 계열에서 흔히 쓰이는 bld
-        "locale": "ko_KR",
-        "idxIndMidclssCd": "01",      # (대분류) KOSPI 계열로 맞추는 값(환경에 따라 필요/불필요)
-        "idxIndCd": idx_code,         # 1028
-        "strtDd": start_yyyymmdd,
-        "endDd": end_yyyymmdd,
-        "share": "1",
-        "money": "1",
-        "csvxls_isNo": "false",
-    }
-
-    r = requests.post(url, data=data, headers=headers, timeout=30)
-    r.raise_for_status()
-    j = r.json()
-
-    # KRX JSON은 보통 "output" 키로 내려옵니다.
-    rows = j.get("output") or j.get("Output") or []
-    if not rows:
-        raise RuntimeError(f"[cache_k200_close:direct] empty output (bld mismatch?) idx_code={idx_code} range={start_yyyymmdd}~{end_yyyymmdd}")
-
-    df = pd.DataFrame(rows)
-    return df
-
-
 def main():
     out_path = Path(os.environ.get("K200_CACHE_PATH", "data/cache/k200_close.parquet"))
-    idx_code = os.environ.get("K200_INDEX_CODE", "1028")  # KOSPI200
+    index_code = os.environ.get("K200_INDEX_CODE", "1028")  # KOSPI200
 
     backfill_start = pd.to_datetime(_env("BACKFILL_START"), format="%Y%m%d", errors="raise")
     backfill_end = pd.to_datetime(_env("BACKFILL_END"), format="%Y%m%d", errors="raise")
@@ -77,19 +35,47 @@ def main():
     start_s = _as_yyyymmdd(start)
     end_s = _as_yyyymmdd(end)
 
-    print(f"[cache_k200_close:pykrx-bypass] fetch idx_code={idx_code} range={start_s}~{end_s}")
+    print(f"[cache_k200_close:pykrx] fetch index_code={index_code} range={start_s}~{end_s}")
 
-    # 1회 호출
-    df = fetch_index_ohlcv_krx_direct(start_s, end_s, idx_code)
+    # --- 핵심: pykrx 내부 '지수명' 매핑(KeyError) 우회 ---
+    # pykrx가 IndexTicker().get_name() 호출에 실패하면 KeyError('지수명')로 죽는 케이스가 있음.
+    # 우리는 지수명은 필요 없으므로, get_index_ticker_name을 안전한 fallback으로 바꾼다.
+    try:
+        import pykrx.stock.stock_api as stock_api
+        _orig = stock_api.get_index_ticker_name
 
-    # 컬럼명은 환경마다 한글/영문/약어로 달라질 수 있어 후보를 넓게 둠
-    date_candidates = ["TRD_DD", "BAS_DD", "일자", "날짜", "date"]
-    close_candidates = ["CLSPRC_IDX", "종가", "close", "종가_지수", "종가 "]
+        def _safe_get_index_ticker_name(ticker: str) -> str:
+            try:
+                return _orig(ticker)
+            except Exception as e:
+                # 이름 못 가져와도 데이터는 충분함. columns.name만 대체 문자열로.
+                return f"INDEX_{ticker}"
 
-    date_col = next((c for c in date_candidates if c in df.columns), None)
-    close_col = next((c for c in close_candidates if c in df.columns), None)
-    if date_col is None or close_col is None:
-        raise RuntimeError(f"[cache_k200_close:pykrx-bypass] cannot map columns. cols={list(df.columns)}")
+        stock_api.get_index_ticker_name = _safe_get_index_ticker_name
+        print("[cache_k200_close:pykrx] patched get_index_ticker_name() to avoid KeyError('지수명')")
+    except Exception as e:
+        # 패치 실패해도 일단 시도는 해보되, 여기서 실패하면 원인 로그 확인
+        print(f"[cache_k200_close:pykrx] WARN: patch failed: {type(e).__name__}: {e}")
+
+    # 기간 한 번에 조회 (월/분기보다 더 강력: 전체기간 1~수회 호출)
+    df = stock.get_index_ohlcv(start_s, end_s, index_code)
+    if df is None or len(df) == 0:
+        raise RuntimeError(f"[cache_k200_close:pykrx] empty result index_code={index_code} range={start_s}~{end_s}")
+
+    # pykrx index ohlcv는 인덱스가 날짜 형태로 들어오므로 reset_index
+    df = df.reset_index()
+
+    # 첫 컬럼이 날짜
+    date_col = df.columns[0]
+
+    # 종가 컬럼 탐색 (pykrx 문서 예시 기준으로 한글/영문 혼재 가능)
+    close_col = None
+    for c in ["종가", "Close", "종가 "]:
+        if c in df.columns:
+            close_col = c
+            break
+    if close_col is None:
+        raise RuntimeError(f"[cache_k200_close:pykrx] cannot find close column in {list(df.columns)}")
 
     out = pd.DataFrame(
         {
@@ -98,7 +84,7 @@ def main():
         }
     ).dropna(subset=["date", "k200_close"]).sort_values("date").reset_index(drop=True)
 
-    # 기존 파일과 upsert (중복 date는 최신으로 덮기)
+    # 기존 파일과 upsert
     if out_path.exists():
         old = pd.read_parquet(out_path)
         old["date"] = pd.to_datetime(old["date"], errors="coerce")
@@ -111,7 +97,7 @@ def main():
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
     merged.to_parquet(out_path, index=False)
-    print(f"[cache_k200_close:pykrx-bypass] OK rows={len(merged)} -> {out_path}")
+    print(f"[cache_k200_close:pykrx] OK rows={len(merged)} -> {out_path}")
 
 
 if __name__ == "__main__":
