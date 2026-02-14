@@ -21,10 +21,8 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install --upgrade setuptools wheel
-          # 패키지 명칭 오타 수정: finance-datareader
-          pip install pykrx pandas pandas-datareader finance-datareader pyarrow fastparquet jinja2 plotly requests
-
+          pip install -r requirements.txt
+          
       - name: Set date range
         run: |
           # 어제(영업일 기준 안전)와 30일 전 날짜 계산
@@ -86,18 +84,17 @@ jobs:
           set -e
           export PYTHONPATH=src
           python src/caches/cache_putcall.py
-      
-      - name: Cache USD/KRW (FDR)
-        env:
-          BACKFILL_START: ${{ env.BACKFILL_START }}
-          BACKFILL_END: ${{ env.BACKFILL_END }}
-          CACHE_BUFFER_DAYS: ${{ env.CACHE_BUFFER_DAYS }}
-          USDKRW_CACHE_PATH: data/cache/usdkrw_level.parquet
+
+      - name: Sanity check caches exist
         run: |
           set -e
-          export PYTHONPATH=src
-          python src/caches/cache_usdkrw_level_fdr.py
-          
+          ls -lah data/cache || true
+          test -f data/cache/k200_close.parquet
+          test -f data/cache/usdkrw_level.parquet
+          test -f data/cache/vkospi_level.parquet
+          test -f data/cache/putcall_ratio.parquet
+        
+      
       - name: Calculate Factors (F01,F04,F06,F10)
         env:
           ROLLING_DAYS: "1260"
