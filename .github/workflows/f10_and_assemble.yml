@@ -42,6 +42,7 @@ jobs:
           ECOS_KEY: ${{ secrets.ECOS_KEY }}
           ECOS_USDKRW_STAT_CODE: ${{ secrets.ECOS_USDKRW_STAT_CODE }}
           ECOS_USDKRW_ITEM_CODE1: ${{ secrets.ECOS_USDKRW_ITEM_CODE1 }}
+          USDKRW_REFRESH_DAYS: "2000"
           # 필요 시:
           # ECOS_USDKRW_CYCLE: "D"
         run: |
@@ -68,6 +69,17 @@ jobs:
           set -e
           export PYTHONPATH=src
           python src/factors/f10_fxvol.py
+          
+      - name: Debug USDKRW rows
+        run: |
+          set -e
+          python - << 'PY'
+          import pandas as pd
+          df = pd.read_parquet("data/usdkrw_level.parquet")
+          print("usdkrw rows =", len(df))
+          print("date min/max =", df["date"].min(), df["date"].max())
+          print(df.tail(3).to_string(index=False))
+          PY  
 
       # F10이 비어있으면(0 rows) assemble/index 갱신해도 의미가 없으니 여기서 실패 처리
       - name: Validate F10 output (fail if empty)
