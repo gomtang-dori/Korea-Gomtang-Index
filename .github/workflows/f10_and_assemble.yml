@@ -69,17 +69,16 @@ jobs:
           set -e
           export PYTHONPATH=src
           python src/factors/f10_fxvol.py
+      - name: Debug F10 parquet after compute
+        run: |
+          set -e
+          python -c "import pandas as pd; import pathlib as p; fp=p.Path('data/factors/f10.parquet'); print('exists:', fp.exists()); df=pd.read_parquet(fp) if fp.exists() else None; print('f10 rows =', 0 if df is None else len(df)); print(df.tail(5).to_string(index=False) if df is not None and len(df)>0 else 'EMPTY')"
+          
           
       - name: Debug USDKRW rows
         run: |
           set -e
-          python - << 'PY'
-          import pandas as pd
-          df = pd.read_parquet("data/usdkrw_level.parquet")
-          print("usdkrw rows =", len(df))
-          print("date min/max =", df["date"].min(), df["date"].max())
-          print(df.tail(3).to_string(index=False))
-          PY  
+          python -c "import pandas as pd; df=pd.read_parquet('data/usdkrw_level.parquet'); print('usdkrw rows =', len(df)); print('date min/max =', df['date'].min(), df['date'].max()); print(df.tail(3).to_string(index=False))"
 
       # F10이 비어있으면(0 rows) assemble/index 갱신해도 의미가 없으니 여기서 실패 처리
       - name: Validate F10 output (fail if empty)
