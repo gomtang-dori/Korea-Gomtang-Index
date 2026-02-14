@@ -21,11 +21,17 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: Set date range (recent 30d + buffer)
+      - name: Set date range (recent 30d + buffer) [safe]
         run: |
-          echo "BACKFILL_END=$(date -u +%Y%m%d)" >> $GITHUB_ENV
-          echo "BACKFILL_START=$(date -u -d '30 days ago' +%Y%m%d)" >> $GITHUB_ENV
+          END=$(date -u -d '1 day ago' +%Y%m%d)
+          START=$(date -u -d '31 days ago' +%Y%m%d)
+
+          echo "BACKFILL_END=$END" >> $GITHUB_ENV
+          echo "BACKFILL_START=$START" >> $GITHUB_ENV
           echo "CACHE_BUFFER_DAYS=450" >> $GITHUB_ENV
+
+          echo "[date_range] BACKFILL_START=$START BACKFILL_END=$END CACHE_BUFFER_DAYS=450"
+
 
       # -------------------------
       # caches
