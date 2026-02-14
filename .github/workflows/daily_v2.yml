@@ -47,6 +47,7 @@ jobs:
           BACKFILL_START: ${{ env.BACKFILL_START }}
           BACKFILL_END: ${{ env.BACKFILL_END }}
           CACHE_BUFFER_DAYS: ${{ env.CACHE_BUFFER_DAYS }}
+          F01_MADAYS: "125"
           K200_CACHE_PATH: data/cache/k200_close.parquet
         run: |
           export PYTHONPATH=src
