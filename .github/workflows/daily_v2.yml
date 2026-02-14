@@ -16,30 +16,77 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
+          python-version: "3.11" #
 
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          # requirements.txt가 없어도 실패하지 않도록 처리하거나 직접 설치 추가
-          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
-          pip install pykrx pandas pandas-datareader finance-datareader pyarrow fastparquet
+          pip install --upgrade setuptools wheel
+          # 패키지 명칭 오타 수정: finance-datareader
+          pip install pykrx pandas pandas-datareader finance-datareader pyarrow fastparquet jinja2 plotly requests
 
       - name: Set date range
         run: |
-          # 한국 시장 데이터를 고려해 어제와 30일 전 날짜 계산
+          # 어제(영업일 기준 안전)와 30일 전 날짜 계산
+          # 주말 실행 시 에러 방지를 위해 하루 전(금요일)을 종료일로 설정
           END=$(date -u -d '1 day ago' +%Y%m%d)
           START=$(date -u -d '31 days ago' +%Y%m%d)
+          
           echo "BACKFILL_END=$END" >> $GITHUB_ENV
           echo "BACKFILL_START=$START" >> $GITHUB_ENV
           echo "CACHE_BUFFER_DAYS=450" >> $GITHUB_ENV
+          
+          echo "[date_range] START=$START END=$END"
 
-      # ... (이하 수집 및 분석 단계 생략) ...
+      # -------------------------
+      # 데이터 수집 (Caches)
+      # -------------------------
+
+      - name: Cache K200 close (FDR 사용으로 '지수명' 에러 우회)
+        env:
+          BACKFILL_START: ${{ env.BACKFILL_START }}
+          BACKFILL_END: ${{ env.BACKFILL_END }}
+          CACHE_BUFFER_DAYS: ${{ env.CACHE_BUFFER_DAYS }}
+          K200_CACHE_PATH: data/cache/k200_close.parquet
+        run: |
+          export PYTHONPATH=src
+          python src/caches/cache_k200_close_fdr.py
+
+      - name: Cache USD/KRW & VKOSPI
+        env:
+          ECOS_KEY: ${{ secrets.ECOS_KEY }}
+          KRX_AUTH_KEY: ${{ secrets.KRX_AUTH_KEY }}
+        run: |
+          export PYTHONPATH=src
+          # 데이터가 없는 경우를 대비해 continue-on-error를 고려할 수 있음
+          python src/usdkrw_fetch.py
+          python src/vkospi_fetch.py
+
+      # -------------------------
+      # 분석 알고리즘 실행 (버피 기업분석 1번, CAN SLIM 2번)
+      # -------------------------
+
+      - name: Calculate Factors (Momentum, Put/Call, VKOSPI)
+        run: |
+          export PYTHONPATH=src
+          python src/factors/f01_momentum.py
+          python src/factors/f04_putcall.py
+          python src/factors/f06_vkospi.py
+
+      - name: Assemble & Report Generation
+        run: |
+          export PYTHONPATH=src
+          python src/assemble/assemble_index.py
+          python src/report/render_report.py
+
+      # -------------------------
+      # 결과 저장 및 푸시
+      # -------------------------
 
       - name: Commit & push outputs
         run: |
           git config user.name "github-actions"
           git config user.email "github-actions@github.com"
           git add data/cache/ data/factors/ data/index_daily.* docs/index.html || true
-          # 변경사항이 있을 때만 커밋
+          # 변경사항이 실제 있을 때만 커밋하여 불필요한 실패 방지
           git diff --quiet && git diff --staged --quiet || (git commit -m "Daily update $(date +%Y-%m-%d)" && git push)
