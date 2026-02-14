@@ -85,15 +85,27 @@ jobs:
           export PYTHONPATH=src
           python src/caches/cache_putcall.py
 
-      - name: Sanity check caches exist
+      - name: Sanity check caches exist (actual paths)
         run: |
           set -e
+          echo "== data/cache =="
           ls -lah data/cache || true
+          echo "== data =="
+          ls -lah data || true
+      
+          # FDR K200 (data/cache)
           test -f data/cache/k200_close.parquet
-          test -f data/usdkrw_level.parquet
-          test -f data/cache/vkospi_level.parquet
+      
+          # Put/Call (data/cache)
           test -f data/cache/putcall_ratio.parquet
-        
+      
+          # USD/KRW (ECOS) - usdkrw_fetch.py가 만드는 경로
+          test -f data/usdkrw_level.parquet
+      
+          # VKOSPI (KRX) - vkospi_fetch.py가 만드는 경로(현재 repo 구조 기준)
+          test -f data/vkospi_level.parquet
+      
+              
       
       - name: Calculate Factors (F01,F04,F06,F10)
         env:
