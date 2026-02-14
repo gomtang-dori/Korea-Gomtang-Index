@@ -39,6 +39,23 @@ jobs:
       # -------------------------
       # 데이터 수집 (Caches)
       # -------------------------
+      - name: Cache Rates 3Y Bundle (ECOS 817Y002) [KTB3Y + Corp AA-/BBB-]
+        env:
+          ECOS_KEY: ${{ secrets.ECOS_KEY }}
+          BACKFILL_START: ${{ env.BACKFILL_START }}
+          BACKFILL_END: ${{ env.BACKFILL_END }}
+          CACHE_BUFFER_DAYS: ${{ env.CACHE_BUFFER_DAYS }}
+          RATES_STAT_CODE: "817Y002"
+          RATES_CYCLE: "D"
+          ECOS_KTB3Y_ITEM_CODE1: "010200000"
+          ECOS_CORP3Y_AA_ITEM_CODE1: "010300000"
+          ECOS_CORP3Y_BBB_ITEM_CODE1: "010320000"
+          RATES_3Y_BUNDLE_PATH: data/cache/rates_3y_bundle.parquet
+        run: |
+          set -e
+          export PYTHONPATH=src
+          python src/caches/cache_rates_3y_bundle_ecos.py
+      
       - name: Cache F08 (Foreigner flow) [pykrx] KOSPI+KOSDAQ
         env:
           BACKFILL_START: ${{ env.BACKFILL_START }}
@@ -127,6 +144,9 @@ jobs:
       
           # VKOSPI (KRX) - vkospi_fetch.py가 만드는 경로(현재 repo 구조 기준)
           test -f data/vkospi_level.parquet
+
+          test -f data/cache/rates_3y_bundle.parquet
+
       
               
       
@@ -139,7 +159,10 @@ jobs:
           USDKRW_CACHE_PATH: data/usdkrw_level.parquet
           VKOSPI_CACHE_PATH: data/vkospi_level.parquet
           F08_CACHE_PATH: data/cache/f08_foreigner_flow.parquet
-          PUTCALL_CACHE_PATH: data/cache/putcall_ratio.parquet 
+          PUTCALL_CACHE_PATH: data/cache/putcall_ratio.parquet
+          RATES_3Y_BUNDLE_PATH: data/cache/rates_3y_bundle.parquet
+          F07_HORIZON_DAYS: "20"
+
         run: |
           set -e
           export PYTHONPATH=src
@@ -157,6 +180,9 @@ jobs:
           export PYTHONPATH=src
           python src/assemble/assemble_index.py
           python src/report/render_report.py
+          python src/factors/f05_credit_spread.py
+          python src/factors/f07_safehaven.py
+
 
       - name: Convert parquet to CSV (index_daily)
         run: |
