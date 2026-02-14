@@ -17,17 +17,15 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: Set date range (force safe)
+      - name: Set date range (safe)
         run: |
           END=$(date -u -d '1 day ago' +%Y%m%d)
-          START=$(date -u -d '31 days ago' +%Y%m%d)
           echo "BACKFILL_END=$END" >> $GITHUB_ENV
-          echo "BACKFILL_START=$START" >> $GITHUB_ENV
-          echo "CACHE_BUFFER_DAYS=450" >> $GITHUB_ENV
-          echo "[date_range] $START ~ $END"
-
+          echo "[date_range] BACKFILL_END=$END"
+      
       - name: Probe K200 OHLCV (pykrx, last 7 trading days)
         env:
+          BACKFILL_END: ${{ env.BACKFILL_END }}
           K200_INDEX_CODE: "1028"
           DAYS: "7"
           OUT_PATH: data/cache/probe_k200_ohlcv_pykrx.parquet
