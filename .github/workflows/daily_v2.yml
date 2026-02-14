@@ -47,8 +47,8 @@ jobs:
           BACKFILL_START: ${{ env.BACKFILL_START }}
           BACKFILL_END: ${{ env.BACKFILL_END }}
           CACHE_BUFFER_DAYS: ${{ env.CACHE_BUFFER_DAYS }}
-          F01_MADAYS: "125"
           K200_CACHE_PATH: data/cache/k200_close.parquet
+          K200_SYMBOL: "KS200"
         run: |
           export PYTHONPATH=src
           python src/caches/cache_k200_close_fdr.py
@@ -74,32 +74,58 @@ jobs:
           export PYTHONPATH=src
           python src/vkospi_fetch.py
 
-
-      # -------------------------
-      # 분석 알고리즘 실행 (버피 기업분석 1번, CAN SLIM 2번)
-      # -------------------------
-
-      - name: Calculate Factors (Momentum, Put/Call, VKOSPI)
+      - name: Cache Put/Call (recent)
+        env:
+          KRX_AUTH_KEY: ${{ secrets.KRX_AUTH_KEY }}
+          KRX_EQSOP_URL: ${{ secrets.KRX_EQSOP_URL }}
+          KRX_EQKOP_URL: ${{ secrets.KRX_EQKOP_URL }}
+          BACKFILL_START: ${{ env.BACKFILL_START }}
+          BACKFILL_END: ${{ env.BACKFILL_END }}
+          PUTCALL_CACHE_PATH: data/cache/putcall_ratio.parquet
         run: |
+          set -e
+          export PYTHONPATH=src
+          python src/caches/cache_putcall.py
+          
+      - name: Calculate Factors (F01=MA125 on KS200 / F04 / F06 / F10) - fail fast
+        env:
+          ROLLING_DAYS: "1260"
+          MIN_OBS: "252"
+          # ✅ F01
+          F01_MA_DAYS: "125"
+          K200_CACHE_PATH: data/cache/k200_close.parquet
+
+          # ✅ F04
+          PUTCALL_CACHE_PATH: data/cache/putcall_ratio.parquet
+
+          # ✅ F10
+          USDKRW_CACHE_PATH: data/cache/usdkrw_level.parquet
+          VOL_WINDOW_DAYS: "20"
+        run: |
+          set -e
           export PYTHONPATH=src
           python src/factors/f01_momentum.py
           python src/factors/f04_putcall.py
           python src/factors/f06_vkospi.py
+          python src/factors/f10_fxvol.py
 
       - name: Assemble & Report Generation
         run: |
+          set -e
           export PYTHONPATH=src
           python src/assemble/assemble_index.py
           python src/report/render_report.py
 
-      # -------------------------
-      # 결과 저장 및 푸시
-      # -------------------------
+      - name: Convert parquet to CSV (index_daily)
+        run: |
+          set -e
+          export PYTHONPATH=src
+          python src/parquet_to_csv.py
 
       - name: Commit & push outputs
         run: |
+          set -e
           git config user.name "github-actions"
           git config user.email "github-actions@github.com"
           git add data/cache/ data/factors/ data/index_daily.* docs/index.html || true
-          # 변경사항이 실제 있을 때만 커밋하여 불필요한 실패 방지
           git diff --quiet && git diff --staged --quiet || (git commit -m "Daily update $(date +%Y-%m-%d)" && git push)
