@@ -77,6 +77,7 @@ def main():
         ("f06", factors_dir / "f06.parquet", ["f06_raw", "f06_score"]),
         ("f07", factors_dir / "f07.parquet", ["f07_raw", "f07_score"]),
         ("f08", factors_dir / "f08.parquet", ["f08_raw", "f08_score"]),
+        ("f09", factors_dir / "f09.parquet", ["f09_raw", "f09_score"]),
         ("f10", factors_dir / "f10.parquet", ["f10_raw", "f10_score"]),
     ]
 
