@@ -133,6 +133,7 @@ jobs:
           python src/factors/f01_momentum.py
           python src/factors/f04_putcall.py
           python src/factors/f06_vkospi.py
+          python src/factors/f09_margin_ratio.py
           python src/factors/f10_fxvol.py
 
 
