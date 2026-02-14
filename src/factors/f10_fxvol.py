@@ -22,7 +22,7 @@ def _rolling_percentile(series: pd.Series, window: int, min_obs: int) -> pd.Seri
 
 
 def main():
-    cache_path = Path(os.environ.get("USDKRW_CACHE_PATH", "data/cache/usdkrw_level.parquet"))
+    cache_path = Path(os.environ.get("USDKRW_CACHE_PATH", "data/usdkrw_level.parquet"))
     out_path = Path(os.environ.get("F10_OUT_PATH", "data/factors/f10.parquet"))
 
     vol_window = int(os.environ.get("VOL_WINDOW_DAYS", "20"))  # 확정: 20영업일
