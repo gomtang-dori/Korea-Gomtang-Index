@@ -4,4 +4,4 @@ requests==2.32.3
 jinja2==3.1.5
 plotly==5.24.1
 pyarrow==18.1.0
-pykrx==1.0.51
+pykrx
