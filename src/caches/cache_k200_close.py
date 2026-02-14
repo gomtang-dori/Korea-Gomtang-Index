@@ -31,6 +31,11 @@ def main():
 
     start = (backfill_start - pd.Timedelta(days=buffer_days)).normalize()
     end = backfill_end.normalize()
+    today = pd.Timestamp.utcnow().normalize()
+    if backfill_end > today:
+        print(f"[cache_k200_close:pykrx] WARN: BACKFILL_END {backfill_end:%Y%m%d} > today {today:%Y%m%d}. clamp to today.")
+        backfill_end = today
+
 
     start_s = _as_yyyymmdd(start)
     end_s = _as_yyyymmdd(end)
