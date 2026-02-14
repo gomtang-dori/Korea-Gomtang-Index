@@ -1,0 +1,35 @@
+name: probe_ad_counts_krx
+
+on:
+  workflow_dispatch:
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install deps
+        run: |
+          set -e
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Run probe (KRX adv/dec counts)
+        run: |
+          set -e
+          export PYTHONPATH=src
+          python src/caches/probe_ad_counts_krx.py
+
+      - name: Show outputs
+        run: |
+          set -e
+          ls -lah data/cache || true
+          echo "---- meta ----"
+          cat data/cache/probe_ad_counts_krx_meta.json || true
+          echo "---- tail ----"
+          python -c "import pandas as pd; df=pd.read_parquet('data/cache/probe_ad_counts_krx.parquet'); print(df.tail(5).to_string(index=False))"
