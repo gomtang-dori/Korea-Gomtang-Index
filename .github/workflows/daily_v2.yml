@@ -39,6 +39,18 @@ jobs:
       # -------------------------
       # 데이터 수집 (Caches)
       # -------------------------
+      - name: Cache F09 (Credit/Deposit) [data.go.kr]
+        env:
+          DATA_GO_KR_SERVICE_KEY: ${{ secrets.DATA_GO_KR_SERVICE_KEY }}
+          BACKFILL_START: ${{ env.BACKFILL_START }}
+          BACKFILL_END: ${{ env.BACKFILL_END }}
+          CACHE_BUFFER_DAYS: ${{ env.CACHE_BUFFER_DAYS }}
+          F09_CACHE_PATH: data/cache/f09_credit_deposit.parquet
+        run: |
+          set -e
+          export PYTHONPATH=src
+          python src/caches/cache_f09_credit_deposit_datago.py
+      
 
       - name: Cache K200 close (FDR 사용으로 '지수명' 에러 우회)
         env:
