@@ -33,13 +33,19 @@ def main():
     df["date"] = pd.to_datetime(df["date"], errors="coerce")
     df = df.dropna(subset=["date"]).sort_values("date").reset_index(drop=True)
 
-    # 캐시 컬럼명은 레포마다 다를 수 있어 자동 탐지
-    # 후보: putcall_ratio / pcr / put_call / ratio
+    # [수정 포인트] 1. 원천 데이터(거래대금)가 있다면 비율을 직접 계산합니다.
+    if "f04_put_trdval" in df.columns and "f04_call_trdval" in df.columns:
+        # 풋 거래대금을 콜 거래대금으로 나누어 비율을 산출합니다.
+        df["putcall_ratio"] = df["f04_put_trdval"] / df["f04_call_trdval"]
+        print("[f04] Raw trdval detected. Calculated putcall_ratio.")
+
+    # 2. 캐시 컬럼명 자동 탐지 (기존 코드 유지)
     candidates = ["putcall_ratio", "pcr", "put_call", "ratio", "putcall"]
     ratio_col = next((c for c in candidates if c in df.columns), None)
+    
     if ratio_col is None:
         raise RuntimeError(f"putcall cache columns={list(df.columns)}; expected one of {candidates}")
-
+    
     df[ratio_col] = pd.to_numeric(df[ratio_col], errors="coerce")
     df = df.dropna(subset=[ratio_col])
 
