@@ -105,3 +105,6 @@ def main():
 
     print(f"[probe_f07] saved raw -> {raw_path}")
     print(f"[probe_f07] saved pick -> {picked_path} / {picked_csv}")
+    print(f"[probe_f07] PICK ITEM_CODE1={item_code1} ITEM_NAME1={item_name1}", flush=True)
+
+
