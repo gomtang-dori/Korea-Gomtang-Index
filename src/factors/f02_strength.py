@@ -10,11 +10,16 @@ import pandas as pd
 
 
 def rolling_percentile_last(s: pd.Series, window: int, min_obs: int) -> pd.Series:
+    """
+    5년(기본) 롤링 윈도우에서 "마지막 값의 퍼센타일(0~100)"을 반환.
+    기존 레포의 percentile 스타일과 동일한 패턴 유지.
+    """
     def _pct(x):
         x = pd.Series(x).dropna()
         if len(x) < min_obs:
             return np.nan
         return float(x.rank(pct=True).iloc[-1] * 100.0)
+
     return s.rolling(window=window, min_periods=min_obs).apply(_pct, raw=False)
 
 
@@ -44,9 +49,12 @@ def main():
         )
 
     df["date"] = pd.to_datetime(df["date"], format="%Y%m%d", errors="coerce")
-    df = df.dropna(subset=["date"]).sort_values("date").reset_index(drop=True)
+    df["adv"] = pd.to_numeric(df["adv"], errors="coerce")
+    df["dec"] = pd.to_numeric(df["dec"], errors="coerce")
+    df = df.dropna(subset=["date", "adv", "dec"]).sort_values("date").reset_index(drop=True)
 
-    denom = (df["adv"] + df["dec"]).replace(0, np.nan)  # 보합 제외(확정)
+    # F02_raw = (adv - dec) / (adv + dec), 보합 분모 제외 (확정)
+    denom = (df["adv"] + df["dec"]).replace(0, np.nan)
     df["f02_raw"] = (df["adv"] - df["dec"]) / denom
 
     df["f02_score"] = rolling_percentile_last(df["f02_raw"], window=window, min_obs=min_obs)
