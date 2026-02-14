@@ -1,0 +1,119 @@
+name: f10_and_assemble
+
+on:
+  workflow_dispatch:
+
+jobs:
+  f10_and_assemble:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          set -e
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Set date range (same policy as daily_v2)
+        run: |
+          set -e
+          END=$(date -u -d '1 day ago' +%Y%m%d)
+          START=$(date -u -d '31 days ago' +%Y%m%d)
+
+          echo "BACKFILL_END=$END" >> $GITHUB_ENV
+          echo "BACKFILL_START=$START" >> $GITHUB_ENV
+          echo "CACHE_BUFFER_DAYS=450" >> $GITHUB_ENV
+
+          echo "[date_range] START=$START END=$END"
+
+      # -------------------------
+      # Cache: USD/KRW only (ECOS)
+      # -------------------------
+      - name: Cache USD/KRW (ECOS) - only
+        env:
+          ECOS_KEY: ${{ secrets.ECOS_KEY }}
+          ECOS_USDKRW_STAT_CODE: ${{ secrets.ECOS_USDKRW_STAT_CODE }}
+          ECOS_USDKRW_ITEM_CODE1: ${{ secrets.ECOS_USDKRW_ITEM_CODE1 }}
+          # 필요 시:
+          # ECOS_USDKRW_CYCLE: "D"
+        run: |
+          set -e
+          export PYTHONPATH=src
+          python src/usdkrw_fetch.py
+
+      - name: Sanity check USDKRW cache exists
+        run: |
+          set -e
+          ls -lah data || true
+          test -f data/usdkrw_level.parquet
+
+      # -------------------------
+      # Factor: F10 only
+      # -------------------------
+      - name: Calculate Factor F10 only (FX Vol)
+        env:
+          ROLLING_DAYS: "1260"
+          MIN_OBS: "252"
+          VOL_WINDOW_DAYS: "20"
+          USDKRW_CACHE_PATH: data/usdkrw_level.parquet
+        run: |
+          set -e
+          export PYTHONPATH=src
+          python src/factors/f10_fxvol.py
+
+      # F10이 비어있으면(0 rows) assemble/index 갱신해도 의미가 없으니 여기서 실패 처리
+      - name: Validate F10 output (fail if empty)
+        run: |
+          set -e
+          python - << 'PY'
+          import pandas as pd
+          from pathlib import Path
+
+          p = Path("data/factors/f10.parquet")
+          if not p.exists():
+              raise SystemExit("[F10-check] missing data/factors/f10.parquet")
+
+          df = pd.read_parquet(p)
+          n = len(df)
+          print(f"[F10-check] rows={n}")
+          if n == 0:
+              raise SystemExit("[F10-check] f10.parquet is empty (rows=0). Stop.")
+          print(df.tail(5).to_string(index=False))
+          PY
+
+      # -------------------------
+      # Assemble + CSV
+      # -------------------------
+      - name: Assemble index_daily (update)
+        run: |
+          set -e
+          export PYTHONPATH=src
+          python src/assemble/assemble_index.py
+
+      - name: Convert parquet to CSV (index_daily)
+        run: |
+          set -e
+          export PYTHONPATH=src
+          python src/parquet_to_csv.py
+
+      # -------------------------
+      # Commit & push (only if changes exist)
+      # -------------------------
+      - name: Commit & push outputs
+        run: |
+          set -e
+          git config user.name "github-actions"
+          git config user.email "github-actions@github.com"
+
+          # F10 + index_daily 갱신에 필요한 산출물만 add
+          git add data/usdkrw_level.parquet data/usdkrw_level.csv data/factors/f10.parquet data/index_daily.* data/index_daily.csv || true
+
+          git diff --quiet && git diff --staged --quiet || (git commit -m "F10 + assemble update $(date +%Y-%m-%d)" && git push)
