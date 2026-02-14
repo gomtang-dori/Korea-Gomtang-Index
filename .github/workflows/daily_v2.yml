@@ -170,7 +170,7 @@ jobs:
         run: |
           set -e
           export PYTHONPATH=src
-          python src/caches/cache_adv_dec_daily_krx_sqlite.py
+          python -c "import os; print('ADVDEC_BLD=',os.getenv('ADVDEC_BLD')); print('ADVDEC_REFERER=',os.getenv('ADVDEC_REFERER'))"
 
       - name: Calculate Factors (F02,F03) from adv/dec SQLite
         env:
