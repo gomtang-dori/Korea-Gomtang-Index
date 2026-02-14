@@ -33,12 +33,12 @@ def main():
     r["corp_bbb_3y"] = pd.to_numeric(r["corp_bbb_3y"], errors="coerce")
     r = r.dropna(subset=["date", "corp_aa_3y", "corp_bbb_3y"]).sort_values("date").reset_index(drop=True)
 
-    # 스프레드(위험프리미엄): 커질수록 Fear
+    # 스프레드 확대 = 공포, 축소 = 탐욕
     r["f05_raw"] = r["corp_bbb_3y"] - r["corp_aa_3y"]
 
     pct = _rolling_percentile(r["f05_raw"], window=rolling_days, min_obs=min_obs)
 
-    # 스프레드가 좁을수록 Greed → Fear-type 반전
+    # Fear-type 반전(스프레드가 클수록 Fear → Greed 점수는 100 - pct)
     r["f05_score"] = 100.0 - pct
 
     out = r[["date", "f05_raw", "f05_score"]].copy()
