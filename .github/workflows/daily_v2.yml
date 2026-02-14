@@ -90,7 +90,7 @@ jobs:
           set -e
           ls -lah data/cache || true
           test -f data/cache/k200_close.parquet
-          test -f data/cache/usdkrw_level.parquet
+          test -f data/usdkrw_level.parquet
           test -f data/cache/vkospi_level.parquet
           test -f data/cache/putcall_ratio.parquet
         
@@ -101,7 +101,7 @@ jobs:
           MIN_OBS: "252"
           VOL_WINDOW_DAYS: "20"
           K200_CACHE_PATH: data/cache/k200_close.parquet
-          USDKRW_CACHE_PATH: data/cache/usdkrw_level.parquet
+          USDKRW_CACHE_PATH: data/usdkrw_level.parquet
         run: |
           set -e
           export PYTHONPATH=src
