@@ -1,0 +1,33 @@
+name: probe_f08_pykrx
+
+on:
+  workflow_dispatch:
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Run F08 probe (pykrx)
+        env:
+          F08_MARKET: "KOSPI"
+          F08_DAYS: "10"
+          F08_PROBE_OUT: "data/cache/probe_f08_foreigner_pykrx.parquet"
+        run: |
+          set -e
+          export PYTHONPATH=src
+          python src/caches/probe_f08_foreigner_pykrx.py
+          echo "== data/cache =="
+          ls -lah data/cache || true
