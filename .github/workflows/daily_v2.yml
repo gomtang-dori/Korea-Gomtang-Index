@@ -34,19 +34,20 @@ jobs:
           echo "[debug] runner_utc=$(date -u +%Y-%m-%d)"
 
       # -------------------------
-      # caches (prioritize F01 base cache first for fast fail)
+      # caches
       # -------------------------
 
-      - name: Cache KOSPI mcap-weighted level (recent+buffer) [pykrx market]
+      - name: Cache K200 close (recent+buffer) [FinanceDataReader: KS200]
         env:
           BACKFILL_START: ${{ env.BACKFILL_START }}
           BACKFILL_END: ${{ env.BACKFILL_END }}
           CACHE_BUFFER_DAYS: ${{ env.CACHE_BUFFER_DAYS }}
-          KOSPI_LEVEL_CACHE_PATH: data/cache/kospi_mcap_weighted_level.parquet
+          K200_CACHE_PATH: data/cache/k200_close.parquet
+          K200_SYMBOL: "KS200"
         run: |
           set -e
           export PYTHONPATH=src
-          python src/caches/cache_kospi_mcap_weighted_level.py
+          python src/caches/cache_k200_close_fdr.py
 
       - name: Cache USD/KRW
         env:
@@ -85,15 +86,15 @@ jobs:
       # factors (F01/F04/F06/F10) - fail fast
       # -------------------------
 
-      - name: Factors (F01=KOSPI level MA125 / F04 / F06 / F10) - fail fast
+      - name: Factors (F01=MA125 on KS200 close / F04 / F06 / F10) - fail fast
         env:
           # 운영 기본값(Backfill과 동일)
           ROLLING_DAYS: "1260"
           MIN_OBS: "252"
 
-          # ✅ F01: KOSPI 시총가중 레벨 기반 MA125
+          # ✅ F01: 125 거래일 이동평균 기반 (입력은 FDR이 만든 k200_close)
           F01_MA_DAYS: "125"
-          KOSPI_LEVEL_CACHE_PATH: data/cache/kospi_mcap_weighted_level.parquet
+          K200_CACHE_PATH: data/cache/k200_close.parquet
 
           # F04
           PUTCALL_CACHE_PATH: data/cache/putcall_ratio.parquet
@@ -137,5 +138,5 @@ jobs:
           git config user.name "github-actions"
           git config user.email "github-actions@github.com"
           git add data/cache data/factors data/index_daily.parquet data/index_daily.csv docs/index.html || true
-          git commit -m "Daily v2 update (F01=KOSPI mcap-weighted MA125 + F04 + F06 + F10)" || echo "No changes"
+          git commit -m "Daily v2 update (FDR KS200 close + F01=MA125 + F04 + F06 + F10)" || echo "No changes"
           git push
