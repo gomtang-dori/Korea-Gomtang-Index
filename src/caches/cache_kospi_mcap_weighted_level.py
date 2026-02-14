@@ -31,7 +31,7 @@ def main():
 
     print(f"[cache_kospi_level] range={start_s}~{end_s} buffer_days={buffer_days}")
 
-    # ✅ 거래일 캘린더: 삼성전자(005930)로 거래일 index만 뽑음 (사용자 코드와 동일 컨셉)
+    # 거래일 캘린더 (삼성전자)
     cal = stock.get_market_ohlcv_by_date(start_s, end_s, "005930")
     if cal is None or len(cal) == 0:
         raise RuntimeError(f"[cache_kospi_level] trading calendar empty for {start_s}~{end_s}")
@@ -40,36 +40,29 @@ def main():
     print(f"[cache_kospi_level] trading_days={len(days)}")
 
     rows = []
-    fail_ohlcv = 0
     fail_cap = 0
     fail_cols = 0
     last_err = None
-
-    # 진행 로그 주기
     progress_every = int(os.environ.get("PROGRESS_EVERY_N_DAYS", "20"))
 
     for i, ymd in enumerate(days, start=1):
         try:
-            ohlcv = stock.get_market_ohlcv(ymd, market="KOSPI")
-            if ohlcv is None or len(ohlcv) == 0:
-                fail_ohlcv += 1
-                continue
-
             cap = stock.get_market_cap(ymd, market="KOSPI")
             if cap is None or len(cap) == 0:
                 fail_cap += 1
                 continue
 
-            close_col = "종가" if "종가" in ohlcv.columns else None
+            # cap DataFrame에 종가/시총이 같이 있는 경우가 많음
+            close_col = "종가" if "종가" in cap.columns else None
             mcap_col = "시가총액" if "시가총액" in cap.columns else None
             if close_col is None or mcap_col is None:
                 fail_cols += 1
+                if last_err is None:
+                    last_err = f"cap.columns={list(cap.columns)}"
                 continue
 
-            df = (
-                pd.DataFrame({"close": ohlcv[close_col]})
-                .join(pd.DataFrame({"mcap": cap[mcap_col]}), how="inner")
-            )
+            df = cap[[close_col, mcap_col]].copy()
+            df.columns = ["close", "mcap"]
 
             df["close"] = pd.to_numeric(df["close"], errors="coerce")
             df["mcap"] = pd.to_numeric(df["mcap"], errors="coerce")
@@ -85,17 +78,16 @@ def main():
 
         except Exception as e:
             last_err = f"{type(e).__name__}: {e}"
-            # 예외도 실패로 카운팅(ohlcv/cap 어느 쪽인지 확정 어렵지만 운영상 충분)
-            fail_ohlcv += 1
+            fail_cap += 1
             continue
 
         if i % progress_every == 0:
-            print(f"[cache_kospi_level] progress {i}/{len(days)} rows={len(rows)} fail_ohlcv={fail_ohlcv} fail_cap={fail_cap} last_err={last_err}")
+            print(f"[cache_kospi_level] progress {i}/{len(days)} rows={len(rows)} fail_cap={fail_cap} fail_cols={fail_cols} last_err={last_err}")
 
     if len(rows) == 0:
         raise RuntimeError(
             "[cache_kospi_level] NO DATA. "
-            f"fail_ohlcv={fail_ohlcv} fail_cap={fail_cap} fail_cols={fail_cols} last_err={last_err} "
+            f"fail_cap={fail_cap} fail_cols={fail_cols} last_err={last_err} "
             f"range={start_s}~{end_s}"
         )
 
@@ -115,8 +107,8 @@ def main():
     out_path.parent.mkdir(parents=True, exist_ok=True)
     merged.to_parquet(out_path, index=False)
     print(
-        f"[cache_kospi_level] OK rows={len(merged)} "
-        f"(new_rows={len(out)}) fail_ohlcv={fail_ohlcv} fail_cap={fail_cap} fail_cols={fail_cols} -> {out_path}"
+        f"[cache_kospi_level] OK rows={len(merged)} (new_rows={len(out)}) "
+        f"fail_cap={fail_cap} fail_cols={fail_cols} -> {out_path}"
     )
 
 
