@@ -2,54 +2,60 @@
 from __future__ import annotations
 
 import os
+import sqlite3
 from pathlib import Path
+
 import numpy as np
 import pandas as pd
 
 
-def rolling_percentile(s: pd.Series, window: int, min_obs: int) -> pd.Series:
+def rolling_percentile_last(s: pd.Series, window: int, min_obs: int) -> pd.Series:
     def _pct(x):
+        x = pd.Series(x).dropna()
         if len(x) < min_obs:
             return np.nan
-        return float(pd.Series(x).rank(pct=True).iloc[-1] * 100.0)
+        return float(x.rank(pct=True).iloc[-1] * 100.0)
     return s.rolling(window=window, min_periods=min_obs).apply(_pct, raw=False)
 
 
 def main():
-    ohlcv_path = Path(os.environ.get("K200_OHLCV_CACHE_PATH", "data/cache/k200_ohlcv.parquet"))
+    db_path = Path(os.environ.get("ADVDEC_DB_PATH", "data/cache/adv_dec_daily.sqlite"))
     out_path = Path(os.environ.get("F02_PATH", "data/factors/f02.parquet"))
 
-    window = int(os.environ.get("ROLLING_DAYS", str(252 * 5)))
-    min_obs = int(os.environ.get("MIN_OBS", "252"))
+    mode = os.environ.get("F02_MODE", "").strip().lower()  # "daily" or ""
+    if mode == "daily":
+        window = int(os.environ.get("ROLLING_DAYS", "60"))
+        min_obs = int(os.environ.get("MIN_OBS", "20"))
+    else:
+        window = int(os.environ.get("ROLLING_DAYS", str(252 * 5)))
+        min_obs = int(os.environ.get("MIN_OBS", "252"))
 
-    df = pd.read_parquet(ohlcv_path)
-    df["date"] = pd.to_datetime(df["date"], errors="coerce")
-    for c in ["high", "low", "close", "volume"]:
-        if c in df.columns:
-            df[c] = pd.to_numeric(df[c], errors="coerce")
+    if not db_path.exists():
+        raise RuntimeError(f"Missing {db_path}. Run cache_adv_dec_daily_krx_sqlite first.")
 
-    df = df.dropna(subset=["date", "isu_cd", "high", "low"]).sort_values(["isu_cd", "date"]).reset_index(drop=True)
+    with sqlite3.connect(str(db_path)) as conn:
+        df = pd.read_sql_query(
+            """
+            SELECT date, adv, dec, unch, total, unknown, row_count
+            FROM adv_dec_daily
+            ORDER BY date
+            """,
+            conn,
+        )
 
-    # 251일(과거) 기준 max/min
-    g = df.groupby("isu_cd", group_keys=False)
-    df["hi_max_251"] = g["high"].shift(1).rolling(251, min_periods=200).max()
-    df["lo_min_251"] = g["low"].shift(1).rolling(251, min_periods=200).min()
+    df["date"] = pd.to_datetime(df["date"], format="%Y%m%d", errors="coerce")
+    df = df.dropna(subset=["date"]).sort_values("date").reset_index(drop=True)
 
-    df["is_nh"] = (df["high"] >= df["hi_max_251"]).astype(float)
-    df["is_nl"] = (df["low"] <= df["lo_min_251"]).astype(float)
+    denom = (df["adv"] + df["dec"]).replace(0, np.nan)  # 보합 제외(확정)
+    df["f02_raw"] = (df["adv"] - df["dec"]) / denom
 
-    daily = df.groupby("date").agg(
-        nh=("is_nh", "sum"),
-        nl=("is_nl", "sum"),
-        eligible=("isu_cd", "count"),
-    ).reset_index()
-
-    daily["f02_raw"] = (daily["nh"] - daily["nl"]) / daily["eligible"].replace(0, np.nan)
-    daily["f02_score"] = rolling_percentile(daily["f02_raw"], window, min_obs)
+    df["f02_score"] = rolling_percentile_last(df["f02_raw"], window=window, min_obs=min_obs)
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    daily[["date", "f02_raw", "f02_score"]].to_parquet(out_path, index=False)
-    print(f"[f02] OK rows={len(daily)} -> {out_path}")
+    df[["date", "f02_raw", "f02_score"]].to_parquet(out_path, index=False)
+
+    n_score = int(df["f02_score"].notna().sum())
+    print(f"[f02] OK rows={len(df)} scored={n_score} window={window} min_obs={min_obs} -> {out_path}")
 
 
 if __name__ == "__main__":
