@@ -1,8 +1,13 @@
-pandas==2.2.3
-numpy==2.0.2
-requests==2.32.3
-jinja2==3.1.5
-plotly==5.24.1
-pyarrow==18.1.0
+# 데이터 분석 및 처리
+pandas>=2.2.3
+numpy>=1.26.0,<2.1.0
+pyarrow>=18.1.0
+
+# 금융 데이터 수집 및 분석 (오타 수정됨)
+finance-datareader
 pykrx
-FinanceDataReader
+
+# 웹 통신 및 시각화/보고서
+requests>=2.32.3
+jinja2>=3.1.5
+plotly>=5.24.1
