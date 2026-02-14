@@ -1,0 +1,35 @@
+name: test_krx_openapi
+
+on:
+  workflow_dispatch:
+    inputs:
+      basDd:
+        description: "기준일자 (YYYYMMDD)"
+        required: true
+        default: "20200414"
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install requests
+
+      - name: Run OpenAPI test (stk/ksq bydd trd)
+        env:
+          KRX_API_KEY: ${{ secrets.KRX_API_KEY }}
+          BAS_DD: ${{ inputs.basDd }}
+        run: |
+          set -euo pipefail
+          export PYTHONPATH=src
+          python -u src/caches/test_openapi_bydd_trd.py
