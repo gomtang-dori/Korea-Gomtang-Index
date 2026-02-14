@@ -7,8 +7,8 @@ from typing import Any, Dict, List, Tuple
 
 import requests
 
+BASE = "https://data-dbg.krx.co.kr/svc/apis/sto"
 
-BASE = "https://openapi.krx.co.kr/svc/apis/sto"
 ENDPOINTS = {
     "KOSPI(stk)": f"{BASE}/stk_bydd_trd",
     "KOSDAQ(ksq)": f"{BASE}/ksq_bydd_trd",
