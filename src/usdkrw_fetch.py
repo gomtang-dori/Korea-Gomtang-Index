@@ -27,10 +27,17 @@ def fetch_ecos_statisticsearch(
     item_code1: str = "",
     item_code2: str = "",
     item_code3: str = "",
+    raw: bool = False,  # ✅ 추가
 ) -> pd.DataFrame:
     """
     ECOS StatisticSearch JSON 호출
-    반환 DataFrame: date(TIME), value(DATA_VALUE)
+
+    raw=False (default):
+      반환 DataFrame: date, usdkrw (기존 동작 유지)
+
+    raw=True:
+      ECOS 원본 row를 DataFrame으로 반환 (TIME, DATA_VALUE, ITEM_CODE1, ITEM_NAME1 등 포함)
+      → F07처럼 ITEM_CODE 자동탐색(probe)에 사용
     """
     def seg(x: str) -> str:
         return x if x else ""
@@ -54,6 +61,12 @@ def fetch_ecos_statisticsearch(
         raise RuntimeError(f"ECOS returned empty rows: {str(js)[:500]}")
 
     df = pd.DataFrame(rows)
+
+    # ✅ raw 모드면 원본 row 그대로 반환
+    if raw:
+        return df
+
+    # ✅ 기존 동작(USD/KRW 캐시 등) 유지
     if "TIME" not in df.columns or "DATA_VALUE" not in df.columns:
         raise RuntimeError(f"ECOS columns unexpected: {df.columns.tolist()}")
 
@@ -66,6 +79,7 @@ def fetch_ecos_statisticsearch(
 
     out = out.sort_values("date").drop_duplicates("date", keep="last").reset_index(drop=True)
     return out
+
 
 
 def upsert(old: pd.DataFrame, new: pd.DataFrame) -> pd.DataFrame:
