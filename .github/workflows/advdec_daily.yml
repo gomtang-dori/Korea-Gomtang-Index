@@ -1,0 +1,67 @@
+name: advdec_daily
+
+on:
+  workflow_dispatch:
+    inputs:
+      sleep_sec:
+        description: "호출 간 sleep(초). 추천 0.5"
+        required: true
+        default: "0.5"
+  schedule:
+    - cron: "30 9 * * 1-5"   # KST 18:30 (UTC 09:30) 평일
+
+jobs:
+  daily:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Update adv/dec SQLite (incremental)
+        env:
+          KRX_API_KEY: ${{ secrets.KRX_API_KEY }}
+          ADVDEC_DB_PATH: data/cache/adv_dec_daily.sqlite
+          ADVDEC_MODE: incremental
+          ADVDEC_SLEEP_SEC: ${{ github.event.inputs.sleep_sec || '0.5' }}
+          ADVDEC_RETRY: "4"
+          ADVDEC_TIMEOUT_SEC: "90"
+        run: |
+          set -euo pipefail
+          export PYTHONPATH=src
+          mkdir -p data/cache
+          python -u src/caches/cache_adv_dec_daily_krx_sqlite.py
+          ls -lah data/cache || true
+          test -f data/cache/adv_dec_daily.sqlite
+
+      - name: Calculate factors (F02/F03)
+        env:
+          ADVDEC_DB_PATH: data/cache/adv_dec_daily.sqlite
+          ROLLING_DAYS: "1260"
+          MIN_OBS: "252"
+          F02_PATH: data/factors/f02.parquet
+          F03_PATH: data/factors/f03.parquet
+        run: |
+          set -euo pipefail
+          export PYTHONPATH=src
+          python -u src/factors/f02_strength.py
+          python -u src/factors/f03_breadth.py
+
+      - name: Commit factor outputs only
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions"
+          git config user.email "github-actions@github.com"
+          git add data/factors/f02.parquet data/factors/f03.parquet || true
+          git diff --quiet && git diff --staged --quiet || (git commit -m "Daily adv/dec factors $(date +%Y-%m-%d)" && git push)
