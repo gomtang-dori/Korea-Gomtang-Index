@@ -55,7 +55,7 @@ def main():
     df["eq_ret_20d"] = np.log(df["k200_close"]).diff(horizon)
     df["bond_chg_20d"] = df["ktb3y"].diff(horizon)
 
-    # risk-off일수록 raw 커지게 설계
+    # risk-off일수록 raw 커지게
     df["f07_raw"] = df["bond_chg_20d"] - df["eq_ret_20d"]
 
     pct = _rolling_percentile(df["f07_raw"], window=rolling_days, min_obs=min_obs)
