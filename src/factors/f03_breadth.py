@@ -1,13 +1,15 @@
+# src/factors/f03_breadth.py
 from __future__ import annotations
 
 import os
+import sqlite3
 from pathlib import Path
+
 import numpy as np
 import pandas as pd
 
 
 def rolling_percentile_last(s: pd.Series, window: int, min_obs: int) -> pd.Series:
-    # 마지막 값의 percentile만 필요하지만, rolling.apply로 유지
     def _pct(x):
         x = pd.Series(x).dropna()
         if len(x) < min_obs:
@@ -17,7 +19,7 @@ def rolling_percentile_last(s: pd.Series, window: int, min_obs: int) -> pd.Serie
 
 
 def main():
-    ohlcv_path = Path(os.environ.get("K200_OHLCV_CACHE_PATH", "data/cache/k200_ohlcv.parquet"))
+    db_path = Path(os.environ.get("ADVDEC_DB_PATH", "data/cache/adv_dec_daily.sqlite"))
     out_path = Path(os.environ.get("F03_PATH", "data/factors/f03.parquet"))
 
     mode = os.environ.get("F03_MODE", "").strip().lower()  # "daily" or ""
@@ -28,47 +30,36 @@ def main():
         window = int(os.environ.get("ROLLING_DAYS", str(252 * 5)))
         min_obs = int(os.environ.get("MIN_OBS", "252"))
 
-    if not ohlcv_path.exists():
-        raise RuntimeError(f"Missing {ohlcv_path}. Run cache_k200_ohlcv first.")
+    if not db_path.exists():
+        raise RuntimeError(f"Missing {db_path}. Run cache_adv_dec_daily_krx_sqlite first.")
 
-    df = pd.read_parquet(ohlcv_path)
-    df["date"] = pd.to_datetime(df["date"], errors="coerce")
-    df["isu_cd"] = df["isu_cd"].astype(str)
-    df["close"] = pd.to_numeric(df["close"], errors="coerce")
-    df["volume"] = pd.to_numeric(df["volume"], errors="coerce")
-    df = df.dropna(subset=["date", "isu_cd", "close", "volume"]).sort_values(["isu_cd", "date"]).reset_index(drop=True)
+    with sqlite3.connect(str(db_path)) as conn:
+        df = pd.read_sql_query(
+            """
+            SELECT date, adv, dec
+            FROM adv_dec_daily
+            ORDER BY date
+            """,
+            conn,
+        )
 
-    # 1D return per stock
-    g = df.groupby("isu_cd", group_keys=False)
-    df["ret1"] = g["close"].pct_change()
+    df["date"] = pd.to_datetime(df["date"], format="%Y%m%d", errors="coerce")
+    df = df.dropna(subset=["date"]).sort_values("date").reset_index(drop=True)
 
-    # turnover (close * volume)
-    df["turnover"] = df["close"] * df["volume"]
+    # ADR (20 trading days): rolling sum adv / rolling sum dec
+    df["adv20"] = df["adv"].rolling(20, min_periods=20).sum()
+    df["dec20"] = df["dec"].rolling(20, min_periods=20).sum()
 
-    # ret1 NaN(첫날)은 제외하는 편이 깔끔 (초반 왜곡 방지)
-    df = df.dropna(subset=["ret1", "turnover"])
+    df["f03_raw"] = df["adv20"] / df["dec20"].replace(0, np.nan)
+    df.loc[df["dec20"].fillna(0) == 0, "f03_raw"] = df.loc[df["dec20"].fillna(0) == 0, "adv20"] / 1.0  # max(1, sum(dec,20))
 
-    df["up_val"] = np.where(df["ret1"] > 0, df["turnover"], 0.0)
-    df["dn_val"] = np.where(df["ret1"] < 0, df["turnover"], 0.0)
-
-    daily = (
-        df.groupby("date", as_index=False)
-        .agg(up=("up_val", "sum"), dn=("dn_val", "sum"))
-        .sort_values("date")
-        .reset_index(drop=True)
-    )
-
-    denom = (daily["up"] + daily["dn"]).replace(0, np.nan)
-    daily["f03_raw"] = (daily["up"] - daily["dn"]) / denom
-
-    # score (percentile)
-    daily["f03_score"] = rolling_percentile_last(daily["f03_raw"], window=window, min_obs=min_obs)
+    df["f03_score"] = rolling_percentile_last(df["f03_raw"], window=window, min_obs=min_obs)
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    daily[["date", "f03_raw", "f03_score"]].to_parquet(out_path, index=False)
+    df[["date", "f03_raw", "f03_score"]].to_parquet(out_path, index=False)
 
-    n_score = int(daily["f03_score"].notna().sum())
-    print(f"[f03] OK rows={len(daily)} scored={n_score} window={window} min_obs={min_obs} -> {out_path}")
+    n_score = int(df["f03_score"].notna().sum())
+    print(f"[f03] OK rows={len(df)} scored={n_score} window={window} min_obs={min_obs} -> {out_path}")
 
 
 if __name__ == "__main__":
