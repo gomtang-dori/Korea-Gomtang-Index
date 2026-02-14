@@ -39,6 +39,17 @@ jobs:
       # -------------------------
       # 데이터 수집 (Caches)
       # -------------------------
+      - name: Cache F08 (Foreigner flow) [pykrx] KOSPI+KOSDAQ
+        env:
+          BACKFILL_START: ${{ env.BACKFILL_START }}
+          BACKFILL_END: ${{ env.BACKFILL_END }}
+          CACHE_BUFFER_DAYS: ${{ env.CACHE_BUFFER_DAYS }}
+          F08_CACHE_PATH: data/cache/f08_foreigner_flow.parquet
+        run: |
+          set -e
+          export PYTHONPATH=src
+          python src/caches/cache_f08_foreigner_flow_pykrx.py
+  
       - name: Cache F09 (Credit/Deposit) [data.go.kr]
         env:
           DATA_GO_KR_SERVICE_KEY: ${{ secrets.DATA_GO_KR_SERVICE_KEY }}
@@ -127,12 +138,14 @@ jobs:
           K200_CACHE_PATH: data/cache/k200_close.parquet
           USDKRW_CACHE_PATH: data/usdkrw_level.parquet
           VKOSPI_CACHE_PATH: data/vkospi_level.parquet
+          F08_CACHE_PATH: data/cache/f08_foreigner_flow.parquet
         run: |
           set -e
           export PYTHONPATH=src
           python src/factors/f01_momentum.py
           python src/factors/f04_putcall.py
           python src/factors/f06_vkospi.py
+          python src/factors/f08_foreigner_flow.py
           python src/factors/f09_margin_ratio.py
           python src/factors/f10_fxvol.py
 
