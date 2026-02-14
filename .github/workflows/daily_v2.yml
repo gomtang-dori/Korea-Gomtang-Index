@@ -86,21 +86,25 @@ jobs:
           set -e
           export PYTHONPATH=src
           python src/caches/cache_putcall.py
+      
+      - name: Cache USD/KRW (FDR)
+        env:
+          BACKFILL_START: ${{ env.BACKFILL_START }}
+          BACKFILL_END: ${{ env.BACKFILL_END }}
+          CACHE_BUFFER_DAYS: ${{ env.CACHE_BUFFER_DAYS }}
+          USDKRW_CACHE_PATH: data/cache/usdkrw_level.parquet
+        run: |
+          set -e
+          export PYTHONPATH=src
+          python src/caches/cache_usdkrw_level_fdr.py
           
-      - name: Calculate Factors (F01=MA125 on KS200 / F04 / F06 / F10) - fail fast
+      - name: Calculate Factors (F01,F04,F06,F10)
         env:
           ROLLING_DAYS: "1260"
           MIN_OBS: "252"
-          # ✅ F01
-          F01_MA_DAYS: "125"
-          K200_CACHE_PATH: data/cache/k200_close.parquet
-
-          # ✅ F04
-          PUTCALL_CACHE_PATH: data/cache/putcall_ratio.parquet
-
-          # ✅ F10
-          USDKRW_CACHE_PATH: data/cache/usdkrw_level.parquet
           VOL_WINDOW_DAYS: "20"
+          K200_CACHE_PATH: data/cache/k200_close.parquet
+          USDKRW_CACHE_PATH: data/cache/usdkrw_level.parquet
         run: |
           set -e
           export PYTHONPATH=src
