@@ -168,9 +168,30 @@ jobs:
           ADVDEC_BLD: dbms/MDC/STAT/standard/MDCSTAT01602
           ADVDEC_REFERER: https://data.krx.co.kr/contents/MDC/MDI/mdiLoader/index.cmd?menuId=MDC0201020102
         run: |
-          set -e
+          set -euo pipefail
           export PYTHONPATH=src
-          python -c "import os; print('ADVDEC_BLD=',os.getenv('ADVDEC_BLD')); print('ADVDEC_REFERER=',os.getenv('ADVDEC_REFERER'))"
+
+          echo "==[advdec] pwd =="; pwd
+          echo "==[advdec] python =="; python -V
+          echo "==[advdec] env =="
+          echo "ADVDEC_DB_PATH=$ADVDEC_DB_PATH"
+          echo "ADVDEC_MODE=$ADVDEC_MODE"
+          echo "ADVDEC_BLD=$ADVDEC_BLD"
+          echo "ADVDEC_REFERER=$ADVDEC_REFERER"
+
+          echo "==[advdec] ensure dirs =="
+          mkdir -p data/cache
+          ls -lah data || true
+          ls -lah data/cache || true
+
+          echo "==[advdec] run collector =="
+          python -u src/caches/cache_adv_dec_daily_krx_sqlite.py
+
+          echo "==[advdec] after run: list cache dir =="
+          ls -lah data/cache || true
+
+          echo "==[advdec] verify sqlite exists =="
+          test -f data/cache/adv_dec_daily.sqlite
 
       - name: Calculate Factors (F02,F03) from adv/dec SQLite
         env:
