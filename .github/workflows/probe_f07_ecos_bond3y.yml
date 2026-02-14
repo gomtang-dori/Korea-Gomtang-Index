@@ -27,11 +27,16 @@ jobs:
         run: |
           set -e
           export PYTHONPATH=src
-          python src/caches/probe_f07_bond3y_itemcode_ecos.py
+          python -u src/caches/probe_f07_bond3y_itemcode_ecos.py
+
 
       - name: Show outputs
         run: |
           set -e
+          echo "== data/cache =="
           ls -lah data/cache || true
-          echo "---- picked ----"
-          cat data/cache/probe_f07_bond3y_itemcode.csv || true
+          echo "== data =="
+          ls -lah data || true
+          echo "== find probe outputs =="
+          find data -maxdepth 3 -type f -name "*probe_f07*" -print || true
+      
