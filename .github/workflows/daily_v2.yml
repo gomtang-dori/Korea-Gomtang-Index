@@ -55,6 +55,7 @@ jobs:
           set -e
           export PYTHONPATH=src
           python src/caches/cache_rates_3y_bundle_ecos.py
+
       
       - name: Cache F08 (Foreigner flow) [pykrx] KOSPI+KOSDAQ
         env:
