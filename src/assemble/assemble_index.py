@@ -9,13 +9,14 @@ import pandas as pd
 # 기존 비율 유지 (f02는 '존재하면' 포함, 없으면 자동 제외/재정규화)
 W = {
     "f01_score": 0.10,
-    "f02_score": 0.10,  # Strength (temporarily optional)
+    "f02_score": 0.125,  # Strength (temporarily optional)
     "f03_score": 0.10,
     "f04_score": 0.10,
     "f05_score": 0.05,
     "f06_score": 0.125,
     "f07_score": 0.10,
     "f08_score": 0.10,
+    "f09_score": 0.10,
     "f10_score": 0.10,
 }
 
