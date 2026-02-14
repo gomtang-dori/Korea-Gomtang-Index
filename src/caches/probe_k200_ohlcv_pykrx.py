@@ -22,10 +22,7 @@ def _as_yyyymmdd(ts: pd.Timestamp) -> str:
 
 
 def _safe_patch_index_name():
-    """
-    pykrx 내부에서 지수명 매핑 테이블을 못 읽으면 KeyError('지수명')가 날 수 있어
-    get_index_ticker_name()만 안전하게 우회.
-    """
+    # pykrx 내부 지수명 매핑 KeyError('지수명') 방어
     try:
         import pykrx.stock.stock_api as stock_api
         _orig = stock_api.get_index_ticker_name
@@ -43,55 +40,40 @@ def _safe_patch_index_name():
 
 
 def main():
-    # 설정
-    index_code = _env("K200_INDEX_CODE", "1028")  # KOSPI200
+    index_code = _env("K200_INDEX_CODE", "1028")
     days = int(_env("DAYS", "7"))
-
     out_path = Path(os.environ.get("OUT_PATH", "data/cache/probe_k200_ohlcv_pykrx.parquet"))
 
-    # 날짜 범위: 안전하게 "어제"를 end로 사용 (당일/휴일 미반영 방지)
-    end = pd.Timestamp.utcnow().tz_localize(None).normalize() - pd.Timedelta(days=1)
-    start = end - pd.Timedelta(days=days * 2)  # 거래일 누락(주말) 감안해 여유 있게 잡음
+    # ✅ 핵심: 러너 시간(utcnow) 쓰지 말고, workflow에서 내려준 날짜를 사용
+    backfill_end = pd.to_datetime(_env("BACKFILL_END"), format="%Y%m%d", errors="raise").normalize()
+    # 주말/휴일 감안해서 넉넉히 30일 전부터 긁고 마지막 7개만 자름
+    start = (backfill_end - pd.Timedelta(days=45)).normalize()
 
     start_s = _as_yyyymmdd(start)
-    end_s = _as_yyyymmdd(end)
+    end_s = _as_yyyymmdd(backfill_end)
 
-    print(f"[probe_k200_ohlcv_pykrx] fetch index_code={index_code} range={start_s}~{end_s} (target last {days} trading days)")
+    print(f"[probe_k200_ohlcv_pykrx] fetch index_code={index_code} range={start_s}~{end_s} (tail {days})")
 
     _safe_patch_index_name()
 
-    # pykrx 호출 (기간 조회)
     df = stock.get_index_ohlcv(start_s, end_s, index_code)
     if df is None or len(df) == 0:
         raise RuntimeError(f"[probe_k200_ohlcv_pykrx] empty result index_code={index_code} range={start_s}~{end_s}")
 
-    # 최근 trading days만 자르기
     df = df.tail(days).copy()
-
-    # 보기 좋게 date 컬럼 만들기
-    df = df.reset_index().rename(columns={df.index.name or "index": "date"})
-    # 첫 컬럼이 날짜가 아닐 수도 있어 방어
+    df = df.reset_index()
     if "date" not in df.columns:
         df = df.rename(columns={df.columns[0]: "date"})
-
-    # 타입 정리
     df["date"] = pd.to_datetime(df["date"], errors="coerce")
 
-    # 출력: 컬럼/헤드/테일
     print(f"[probe_k200_ohlcv_pykrx] cols={list(df.columns)}")
-    print("[probe_k200_ohlcv_pykrx] head:")
-    print(df.head(3).to_string(index=False))
-    print("[probe_k200_ohlcv_pykrx] tail:")
-    print(df.tail(3).to_string(index=False))
+    print(df.to_string(index=False))
 
-    # 저장 (parquet + csv 둘 다 저장하면 확인이 편함)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     df.to_parquet(out_path, index=False)
-    csv_path = out_path.with_suffix(".csv")
-    df.to_csv(csv_path, index=False, encoding="utf-8-sig")
+    df.to_csv(out_path.with_suffix(".csv"), index=False, encoding="utf-8-sig")
 
     print(f"[probe_k200_ohlcv_pykrx] OK rows={len(df)} -> {out_path}")
-    print(f"[probe_k200_ohlcv_pykrx] OK rows={len(df)} -> {csv_path}")
 
 
 if __name__ == "__main__":
