@@ -52,15 +52,27 @@ jobs:
           export PYTHONPATH=src
           python src/caches/cache_k200_close_fdr.py
 
-      - name: Cache USD/KRW & VKOSPI
+      - name: Cache USD/KRW (ECOS)
         env:
           ECOS_KEY: ${{ secrets.ECOS_KEY }}
-          KRX_AUTH_KEY: ${{ secrets.KRX_AUTH_KEY }}
+          ECOS_USDKRW_STAT_CODE: ${{ secrets.ECOS_USDKRW_STAT_CODE }}
+          ECOS_USDKRW_ITEM_CODE1: ${{ secrets.ECOS_USDKRW_ITEM_CODE1 }}
+          # 아래 1개는 필요하면만 추가(usdkrw_fetch.py가 요구할 때)
+          # ECOS_USDKRW_CYCLE: ${{ secrets.ECOS_USDKRW_CYCLE }}
         run: |
+          set -e
           export PYTHONPATH=src
-          # 데이터가 없는 경우를 대비해 continue-on-error를 고려할 수 있음
           python src/usdkrw_fetch.py
+
+      - name: Cache VKOSPI (KRX)
+        env:
+          KRX_AUTH_KEY: ${{ secrets.KRX_AUTH_KEY }}
+          KRX_DVRPROD_DD_TRD_URL: ${{ secrets.KRX_DVRPROD_DD_TRD_URL }}
+        run: |
+          set -e
+          export PYTHONPATH=src
           python src/vkospi_fetch.py
+
 
       # -------------------------
       # 분석 알고리즘 실행 (버피 기업분석 1번, CAN SLIM 2번)
