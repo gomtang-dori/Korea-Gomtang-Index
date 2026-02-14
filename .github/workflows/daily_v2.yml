@@ -16,24 +16,23 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: "3.11" #
+          python-version: "3.11"
 
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
-          
+
       - name: Set date range
         run: |
           # 어제(영업일 기준 안전)와 30일 전 날짜 계산
-          # 주말 실행 시 에러 방지를 위해 하루 전(금요일)을 종료일로 설정
           END=$(date -u -d '1 day ago' +%Y%m%d)
           START=$(date -u -d '31 days ago' +%Y%m%d)
-          
+
           echo "BACKFILL_END=$END" >> $GITHUB_ENV
           echo "BACKFILL_START=$START" >> $GITHUB_ENV
           echo "CACHE_BUFFER_DAYS=450" >> $GITHUB_ENV
-          
+
           echo "[date_range] START=$START END=$END"
 
       # -------------------------
@@ -56,7 +55,6 @@ jobs:
           export PYTHONPATH=src
           python src/caches/cache_rates_3y_bundle_ecos.py
 
-      
       - name: Cache F08 (Foreigner flow) [pykrx] KOSPI+KOSDAQ
         env:
           BACKFILL_START: ${{ env.BACKFILL_START }}
@@ -67,7 +65,7 @@ jobs:
           set -e
           export PYTHONPATH=src
           python src/caches/cache_f08_foreigner_flow_pykrx.py
-  
+
       - name: Cache F09 (Credit/Deposit) [data.go.kr]
         env:
           DATA_GO_KR_SERVICE_KEY: ${{ secrets.DATA_GO_KR_SERVICE_KEY }}
@@ -79,7 +77,6 @@ jobs:
           set -e
           export PYTHONPATH=src
           python src/caches/cache_f09_credit_deposit_datago.py
-      
 
       - name: Cache K200 close (FDR 사용으로 '지수명' 에러 우회)
         env:
@@ -89,6 +86,7 @@ jobs:
           K200_CACHE_PATH: data/cache/k200_close.parquet
           K200_SYMBOL: "KS200"
         run: |
+          set -e
           export PYTHONPATH=src
           python src/caches/cache_k200_close_fdr.py
 
@@ -97,8 +95,6 @@ jobs:
           ECOS_KEY: ${{ secrets.ECOS_KEY }}
           ECOS_USDKRW_STAT_CODE: ${{ secrets.ECOS_USDKRW_STAT_CODE }}
           ECOS_USDKRW_ITEM_CODE1: ${{ secrets.ECOS_USDKRW_ITEM_CODE1 }}
-          # 아래 1개는 필요하면만 추가(usdkrw_fetch.py가 요구할 때)
-          # ECOS_USDKRW_CYCLE: ${{ secrets.ECOS_USDKRW_CYCLE }}
         run: |
           set -e
           export PYTHONPATH=src
@@ -133,24 +129,16 @@ jobs:
           ls -lah data/cache || true
           echo "== data =="
           ls -lah data || true
-      
-          # FDR K200 (data/cache)
-          test -f data/cache/k200_close.parquet
-      
-          # Put/Call (data/cache)
-          test -f data/cache/putcall_ratio.parquet
-      
-          # USD/KRW (ECOS) - usdkrw_fetch.py가 만드는 경로
-          test -f data/usdkrw_level.parquet
-      
-          # VKOSPI (KRX) - vkospi_fetch.py가 만드는 경로(현재 repo 구조 기준)
-          test -f data/vkospi_level.parquet
 
+          test -f data/cache/k200_close.parquet
+          test -f data/cache/putcall_ratio.parquet
+          test -f data/usdkrw_level.parquet
+          test -f data/vkospi_level.parquet
           test -f data/cache/rates_3y_bundle.parquet
 
-      
-              
-      
+      # -------------------------
+      # Factor 계산
+      # -------------------------
       - name: Calculate Factors (F01,F04,F06,F08,F09,F10)
         env:
           ROLLING_DAYS: "1260"
@@ -173,10 +161,8 @@ jobs:
           python src/factors/f09_margin_ratio.py
           python src/factors/f10_fxvol.py
 
-          
       - name: Cache Adv/Dec daily (KRX -> SQLite)
         env:
-          # SQLite는 커밋하지 않고 런타임 캐시로만 사용
           ADVDEC_DB_PATH: data/cache/adv_dec_daily.sqlite
           ADVDEC_MODE: incremental
           ADVDEC_BLD: dbms/MDC/STAT/standard/MDCSTAT01602
@@ -185,7 +171,7 @@ jobs:
           set -e
           export PYTHONPATH=src
           python src/caches/cache_adv_dec_daily_krx_sqlite.py
-          
+
       - name: Calculate Factors (F02,F03) from adv/dec SQLite
         env:
           ADVDEC_DB_PATH: data/cache/adv_dec_daily.sqlite
@@ -199,20 +185,9 @@ jobs:
           python src/factors/f02_strength.py
           python src/factors/f03_breadth.py
 
-          
-        
-
-        run: |
-          set -e
-          export PYTHONPATH=src
-          python src/factors/f01_momentum.py
-          python src/factors/f04_putcall.py
-          python src/factors/f06_vkospi.py
-          python src/factors/f08_foreigner_flow.py
-          python src/factors/f09_margin_ratio.py
-          python src/factors/f10_fxvol.py
-
-
+      # -------------------------
+      # Assemble + Report
+      # -------------------------
       - name: Assemble & Report Generation
         run: |
           set -e
@@ -221,7 +196,6 @@ jobs:
           python src/factors/f05_credit_spread.py
           python src/factors/f07_safehaven.py
           python src/assemble/assemble_index.py
-
 
       - name: Convert parquet to CSV (index_daily)
         run: |
