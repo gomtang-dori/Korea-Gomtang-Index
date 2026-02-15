@@ -104,6 +104,63 @@ jobs:
           test -f data/factors/f07.parquet
           ls -lah data/cache data/factors | sed -n '1,200p'
 
+      - name: Show min/max date (standard)
+        shell: bash
+        env:
+          TARGETS: "data/cache/rates_3y_bundle.parquet,data/cache/k200_close.parquet,data/factors/f05.parquet,data/factors/f07.parquet"
+          DATE_COL_CANDIDATES: "date,Date,basDt,BASE_DT"
+        run: |
+          set -euo pipefail
+          python - << 'PY'
+          import os
+          from pathlib import Path
+          import pandas as pd
+
+          targets = [t.strip() for t in os.environ.get("TARGETS","").split(",") if t.strip()]
+          cand_cols = [c.strip() for c in os.environ.get("DATE_COL_CANDIDATES","date").split(",") if c.strip()]
+
+          def pick_date_col(df):
+            for c in cand_cols:
+              if c in df.columns:
+                return c
+            for c in df.columns:
+              if "date" in c.lower():
+                return c
+            return None
+
+          def read_any(path: Path):
+            suf = path.suffix.lower()
+            if suf == ".parquet":
+              return pd.read_parquet(path)
+            if suf == ".csv":
+              return pd.read_csv(path)
+            raise ValueError(f"Unsupported extension: {path}")
+
+          print("=== [min/max date] ===")
+          for t in targets:
+            p = Path(t)
+            if not p.exists():
+              print(f"[MISS] {t} (file not found)")
+              continue
+            try:
+              df = read_any(p)
+            except Exception as e:
+              print(f"[FAIL] {t} read error: {e}")
+              continue
+            if df is None or df.empty:
+              print(f"[EMPTY] {t} rows=0")
+              continue
+            dc = pick_date_col(df)
+            if not dc:
+              print(f"[NO_DATE_COL] {t} cols={list(df.columns)[:20]}")
+              continue
+            s = pd.to_datetime(df[dc], errors="coerce").dropna()
+            if s.empty:
+              print(f"[NO_VALID_DATE] {t} date_col={dc} rows={len(df)}")
+              continue
+            print(f"[OK] {t} rows={len(df)} date_col={dc} min={s.min()} max={s.max()}")
+          PY
+
       - name: Commit & push (if changed)
         shell: bash
         run: |
