@@ -5,16 +5,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-
-def _rolling_percentile(series: pd.Series, window: int, min_obs: int) -> pd.Series:
-    def pct_rank_last(x: np.ndarray) -> float:
-        x = pd.Series(x).dropna().to_numpy()
-        if len(x) == 0:
-            return np.nan
-        last = x[-1]
-        return float((x <= last).mean() * 100.0)
-
-    return series.rolling(window=window, min_periods=min_obs).apply(pct_rank_last, raw=True)
+from utils.rolling_score import to_score_from_raw
 
 
 def main():
@@ -33,13 +24,16 @@ def main():
     r["corp_bbb_3y"] = pd.to_numeric(r["corp_bbb_3y"], errors="coerce")
     r = r.dropna(subset=["date", "corp_aa_3y", "corp_bbb_3y"]).sort_values("date").reset_index(drop=True)
 
-    # 스프레드 확대 = 공포, 축소 = 탐욕
     r["f05_raw"] = r["corp_bbb_3y"] - r["corp_aa_3y"]
 
-    pct = _rolling_percentile(r["f05_raw"], window=rolling_days, min_obs=min_obs)
-
-    # Fear-type 반전(스프레드가 클수록 Fear → Greed 점수는 100 - pct)
-    r["f05_score"] = 100.0 - pct
+    # 스프레드↑ 공포형 → invert=True
+    r["f05_score"] = to_score_from_raw(
+        r["f05_raw"],
+        window=rolling_days,
+        min_obs=min_obs,
+        winsor_p=0.01,
+        invert=True,
+    )
 
     out = r[["date", "f05_raw", "f05_score"]].copy()
     out_path.parent.mkdir(parents=True, exist_ok=True)
