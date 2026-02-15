@@ -6,18 +6,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-
-def _rolling_percentile(series: pd.Series, window: int, min_obs: int) -> pd.Series:
-    def _pct(x: np.ndarray) -> float:
-        cur = x[-1]
-        if np.isnan(cur):
-            return np.nan
-        arr = x[~np.isnan(x)]
-        if len(arr) < min_obs:
-            return np.nan
-        return float((arr <= cur).mean() * 100.0)
-
-    return series.rolling(window=window, min_periods=min_obs).apply(_pct, raw=True)
+from utils.rolling_score import to_score_from_raw
 
 
 def main():
@@ -40,7 +29,15 @@ def main():
     df = df.dropna(subset=["date", "f08_foreigner_net_buy"]).sort_values("date").reset_index(drop=True)
 
     df["f08_raw"] = df["f08_foreigner_net_buy"]
-    df["f08_score"] = _rolling_percentile(df["f08_raw"], window=rolling_days, min_obs=min_obs)
+
+    # 순매수↑ 탐욕형 → invert=False
+    df["f08_score"] = to_score_from_raw(
+        df["f08_raw"],
+        window=rolling_days,
+        min_obs=min_obs,
+        winsor_p=0.01,
+        invert=False,
+    )
 
     out = df[["date", "f08_raw", "f08_score"]].dropna(subset=["f08_score"]).reset_index(drop=True)
     out_path.parent.mkdir(parents=True, exist_ok=True)
