@@ -6,10 +6,10 @@ import numpy as np
 import pandas as pd
 
 
-# 기존 비율 유지 (f02는 '존재하면' 포함, 없으면 자동 제외/재정규화)
+# 기존 비율 유지 (존재하는 팩터만 자동 포함/재정규화)
 W = {
     "f01_score": 0.10,
-    "f02_score": 0.075,  # Strength (temporarily optional)
+    "f02_score": 0.075,  # optional
     "f03_score": 0.125,
     "f04_score": 0.10,
     "f05_score": 0.05,
@@ -21,12 +21,16 @@ W = {
 }
 
 
+def _parse_exclude_factors() -> set[str]:
+    # EXCLUDE_FACTORS="f09,f02" 같은 형태
+    raw = (os.environ.get("EXCLUDE_FACTORS", "") or "").strip()
+    if not raw:
+        return set()
+    items = [x.strip().lower() for x in raw.split(",") if x.strip()]
+    return set(items)
+
+
 def read_factor_optional(path: Path, cols: list[str]) -> pd.DataFrame | None:
-    """
-    - 파일이 없으면 None
-    - date는 반드시 필요
-    - cols 중 유효한 컬럼이 하나도 없으면 None (조인 대상에서 제외)
-    """
     if not path.exists():
         return None
 
@@ -43,7 +47,6 @@ def read_factor_optional(path: Path, cols: list[str]) -> pd.DataFrame | None:
         .sort_values("date")
         .reset_index(drop=True)
     )
-
     if len(df.columns) <= 1:
         return None
     return df
@@ -58,17 +61,13 @@ def renormalize_weights_dynamic_f08(
     greed_threshold: float = 90.0,
     f08_multiplier_when_greedy: float = 0.5,
 ) -> pd.DataFrame:
-    """
-    행 단위로, 존재하는 score_cols만으로 가중치를 재정규화 + F08 동적가중.
-    - f08_score >= 90인 날은 f08 가중치를 0.5배로 감쇄(0.1 -> 0.05)
-    - f08_score < 90 이거나 f08 미존재/NaN이면 기본 가중치
-    """
     w = pd.Series({k: float(weights[k]) for k in score_cols}, dtype=float)
 
     # NaN이면 해당 날짜 weight=0 (이후 재정규화)
     avail = base[score_cols].notna().astype(float)
     w_mat = avail.mul(w, axis=1)
 
+    # F08 동적 가중 (기존 로직 유지)
     if f08_col in w_mat.columns:
         f08v = pd.to_numeric(base[f08_col], errors="coerce")
         mask = f08v >= greed_threshold
@@ -79,9 +78,30 @@ def renormalize_weights_dynamic_f08(
     return w_norm
 
 
+def apply_ema_per_score_col(base: pd.DataFrame, score_cols: list[str], span: int) -> pd.DataFrame:
+    """
+    각 score 컬럼별로 EMA 적용.
+    - date 정렬된 상태여야 함
+    - NaN 구간은 pandas ewm 특성상 자연스럽게 처리됨(연속 NaN은 결과 NaN 유지)
+    """
+    if span <= 0:
+        return base
+
+    out = base.copy()
+    for c in score_cols:
+        s = pd.to_numeric(out[c], errors="coerce")
+        out[c] = s.ewm(span=span, adjust=False, min_periods=1).mean()
+    return out
+
+
 def main():
     factors_dir = Path(os.environ.get("FACTORS_DIR", "data/factors"))
     out_path = Path(os.environ.get("INDEX_PATH", "data/index_daily.parquet"))
+
+    # ✅ 정책 파라미터
+    factor_ema_span = int(os.environ.get("FACTOR_EMA_SPAN", "0"))  # 8Y=10, 1Y=20
+    index_ema_span = int(os.environ.get("INDEX_EMA_SPAN", "5"))    # 둘 다 5 권장
+    exclude = _parse_exclude_factors()
 
     specs = [
         ("f01", factors_dir / "f01.parquet", ["f01_raw", "f01_score"]),
@@ -100,21 +120,25 @@ def main():
     loaded_score_cols: list[str] = []
 
     for tag, p, cols in specs:
+        if tag in exclude:
+            print(f"[assemble] exclude {tag} by EXCLUDE_FACTORS")
+            continue
+
         df = read_factor_optional(p, cols)
         if df is None:
             print(f"[assemble] skip {tag}: missing/empty {p}")
             continue
-        loaded.append(df)
 
+        loaded.append(df)
         sc = [c for c in cols if c.endswith("_score") and c in df.columns]
         loaded_score_cols.extend(sc)
 
     loaded_score_cols = sorted(set(loaded_score_cols))
 
     if not loaded:
-        raise RuntimeError("No factor parquet found under data/factors")
+        raise RuntimeError("No factor parquet found under data/factors (after exclusion).")
     if not loaded_score_cols:
-        raise RuntimeError("No *_score columns loaded")
+        raise RuntimeError("No *_score columns loaded (after exclusion).")
 
     base = loaded[0].copy()
     for d in loaded[1:]:
@@ -122,7 +146,12 @@ def main():
 
     base = base.sort_values("date").reset_index(drop=True)
 
-    # ✅ F08 동적가중: f08_score >= 90일 때만 0.5 감쇄(0.1->0.05)
+    # ✅ 팩터 score EMA 적용 (정책: 8Y=10, 1Y=20)
+    if factor_ema_span > 0:
+        base = apply_ema_per_score_col(base, loaded_score_cols, factor_ema_span)
+        print(f"[assemble] applied factor EMA span={factor_ema_span}")
+
+    # 가중치 재정규화(+F08 동적 가중)
     w_norm = renormalize_weights_dynamic_f08(
         base,
         W,
@@ -132,10 +161,21 @@ def main():
         f08_multiplier_when_greedy=0.5,
     )
 
-    base["index_score_total"] = (base[loaded_score_cols] * w_norm).sum(axis=1)
+    # ✅ 원본 합산(팩터 EMA 반영된 score 기준)
+    base["index_score_total_raw"] = (base[loaded_score_cols] * w_norm).sum(axis=1)
+
+    # ✅ 최종지수 EMA5 적용
+    if index_ema_span > 0:
+        s = pd.to_numeric(base["index_score_total_raw"], errors="coerce")
+        base["index_score_total"] = s.ewm(span=index_ema_span, adjust=False, min_periods=1).mean()
+        print(f"[assemble] applied index EMA span={index_ema_span}")
+    else:
+        base["index_score_total"] = base["index_score_total_raw"]
+
+    # bucket은 최종(스무딩) 지수 기준으로 생성
     base["bucket_5pt"] = (np.floor(base["index_score_total"] / 5.0) * 5.0).clip(0, 100)
 
-    # (선택) 디버그용: 실제 적용된 f08 가중치
+    # (선택) 디버그: 실제 적용된 f08 가중치
     if "f08_score" in w_norm.columns:
         base["w_f08_applied"] = w_norm["f08_score"]
 
