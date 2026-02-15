@@ -1,4 +1,4 @@
-name: advdec_daily
+name: advdec_daily_recent4
 
 on:
   workflow_dispatch:
@@ -8,7 +8,7 @@ on:
         required: true
         default: "0.5"
   schedule:
-    - cron: "30 9 * * 1-5"   # KST 18:30 (UTC 09:30) 평일
+    - cron: "40 9 * * 1-5"   # KST 18:40 (UTC 09:40) 평일
 
 jobs:
   daily:
@@ -24,16 +24,38 @@ jobs:
         with:
           python-version: "3.11"
 
+      - name: Restore adv/dec SQLite cache (prefix)
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            data/cache/adv_dec_daily.sqlite
+            data/cache/adv_dec_daily.sqlite-wal
+            data/cache/adv_dec_daily.sqlite-shm
+          key: advdec-sqlite-${{ github.ref_name }}-dummy
+          restore-keys: |
+            advdec-sqlite-${{ github.ref_name }}-
+
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: Update adv/dec SQLite (incremental)
+      - name: Compute recent 4-day range (UTC today-1 down to 4 days)
+        run: |
+          set -euo pipefail
+          END=$(date -u -d "1 day ago" +%Y%m%d)
+          START=$(date -u -d "4 days ago" +%Y%m%d)
+          echo "ADVDEC_START=$START" >> $GITHUB_ENV
+          echo "ADVDEC_END=$END" >> $GITHUB_ENV
+          echo "[advdec_daily] range $START ~ $END"
+
+      - name: Update adv/dec SQLite (recent 4 days, UPSERT)
         env:
           KRX_API_KEY: ${{ secrets.KRX_API_KEY }}
           ADVDEC_DB_PATH: data/cache/adv_dec_daily.sqlite
-          ADVDEC_MODE: incremental
+          ADVDEC_MODE: backfill
+          ADVDEC_START: ${{ env.ADVDEC_START }}
+          ADVDEC_END: ${{ env.ADVDEC_END }}
           ADVDEC_SLEEP_SEC: ${{ github.event.inputs.sleep_sec || '0.5' }}
           ADVDEC_RETRY: "4"
           ADVDEC_TIMEOUT_SEC: "90"
@@ -45,7 +67,7 @@ jobs:
           ls -lah data/cache || true
           test -f data/cache/adv_dec_daily.sqlite
 
-      - name: Calculate factors (F02/F03)
+      - name: Calculate factors from SQLite (F02/F03)
         env:
           ADVDEC_DB_PATH: data/cache/adv_dec_daily.sqlite
           ROLLING_DAYS: "1260"
@@ -58,10 +80,27 @@ jobs:
           python -u src/factors/f02_strength.py
           python -u src/factors/f03_breadth.py
 
-      - name: Commit factor outputs only
+      - name: Save adv/dec SQLite cache (always)
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            data/cache/adv_dec_daily.sqlite
+            data/cache/adv_dec_daily.sqlite-wal
+            data/cache/adv_dec_daily.sqlite-shm
+          key: advdec-sqlite-${{ github.ref_name }}-${{ github.run_id }}-${{ github.run_attempt }}
+
+      - name: Commit factor outputs only (rebase-safe)
         run: |
           set -euo pipefail
           git config user.name "github-actions"
           git config user.email "github-actions@github.com"
+
           git add data/factors/f02.parquet data/factors/f03.parquet || true
-          git diff --quiet && git diff --staged --quiet || (git commit -m "Daily adv/dec factors $(date +%Y-%m-%d)" && git push)
+          git diff --quiet && git diff --staged --quiet && exit 0
+
+          git fetch origin main
+          git pull --rebase origin main
+
+          git commit -m "Daily adv/dec factors recent4 $(date -u +%Y-%m-%d)" || true
+          git push origin HEAD:main
