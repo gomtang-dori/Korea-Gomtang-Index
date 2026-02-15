@@ -116,18 +116,30 @@ jobs:
           export PYTHONPATH=src
           python src/vkospi_fetch.py
 
-      - name: Cache Put/Call (full range for rebuild)
+      - name: Cache Put/Call (ECOS, hybrid inputs: vol + trdval)
         env:
-          KRX_AUTH_KEY: ${{ secrets.KRX_AUTH_KEY }}
-          KRX_EQSOP_URL: ${{ secrets.KRX_EQSOP_URL }}
-          KRX_EQKOP_URL: ${{ secrets.KRX_EQKOP_URL }}
+          ECOS_KEY: ${{ secrets.ECOS_KEY }}
           BACKFILL_START: ${{ env.BACKFILL_START }}
           BACKFILL_END: ${{ env.BACKFILL_END }}
+          CACHE_BUFFER_DAYS: ${{ env.CACHE_BUFFER_DAYS }}
           PUTCALL_CACHE_PATH: data/cache/putcall_ratio.parquet
+
+          # ECOS 주가지수옵션거래
+          PUTCALL_ECOS_STAT_CODE: "901Y058"
+          PUTCALL_ECOS_CYCLE: "D"
+
+          # 거래량(계약)
+          PUTCALL_ECOS_CALL_VOL_CODE1: "S26BA"
+          PUTCALL_ECOS_PUT_VOL_CODE1: "S26CA"
+
+          # 거래대금(백만원)
+          PUTCALL_ECOS_CALL_TRDVAL_CODE1: "S26BC"
+          PUTCALL_ECOS_PUT_TRDVAL_CODE1: "S26CC"
         run: |
           set -e
           export PYTHONPATH=src
-          python src/caches/cache_putcall.py
+          python src/caches/cache_putcall_ecos.py
+
 
       - name: Sanity check caches exist
         run: |
@@ -149,6 +161,7 @@ jobs:
         env:
           ROLLING_DAYS: "1260"
           MIN_OBS: "252"
+          WINSOR_P: "0.01"
           VOL_WINDOW_DAYS: "20"
           K200_CACHE_PATH: data/cache/k200_close.parquet
           USDKRW_CACHE_PATH: data/usdkrw_level.parquet
@@ -161,7 +174,7 @@ jobs:
           set -e
           export PYTHONPATH=src
           python src/factors/f01_momentum.py
-          python src/factors/f04_putcall.py
+          python src/factors/calc_f04.py
           python src/factors/f06_vkospi.py
           python src/factors/f08_foreigner_flow.py
           python src/factors/f09_margin_ratio.py
