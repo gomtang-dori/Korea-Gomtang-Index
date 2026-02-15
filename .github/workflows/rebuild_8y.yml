@@ -32,13 +32,15 @@ jobs:
           pip install -r requirements.txt
 
       - name: Set date range (8y rebuild)
+        shell: bash
         run: |
+          set -e
           END=$(date -u -d '1 day ago' +%Y%m%d)
           START="${{ inputs.start }}"
 
-          echo "BACKFILL_END=$END" >> $GITHUB_ENV
-          echo "BACKFILL_START=$START" >> $GITHUB_ENV
-          echo "CACHE_BUFFER_DAYS=${{ inputs.cache_buffer_days }}" >> $GITHUB_ENV
+          echo "BACKFILL_END=$END" >> "$GITHUB_ENV"
+          echo "BACKFILL_START=$START" >> "$GITHUB_ENV"
+          echo "CACHE_BUFFER_DAYS=${{ inputs.cache_buffer_days }}" >> "$GITHUB_ENV"
 
           echo "[rebuild_8y] START=$START END=$END BUFFER=${{ inputs.cache_buffer_days }}"
 
@@ -116,23 +118,19 @@ jobs:
           export PYTHONPATH=src
           python src/vkospi_fetch.py
 
-      - name: Cache Put/Call (ECOS hybrid - vol + trdval)
+      # ✅ F04 Put/Call: KRX로 8년치 백필
+      - name: Cache Put/Call (KRX) [8y backfill]
         env:
-          ECOS_KEY: ${{ secrets.ECOS_KEY }}
+          KRX_AUTH_KEY: ${{ secrets.KRX_AUTH_KEY }}
+          KRX_EQSOP_URL: ${{ secrets.KRX_EQSOP_URL }}
+          KRX_EQKOP_URL: ${{ secrets.KRX_EQKOP_URL }}
           BACKFILL_START: ${{ env.BACKFILL_START }}
           BACKFILL_END: ${{ env.BACKFILL_END }}
-          CACHE_BUFFER_DAYS: ${{ env.CACHE_BUFFER_DAYS }}
           PUTCALL_CACHE_PATH: data/cache/putcall_ratio.parquet
-          PUTCALL_ECOS_STAT_CODE: "901Y058"
-          PUTCALL_ECOS_CYCLE: "D"
-          PUTCALL_ECOS_CALL_VOL_CODE1: "S26BA"
-          PUTCALL_ECOS_PUT_VOL_CODE1: "S26CA"
-          PUTCALL_ECOS_CALL_TRDVAL_CODE1: "S26BC"
-          PUTCALL_ECOS_PUT_TRDVAL_CODE1: "S26CC"
         run: |
           set -e
           export PYTHONPATH=src
-          python src/caches/cache_putcall_ecos.py
+          python src/caches/cache_putcall.py
 
       - name: Sanity check caches exist
         run: |
@@ -167,12 +165,15 @@ jobs:
           set -e
           export PYTHONPATH=src
           python src/factors/f01_momentum.py
-          python src/factors/calc_f04.py
+          python src/factors/f04_putcall.py
           python src/factors/f06_vkospi.py
           python src/factors/f08_foreigner_flow.py
           python src/factors/f09_margin_ratio.py
           python src/factors/f10_fxvol.py
 
+      # -------------------------
+      # Assemble + Report
+      # -------------------------
       - name: Assemble & Report Generation
         run: |
           set -e
@@ -189,6 +190,7 @@ jobs:
           python src/parquet_to_csv.py
 
       - name: Commit & push outputs (rebase-safe)
+        shell: bash
         run: |
           set -euo pipefail
           git config user.name "github-actions"
