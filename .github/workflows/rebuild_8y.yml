@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       start:
-        description: "8년치 시작일 (YYYYMMDD)"
+        description: "8년치 시작일 (YYYYMMDD) - F04는 분기 백필에 사용"
         required: true
         default: "20180101"
       cache_buffer_days:
@@ -118,13 +118,435 @@ jobs:
           export PYTHONPATH=src
           python src/vkospi_fetch.py
 
-      # ✅ F04 Put/Call: KRX로 8년치 백필
-      - name: Cache Put/Call (KRX) [8y backfill]
+      # -------------------------
+      # F04 Put/Call (KRX) - 분기(3개월) 단위 백필
+      #   - 분기별로 cache_putcall.py를 반복 실행하여 putcall_ratio.parquet에 upsert
+      #   - 마지막에 f04_putcall.py로 스코어 생성
+      # -------------------------
+
+      - name: Cache Put/Call (KRX) 2018Q1
         env:
           KRX_AUTH_KEY: ${{ secrets.KRX_AUTH_KEY }}
           KRX_EQSOP_URL: ${{ secrets.KRX_EQSOP_URL }}
           KRX_EQKOP_URL: ${{ secrets.KRX_EQKOP_URL }}
-          BACKFILL_START: ${{ env.BACKFILL_START }}
+          BACKFILL_START: "20180101"
+          BACKFILL_END: "20180331"
+          PUTCALL_CACHE_PATH: data/cache/putcall_ratio.parquet
+        run: |
+          set -e
+          export PYTHONPATH=src
+          python src/caches/cache_putcall.py
+
+      - name: Cache Put/Call (KRX) 2018Q2
+        env:
+          KRX_AUTH_KEY: ${{ secrets.KRX_AUTH_KEY }}
+          KRX_EQSOP_URL: ${{ secrets.KRX_EQSOP_URL }}
+          KRX_EQKOP_URL: ${{ secrets.KRX_EQKOP_URL }}
+          BACKFILL_START: "20180401"
+          BACKFILL_END: "20180630"
+          PUTCALL_CACHE_PATH: data/cache/putcall_ratio.parquet
+        run: |
+          set -e
+          export PYTHONPATH=src
+          python src/caches/cache_putcall.py
+
+      - name: Cache Put/Call (KRX) 2018Q3
+        env:
+          KRX_AUTH_KEY: ${{ secrets.KRX_AUTH_KEY }}
+          KRX_EQSOP_URL: ${{ secrets.KRX_EQSOP_URL }}
+          KRX_EQKOP_URL: ${{ secrets.KRX_EQKOP_URL }}
+          BACKFILL_START: "20180701"
+          BACKFILL_END: "20180930"
+          PUTCALL_CACHE_PATH: data/cache/putcall_ratio.parquet
+        run: |
+          set -e
+          export PYTHONPATH=src
+          python src/caches/cache_putcall.py
+
+      - name: Cache Put/Call (KRX) 2018Q4
+        env:
+          KRX_AUTH_KEY: ${{ secrets.KRX_AUTH_KEY }}
+          KRX_EQSOP_URL: ${{ secrets.KRX_EQSOP_URL }}
+          KRX_EQKOP_URL: ${{ secrets.KRX_EQKOP_URL }}
+          BACKFILL_START: "20181001"
+          BACKFILL_END: "20181231"
+          PUTCALL_CACHE_PATH: data/cache/putcall_ratio.parquet
+        run: |
+          set -e
+          export PYTHONPATH=src
+          python src/caches/cache_putcall.py
+
+      - name: Cache Put/Call (KRX) 2019Q1
+        env:
+          KRX_AUTH_KEY: ${{ secrets.KRX_AUTH_KEY }}
+          KRX_EQSOP_URL: ${{ secrets.KRX_EQSOP_URL }}
+          KRX_EQKOP_URL: ${{ secrets.KRX_EQKOP_URL }}
+          BACKFILL_START: "20190101"
+          BACKFILL_END: "20190331"
+          PUTCALL_CACHE_PATH: data/cache/putcall_ratio.parquet
+        run: |
+          set -e
+          export PYTHONPATH=src
+          python src/caches/cache_putcall.py
+
+      - name: Cache Put/Call (KRX) 2019Q2
+        env:
+          KRX_AUTH_KEY: ${{ secrets.KRX_AUTH_KEY }}
+          KRX_EQSOP_URL: ${{ secrets.KRX_EQSOP_URL }}
+          KRX_EQKOP_URL: ${{ secrets.KRX_EQKOP_URL }}
+          BACKFILL_START: "20190401"
+          BACKFILL_END: "20190630"
+          PUTCALL_CACHE_PATH: data/cache/putcall_ratio.parquet
+        run: |
+          set -e
+          export PYTHONPATH=src
+          python src/caches/cache_putcall.py
+
+      - name: Cache Put/Call (KRX) 2019Q3
+        env:
+          KRX_AUTH_KEY: ${{ secrets.KRX_AUTH_KEY }}
+          KRX_EQSOP_URL: ${{ secrets.KRX_EQSOP_URL }}
+          KRX_EQKOP_URL: ${{ secrets.KRX_EQKOP_URL }}
+          BACKFILL_START: "20190701"
+          BACKFILL_END: "20190930"
+          PUTCALL_CACHE_PATH: data/cache/putcall_ratio.parquet
+        run: |
+          set -e
+          export PYTHONPATH=src
+          python src/caches/cache_putcall.py
+
+      - name: Cache Put/Call (KRX) 2019Q4
+        env:
+          KRX_AUTH_KEY: ${{ secrets.KRX_AUTH_KEY }}
+          KRX_EQSOP_URL: ${{ secrets.KRX_EQSOP_URL }}
+          KRX_EQKOP_URL: ${{ secrets.KRX_EQKOP_URL }}
+          BACKFILL_START: "20191001"
+          BACKFILL_END: "20191231"
+          PUTCALL_CACHE_PATH: data/cache/putcall_ratio.parquet
+        run: |
+          set -e
+          export PYTHONPATH=src
+          python src/caches/cache_putcall.py
+
+      - name: Cache Put/Call (KRX) 2020Q1
+        env:
+          KRX_AUTH_KEY: ${{ secrets.KRX_AUTH_KEY }}
+          KRX_EQSOP_URL: ${{ secrets.KRX_EQSOP_URL }}
+          KRX_EQKOP_URL: ${{ secrets.KRX_EQKOP_URL }}
+          BACKFILL_START: "20200101"
+          BACKFILL_END: "20200331"
+          PUTCALL_CACHE_PATH: data/cache/putcall_ratio.parquet
+        run: |
+          set -e
+          export PYTHONPATH=src
+          python src/caches/cache_putcall.py
+
+      - name: Cache Put/Call (KRX) 2020Q2
+        env:
+          KRX_AUTH_KEY: ${{ secrets.KRX_AUTH_KEY }}
+          KRX_EQSOP_URL: ${{ secrets.KRX_EQSOP_URL }}
+          KRX_EQKOP_URL: ${{ secrets.KRX_EQKOP_URL }}
+          BACKFILL_START: "20200401"
+          BACKFILL_END: "20200630"
+          PUTCALL_CACHE_PATH: data/cache/putcall_ratio.parquet
+        run: |
+          set -e
+          export PYTHONPATH=src
+          python src/caches/cache_putcall.py
+
+      - name: Cache Put/Call (KRX) 2020Q3
+        env:
+          KRX_AUTH_KEY: ${{ secrets.KRX_AUTH_KEY }}
+          KRX_EQSOP_URL: ${{ secrets.KRX_EQSOP_URL }}
+          KRX_EQKOP_URL: ${{ secrets.KRX_EQKOP_URL }}
+          BACKFILL_START: "20200701"
+          BACKFILL_END: "20200930"
+          PUTCALL_CACHE_PATH: data/cache/putcall_ratio.parquet
+        run: |
+          set -e
+          export PYTHONPATH=src
+          python src/caches/cache_putcall.py
+
+      - name: Cache Put/Call (KRX) 2020Q4
+        env:
+          KRX_AUTH_KEY: ${{ secrets.KRX_AUTH_KEY }}
+          KRX_EQSOP_URL: ${{ secrets.KRX_EQSOP_URL }}
+          KRX_EQKOP_URL: ${{ secrets.KRX_EQKOP_URL }}
+          BACKFILL_START: "20201001"
+          BACKFILL_END: "20201231"
+          PUTCALL_CACHE_PATH: data/cache/putcall_ratio.parquet
+        run: |
+          set -e
+          export PYTHONPATH=src
+          python src/caches/cache_putcall.py
+
+      - name: Cache Put/Call (KRX) 2021Q1
+        env:
+          KRX_AUTH_KEY: ${{ secrets.KRX_AUTH_KEY }}
+          KRX_EQSOP_URL: ${{ secrets.KRX_EQSOP_URL }}
+          KRX_EQKOP_URL: ${{ secrets.KRX_EQKOP_URL }}
+          BACKFILL_START: "20210101"
+          BACKFILL_END: "20210331"
+          PUTCALL_CACHE_PATH: data/cache/putcall_ratio.parquet
+        run: |
+          set -e
+          export PYTHONPATH=src
+          python src/caches/cache_putcall.py
+
+      - name: Cache Put/Call (KRX) 2021Q2
+        env:
+          KRX_AUTH_KEY: ${{ secrets.KRX_AUTH_KEY }}
+          KRX_EQSOP_URL: ${{ secrets.KRX_EQSOP_URL }}
+          KRX_EQKOP_URL: ${{ secrets.KRX_EQKOP_URL }}
+          BACKFILL_START: "20210401"
+          BACKFILL_END: "20210630"
+          PUTCALL_CACHE_PATH: data/cache/putcall_ratio.parquet
+        run: |
+          set -e
+          export PYTHONPATH=src
+          python src/caches/cache_putcall.py
+
+      - name: Cache Put/Call (KRX) 2021Q3
+        env:
+          KRX_AUTH_KEY: ${{ secrets.KRX_AUTH_KEY }}
+          KRX_EQSOP_URL: ${{ secrets.KRX_EQSOP_URL }}
+          KRX_EQKOP_URL: ${{ secrets.KRX_EQKOP_URL }}
+          BACKFILL_START: "20210701"
+          BACKFILL_END: "20210930"
+          PUTCALL_CACHE_PATH: data/cache/putcall_ratio.parquet
+        run: |
+          set -e
+          export PYTHONPATH=src
+          python src/caches/cache_putcall.py
+
+      - name: Cache Put/Call (KRX) 2021Q4
+        env:
+          KRX_AUTH_KEY: ${{ secrets.KRX_AUTH_KEY }}
+          KRX_EQSOP_URL: ${{ secrets.KRX_EQSOP_URL }}
+          KRX_EQKOP_URL: ${{ secrets.KRX_EQKOP_URL }}
+          BACKFILL_START: "20211001"
+          BACKFILL_END: "20211231"
+          PUTCALL_CACHE_PATH: data/cache/putcall_ratio.parquet
+        run: |
+          set -e
+          export PYTHONPATH=src
+          python src/caches/cache_putcall.py
+
+      - name: Cache Put/Call (KRX) 2022Q1
+        env:
+          KRX_AUTH_KEY: ${{ secrets.KRX_AUTH_KEY }}
+          KRX_EQSOP_URL: ${{ secrets.KRX_EQSOP_URL }}
+          KRX_EQKOP_URL: ${{ secrets.KRX_EQKOP_URL }}
+          BACKFILL_START: "20220101"
+          BACKFILL_END: "20220331"
+          PUTCALL_CACHE_PATH: data/cache/putcall_ratio.parquet
+        run: |
+          set -e
+          export PYTHONPATH=src
+          python src/caches/cache_putcall.py
+
+      - name: Cache Put/Call (KRX) 2022Q2
+        env:
+          KRX_AUTH_KEY: ${{ secrets.KRX_AUTH_KEY }}
+          KRX_EQSOP_URL: ${{ secrets.KRX_EQSOP_URL }}
+          KRX_EQKOP_URL: ${{ secrets.KRX_EQKOP_URL }}
+          BACKFILL_START: "20220401"
+          BACKFILL_END: "20220630"
+          PUTCALL_CACHE_PATH: data/cache/putcall_ratio.parquet
+        run: |
+          set -e
+          export PYTHONPATH=src
+          python src/caches/cache_putcall.py
+
+      - name: Cache Put/Call (KRX) 2022Q3
+        env:
+          KRX_AUTH_KEY: ${{ secrets.KRX_AUTH_KEY }}
+          KRX_EQSOP_URL: ${{ secrets.KRX_EQSOP_URL }}
+          KRX_EQKOP_URL: ${{ secrets.KRX_EQKOP_URL }}
+          BACKFILL_START: "20220701"
+          BACKFILL_END: "20220930"
+          PUTCALL_CACHE_PATH: data/cache/putcall_ratio.parquet
+        run: |
+          set -e
+          export PYTHONPATH=src
+          python src/caches/cache_putcall.py
+
+      - name: Cache Put/Call (KRX) 2022Q4
+        env:
+          KRX_AUTH_KEY: ${{ secrets.KRX_AUTH_KEY }}
+          KRX_EQSOP_URL: ${{ secrets.KRX_EQSOP_URL }}
+          KRX_EQKOP_URL: ${{ secrets.KRX_EQKOP_URL }}
+          BACKFILL_START: "20221001"
+          BACKFILL_END: "20221231"
+          PUTCALL_CACHE_PATH: data/cache/putcall_ratio.parquet
+        run: |
+          set -e
+          export PYTHONPATH=src
+          python src/caches/cache_putcall.py
+
+      - name: Cache Put/Call (KRX) 2023Q1
+        env:
+          KRX_AUTH_KEY: ${{ secrets.KRX_AUTH_KEY }}
+          KRX_EQSOP_URL: ${{ secrets.KRX_EQSOP_URL }}
+          KRX_EQKOP_URL: ${{ secrets.KRX_EQKOP_URL }}
+          BACKFILL_START: "20230101"
+          BACKFILL_END: "20230331"
+          PUTCALL_CACHE_PATH: data/cache/putcall_ratio.parquet
+        run: |
+          set -e
+          export PYTHONPATH=src
+          python src/caches/cache_putcall.py
+
+      - name: Cache Put/Call (KRX) 2023Q2
+        env:
+          KRX_AUTH_KEY: ${{ secrets.KRX_AUTH_KEY }}
+          KRX_EQSOP_URL: ${{ secrets.KRX_EQSOP_URL }}
+          KRX_EQKOP_URL: ${{ secrets.KRX_EQKOP_URL }}
+          BACKFILL_START: "20230401"
+          BACKFILL_END: "20230630"
+          PUTCALL_CACHE_PATH: data/cache/putcall_ratio.parquet
+        run: |
+          set -e
+          export PYTHONPATH=src
+          python src/caches/cache_putcall.py
+
+      - name: Cache Put/Call (KRX) 2023Q3
+        env:
+          KRX_AUTH_KEY: ${{ secrets.KRX_AUTH_KEY }}
+          KRX_EQSOP_URL: ${{ secrets.KRX_EQSOP_URL }}
+          KRX_EQKOP_URL: ${{ secrets.KRX_EQKOP_URL }}
+          BACKFILL_START: "20230701"
+          BACKFILL_END: "20230930"
+          PUTCALL_CACHE_PATH: data/cache/putcall_ratio.parquet
+        run: |
+          set -e
+          export PYTHONPATH=src
+          python src/caches/cache_putcall.py
+
+      - name: Cache Put/Call (KRX) 2023Q4
+        env:
+          KRX_AUTH_KEY: ${{ secrets.KRX_AUTH_KEY }}
+          KRX_EQSOP_URL: ${{ secrets.KRX_EQSOP_URL }}
+          KRX_EQKOP_URL: ${{ secrets.KRX_EQKOP_URL }}
+          BACKFILL_START: "20231001"
+          BACKFILL_END: "20231231"
+          PUTCALL_CACHE_PATH: data/cache/putcall_ratio.parquet
+        run: |
+          set -e
+          export PYTHONPATH=src
+          python src/caches/cache_putcall.py
+
+      - name: Cache Put/Call (KRX) 2024Q1
+        env:
+          KRX_AUTH_KEY: ${{ secrets.KRX_AUTH_KEY }}
+          KRX_EQSOP_URL: ${{ secrets.KRX_EQSOP_URL }}
+          KRX_EQKOP_URL: ${{ secrets.KRX_EQKOP_URL }}
+          BACKFILL_START: "20240101"
+          BACKFILL_END: "20240331"
+          PUTCALL_CACHE_PATH: data/cache/putcall_ratio.parquet
+        run: |
+          set -e
+          export PYTHONPATH=src
+          python src/caches/cache_putcall.py
+
+      - name: Cache Put/Call (KRX) 2024Q2
+        env:
+          KRX_AUTH_KEY: ${{ secrets.KRX_AUTH_KEY }}
+          KRX_EQSOP_URL: ${{ secrets.KRX_EQSOP_URL }}
+          KRX_EQKOP_URL: ${{ secrets.KRX_EQKOP_URL }}
+          BACKFILL_START: "20240401"
+          BACKFILL_END: "20240630"
+          PUTCALL_CACHE_PATH: data/cache/putcall_ratio.parquet
+        run: |
+          set -e
+          export PYTHONPATH=src
+          python src/caches/cache_putcall.py
+
+      - name: Cache Put/Call (KRX) 2024Q3
+        env:
+          KRX_AUTH_KEY: ${{ secrets.KRX_AUTH_KEY }}
+          KRX_EQSOP_URL: ${{ secrets.KRX_EQSOP_URL }}
+          KRX_EQKOP_URL: ${{ secrets.KRX_EQKOP_URL }}
+          BACKFILL_START: "20240701"
+          BACKFILL_END: "20240930"
+          PUTCALL_CACHE_PATH: data/cache/putcall_ratio.parquet
+        run: |
+          set -e
+          export PYTHONPATH=src
+          python src/caches/cache_putcall.py
+
+      - name: Cache Put/Call (KRX) 2024Q4
+        env:
+          KRX_AUTH_KEY: ${{ secrets.KRX_AUTH_KEY }}
+          KRX_EQSOP_URL: ${{ secrets.KRX_EQSOP_URL }}
+          KRX_EQKOP_URL: ${{ secrets.KRX_EQKOP_URL }}
+          BACKFILL_START: "20241001"
+          BACKFILL_END: "20241231"
+          PUTCALL_CACHE_PATH: data/cache/putcall_ratio.parquet
+        run: |
+          set -e
+          export PYTHONPATH=src
+          python src/caches/cache_putcall.py
+
+      - name: Cache Put/Call (KRX) 2025Q1
+        env:
+          KRX_AUTH_KEY: ${{ secrets.KRX_AUTH_KEY }}
+          KRX_EQSOP_URL: ${{ secrets.KRX_EQSOP_URL }}
+          KRX_EQKOP_URL: ${{ secrets.KRX_EQKOP_URL }}
+          BACKFILL_START: "20250101"
+          BACKFILL_END: "20250331"
+          PUTCALL_CACHE_PATH: data/cache/putcall_ratio.parquet
+        run: |
+          set -e
+          export PYTHONPATH=src
+          python src/caches/cache_putcall.py
+
+      - name: Cache Put/Call (KRX) 2025Q2
+        env:
+          KRX_AUTH_KEY: ${{ secrets.KRX_AUTH_KEY }}
+          KRX_EQSOP_URL: ${{ secrets.KRX_EQSOP_URL }}
+          KRX_EQKOP_URL: ${{ secrets.KRX_EQKOP_URL }}
+          BACKFILL_START: "20250401"
+          BACKFILL_END: "20250630"
+          PUTCALL_CACHE_PATH: data/cache/putcall_ratio.parquet
+        run: |
+          set -e
+          export PYTHONPATH=src
+          python src/caches/cache_putcall.py
+
+      - name: Cache Put/Call (KRX) 2025Q3
+        env:
+          KRX_AUTH_KEY: ${{ secrets.KRX_AUTH_KEY }}
+          KRX_EQSOP_URL: ${{ secrets.KRX_EQSOP_URL }}
+          KRX_EQKOP_URL: ${{ secrets.KRX_EQKOP_URL }}
+          BACKFILL_START: "20250701"
+          BACKFILL_END: "20250930"
+          PUTCALL_CACHE_PATH: data/cache/putcall_ratio.parquet
+        run: |
+          set -e
+          export PYTHONPATH=src
+          python src/caches/cache_putcall.py
+
+      - name: Cache Put/Call (KRX) 2025Q4
+        env:
+          KRX_AUTH_KEY: ${{ secrets.KRX_AUTH_KEY }}
+          KRX_EQSOP_URL: ${{ secrets.KRX_EQSOP_URL }}
+          KRX_EQKOP_URL: ${{ secrets.KRX_EQKOP_URL }}
+          BACKFILL_START: "20251001"
+          BACKFILL_END: "20251231"
+          PUTCALL_CACHE_PATH: data/cache/putcall_ratio.parquet
+        run: |
+          set -e
+          export PYTHONPATH=src
+          python src/caches/cache_putcall.py
+
+      # 진행 중 분기(현재 2026Q1)는 workflow에서 계산한 BACKFILL_END(어제)까지
+      - name: Cache Put/Call (KRX) 2026Q1 (to BACKFILL_END)
+        env:
+          KRX_AUTH_KEY: ${{ secrets.KRX_AUTH_KEY }}
+          KRX_EQSOP_URL: ${{ secrets.KRX_EQSOP_URL }}
+          KRX_EQKOP_URL: ${{ secrets.KRX_EQKOP_URL }}
+          BACKFILL_START: "20260101"
           BACKFILL_END: ${{ env.BACKFILL_END }}
           PUTCALL_CACHE_PATH: data/cache/putcall_ratio.parquet
         run: |
