@@ -116,7 +116,7 @@ jobs:
           export PYTHONPATH=src
           python src/vkospi_fetch.py
 
-      - name: Cache Put/Call (ECOS hybrid: vol + trdval)
+      - name: Cache Put/Call (ECOS hybrid - vol + trdval)
         env:
           ECOS_KEY: ${{ secrets.ECOS_KEY }}
           BACKFILL_START: ${{ env.BACKFILL_START }}
