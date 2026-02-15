@@ -30,17 +30,13 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Install dependencies
-        shell: bash
+      - name: Install
         run: |
-          set -euo pipefail
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: Re-calc factors (1Y window = 1y percentile)
-        shell: bash
+      - name: Calc factors
         run: |
-          set -euo pipefail
           python src/factors/f01_momentum.py
           python src/factors/f02_strength.py || true
           python src/factors/f03_adr_breadth.py || true
@@ -52,45 +48,32 @@ jobs:
           python src/factors/f09_margin_ratio.py || true
           python src/factors/f10_fxvol.py
 
-      - name: Assemble index (1Y policy: EMA20 + EMA5)
-        shell: bash
+      - name: Assemble
         run: |
-          set -euo pipefail
           python src/assemble/assemble_index.py
 
-      - name: Convert parquet to CSV (1Y)
-        shell: bash
+      - name: To CSV
         run: |
-          set -euo pipefail
           python src/parquet_to_csv.py
 
-      - name: Render report (1Y)
-        shell: bash
+      - name: Report
         run: |
-          set -euo pipefail
           python src/report/render_report.py
 
-      - name: Commit & push (if changed)
-        shell: bash
+      - name: Commit
         run: |
-          set -euo pipefail
           git config user.name "github-actions"
           git config user.email "github-actions@github.com"
-
           git add data/factors/ || true
           git add data/index_daily_1Y.parquet data/index_daily_1Y.csv || true
           git add docs/Korea-Gomtang-Index_1Y.html || true
-
           if git diff --staged --quiet; then
-            echo "No changes to commit."
+            echo "No changes"
             exit 0
           fi
-
-          git commit -m "Build 1Y index (EMA20/EMA5, 1y percentile) $(date -u +%Y-%m-%d)"
-
+          git commit -m "Build 1Y index $(date -u +%Y-%m-%d)"
           git stash push -u -m actions-stash-before-rebase || true
           git fetch origin main
           git pull --rebase origin main
           git stash pop || true
-
           git push origin HEAD:main
