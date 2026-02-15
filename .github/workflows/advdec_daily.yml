@@ -95,12 +95,26 @@ jobs:
           set -euo pipefail
           git config user.name "github-actions"
           git config user.email "github-actions@github.com"
-
+          
+          # 1) 우선 생성된 파일들을 스테이징(커밋 대상)
           git add data/factors/f02.parquet data/factors/f03.parquet || true
+          
+          # 변경 없으면 종료
           git diff --quiet && git diff --staged --quiet && exit 0
-
+          
+          # 2) rebase pull을 위해 잠시 stash (staged 포함)
+          git stash push -u -m "actions-stash-before-rebase" || true
+          
+          # 3) 최신 main 반영
           git fetch origin main
           git pull --rebase origin main
-
+          
+          # 4) stash 복원
+          git stash pop || true
+          
+          # 5) 다시 add 후 commit/push
+          git add data/factors/f02.parquet data/factors/f03.parquet || true
+          git diff --quiet && git diff --staged --quiet && exit 0
+          
           git commit -m "Daily adv/dec factors recent4 $(date -u +%Y-%m-%d)" || true
           git push origin HEAD:main
