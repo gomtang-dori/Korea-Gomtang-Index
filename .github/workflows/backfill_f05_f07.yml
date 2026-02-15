@@ -1,0 +1,138 @@
+name: backfill_f05_f07
+
+on:
+  workflow_dispatch:
+    inputs:
+      start:
+        description: "백필 시작일 (YYYYMMDD)"
+        required: true
+        default: "20180101"
+      cache_buffer_days:
+        description: "API/휴일 버퍼 (days)"
+        required: true
+        default: "450"
+      f07_horizon_days:
+        description: "F07 horizon days (기본 20)"
+        required: true
+        default: "20"
+
+jobs:
+  backfill:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          set -e
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Set backfill range (START=input, END=yesterday UTC)
+        shell: bash
+        run: |
+          set -euo pipefail
+          END=$(date -u -d '1 day ago' +%Y%m%d)
+          echo "BACKFILL_START=${{ inputs.start }}" >> "$GITHUB_ENV"
+          echo "BACKFILL_END=$END" >> "$GITHUB_ENV"
+          echo "CACHE_BUFFER_DAYS=${{ inputs.cache_buffer_days }}" >> "$GITHUB_ENV"
+          echo "F07_HORIZON_DAYS=${{ inputs.f07_horizon_days }}" >> "$GITHUB_ENV"
+          echo "[backfill_f05_f07] START=${{ inputs.start }} END=$END BUFFER=${{ inputs.cache_buffer_days }}"
+
+      - name: Cache Rates 3Y Bundle (ECOS)
+        env:
+          ECOS_KEY: ${{ secrets.ECOS_KEY }}
+          BACKFILL_START: ${{ env.BACKFILL_START }}
+          BACKFILL_END: ${{ env.BACKFILL_END }}
+          CACHE_BUFFER_DAYS: ${{ env.CACHE_BUFFER_DAYS }}
+          RATES_STAT_CODE: "817Y002"
+          RATES_CYCLE: "D"
+          ECOS_KTB3Y_ITEM_CODE1: "010200000"
+          ECOS_CORP3Y_AA_ITEM_CODE1: "010300000"
+          ECOS_CORP3Y_BBB_ITEM_CODE1: "010320000"
+          RATES_3Y_BUNDLE_PATH: data/cache/rates_3y_bundle.parquet
+        run: |
+          set -e
+          export PYTHONPATH=src
+          python src/caches/cache_rates_3y_bundle_ecos.py
+
+      - name: Cache KOSPI200 close (FDR)
+        env:
+          BACKFILL_START: ${{ env.BACKFILL_START }}
+          BACKFILL_END: ${{ env.BACKFILL_END }}
+          CACHE_BUFFER_DAYS: ${{ env.CACHE_BUFFER_DAYS }}
+          K200_CACHE_PATH: data/cache/k200_close.parquet
+          K200_SYMBOL: "KS200"
+        run: |
+          set -e
+          export PYTHONPATH=src
+          python src/caches/cache_k200_close_fdr.py
+
+      - name: Calculate F05 + F07 (from caches)
+        env:
+          ROLLING_DAYS: "1260"
+          MIN_OBS: "252"
+          WINSOR_P: "0.01"
+          F07_HORIZON_DAYS: ${{ env.F07_HORIZON_DAYS }}
+          K200_CACHE_PATH: data/cache/k200_close.parquet
+          RATES_3Y_BUNDLE_PATH: data/cache/rates_3y_bundle.parquet
+          F05_OUT_PATH: data/factors/f05.parquet
+          F07_OUT_PATH: data/factors/f07.parquet
+        run: |
+          set -e
+          export PYTHONPATH=src
+          python src/factors/f05_credit_spread.py
+          python src/factors/f07_safehaven.py
+
+      - name: Quick sanity check
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f data/cache/rates_3y_bundle.parquet
+          test -f data/cache/k200_close.parquet
+          test -f data/factors/f05.parquet
+          test -f data/factors/f07.parquet
+          ls -lah data/cache data/factors | sed -n '1,200p'
+
+      - name: Commit & push (if changed)
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions"
+          git config user.email "github-actions@github.com"
+
+          git add data/cache/rates_3y_bundle.parquet data/cache/rates_3y_bundle.csv \
+                  data/cache/k200_close.parquet \
+                  data/factors/f05.parquet data/factors/f07.parquet || true
+
+          if git diff --staged --quiet; then
+            echo "No changes to commit."
+            exit 0
+          fi
+
+          git stash push -u -m "actions-stash-before-rebase" || true
+          git fetch origin main
+          git pull --rebase origin main
+          git stash pop || true
+
+          git add data/cache/rates_3y_bundle.parquet data/cache/rates_3y_bundle.csv \
+                  data/cache/k200_close.parquet \
+                  data/factors/f05.parquet data/factors/f07.parquet || true
+
+          if git diff --staged --quiet; then
+            echo "No staged changes after rebase."
+            exit 0
+          fi
+
+          git commit -m "Backfill bundle F05/F07 (${BACKFILL_START}~${BACKFILL_END})" || true
+          git push origin HEAD:main
