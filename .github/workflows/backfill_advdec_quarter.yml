@@ -10,11 +10,11 @@ on:
       end:
         description: "종료일 (YYYYMMDD) 예: 20180331"
         required: true
-        default: "20180331"
+        default: "20181231"
       sleep_sec:
         description: "호출 간 sleep(초). 추천 0.5"
         required: true
-        default: "0.5"
+        default: "0.7"
 
 jobs:
   backfill:
@@ -30,10 +30,30 @@ jobs:
         with:
           python-version: "3.11"
 
+      # (핵심) SQLite 누적을 위해 Actions Cache에서 복원
+      - name: Restore adv/dec SQLite cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            data/cache/adv_dec_daily.sqlite
+            data/cache/adv_dec_daily.sqlite-wal
+            data/cache/adv_dec_daily.sqlite-shm
+          # 브랜치별 누적 (main이면 advdec-sqlite-main)
+          key: advdec-sqlite-${{ github.ref_name }}
+          restore-keys: |
+            advdec-sqlite-
+
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
+
+      - name: Ensure cache directory exists
+        run: |
+          set -euo pipefail
+          mkdir -p data/cache
+          echo "== before run: data/cache =="
+          ls -lah data/cache || true
 
       - name: Run adv/dec backfill (quarter)
         env:
@@ -50,7 +70,14 @@ jobs:
           export PYTHONPATH=src
           mkdir -p data/cache
           python -u src/caches/cache_adv_dec_daily_krx_sqlite.py
-          echo "== cache dir =="
+          echo "== after run: data/cache =="
+          ls -lah data/cache || true
+          test -f data/cache/adv_dec_daily.sqlite
+
+      - name: Verify SQLite exists (pre-save)
+        run: |
+          set -euo pipefail
+          echo "== pre-save: data/cache =="
           ls -lah data/cache || true
           test -f data/cache/adv_dec_daily.sqlite
 
