@@ -4,11 +4,11 @@ on:
   workflow_dispatch:
     inputs:
       start:
-        description: "8년치 시작일 (YYYYMMDD) - F04는 분기 백필에 사용"
+        description: "백필 시작일 (YYYYMMDD)"
         required: true
         default: "20180101"
       cache_buffer_days:
-        description: "캐시 버퍼(일). 기본 450"
+        description: "API/휴일 버퍼 (days)"
         required: true
         default: "450"
 
@@ -18,70 +18,62 @@ jobs:
     timeout-minutes: 360
 
     steps:
-      - name: Checkout repository
+      - name: Checkout
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
-      - name: Set up Python
+      - name: Setup Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
 
       - name: Install dependencies
         run: |
+          set -e
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: Set date range (8y rebuild)
+      - name: Set date range
         shell: bash
         run: |
-          set -e
+          set -euo pipefail
           END=$(date -u -d '1 day ago' +%Y%m%d)
-          START="${{ inputs.start }}"
-
+          echo "BACKFILL_START=${{ inputs.start }}" >> "$GITHUB_ENV"
           echo "BACKFILL_END=$END" >> "$GITHUB_ENV"
-          echo "BACKFILL_START=$START" >> "$GITHUB_ENV"
           echo "CACHE_BUFFER_DAYS=${{ inputs.cache_buffer_days }}" >> "$GITHUB_ENV"
+          echo "PUTCALL_CACHE_PATH=data/cache/putcall_ratio.parquet" >> "$GITHUB_ENV"
 
-          echo "[rebuild_8y] START=$START END=$END BUFFER=${{ inputs.cache_buffer_days }}"
-
-      # -------------------------
-      # 데이터 수집 (Caches)
-      # -------------------------
-      - name: Cache Rates 3Y Bundle (ECOS 817Y002) [KTB3Y + Corp AA-/BBB-]
+      # -----------------------------
+      # Non-Put/Call caches (1회 실행)
+      # -----------------------------
+      - name: Cache Rates 3Y bundle (ECOS)
         env:
           ECOS_KEY: ${{ secrets.ECOS_KEY }}
           BACKFILL_START: ${{ env.BACKFILL_START }}
           BACKFILL_END: ${{ env.BACKFILL_END }}
           CACHE_BUFFER_DAYS: ${{ env.CACHE_BUFFER_DAYS }}
-          RATES_STAT_CODE: "817Y002"
-          RATES_CYCLE: "D"
-          ECOS_KTB3Y_ITEM_CODE1: "010200000"
-          ECOS_CORP3Y_AA_ITEM_CODE1: "010300000"
-          ECOS_CORP3Y_BBB_ITEM_CODE1: "010320000"
-          RATES_3Y_BUNDLE_PATH: data/cache/rates_3y_bundle.parquet
         run: |
           set -e
           export PYTHONPATH=src
           python src/caches/cache_rates_3y_bundle_ecos.py
 
-      - name: Cache F08 (Foreigner flow) [pykrx] KOSPI+KOSDAQ
+      - name: Cache F08 Foreigner flow (pykrx)
         env:
           BACKFILL_START: ${{ env.BACKFILL_START }}
           BACKFILL_END: ${{ env.BACKFILL_END }}
           CACHE_BUFFER_DAYS: ${{ env.CACHE_BUFFER_DAYS }}
-          F08_CACHE_PATH: data/cache/f08_foreigner_flow.parquet
         run: |
           set -e
           export PYTHONPATH=src
           python src/caches/cache_f08_foreigner_flow_pykrx.py
 
-      - name: Cache F09 (Credit/Deposit) [data.go.kr]
+      - name: Cache F09 Credit/Deposit (data.go.kr)
         env:
-          DATA_GO_KR_SERVICE_KEY: ${{ secrets.DATA_GO_KR_SERVICE_KEY }}
+          DATAGO_KEY: ${{ secrets.DATAGO_KEY }}
           BACKFILL_START: ${{ env.BACKFILL_START }}
           BACKFILL_END: ${{ env.BACKFILL_END }}
           CACHE_BUFFER_DAYS: ${{ env.CACHE_BUFFER_DAYS }}
-          F09_CACHE_PATH: data/cache/f09_credit_deposit.parquet
         run: |
           set -e
           export PYTHONPATH=src
@@ -92,500 +84,192 @@ jobs:
           BACKFILL_START: ${{ env.BACKFILL_START }}
           BACKFILL_END: ${{ env.BACKFILL_END }}
           CACHE_BUFFER_DAYS: ${{ env.CACHE_BUFFER_DAYS }}
-          K200_CACHE_PATH: data/cache/k200_close.parquet
-          K200_SYMBOL: "KS200"
         run: |
           set -e
           export PYTHONPATH=src
           python src/caches/cache_k200_close_fdr.py
 
-      - name: Cache USD/KRW (ECOS)
+      # USDKRW / VKOSPI 는 "최근 n일"만 뽑는 fetch 스크립트면 8년치가 안 차므로
+      # (가능하면) backfill용 스크립트를 호출하도록 구성
+      - name: Cache USD/KRW (ECOS) [BACKFILL]
         env:
           ECOS_KEY: ${{ secrets.ECOS_KEY }}
           ECOS_USDKRW_STAT_CODE: ${{ secrets.ECOS_USDKRW_STAT_CODE }}
           ECOS_USDKRW_ITEM_CODE1: ${{ secrets.ECOS_USDKRW_ITEM_CODE1 }}
+          BACKFILL_START: ${{ env.BACKFILL_START }}
+          BACKFILL_END: ${{ env.BACKFILL_END }}
+          CACHE_BUFFER_DAYS: ${{ env.CACHE_BUFFER_DAYS }}
+          USDKRW_OUT_PATH: data/usdkrw_level.parquet
         run: |
           set -e
           export PYTHONPATH=src
-          python src/usdkrw_fetch.py
+          python src/caches/cache_usdkrw_backfill_ecos.py
 
-      - name: Cache VKOSPI (KRX)
+      - name: Cache VKOSPI (KRX) [BACKFILL]
         env:
           KRX_AUTH_KEY: ${{ secrets.KRX_AUTH_KEY }}
           KRX_DVRPROD_DD_TRD_URL: ${{ secrets.KRX_DVRPROD_DD_TRD_URL }}
-        run: |
-          set -e
-          export PYTHONPATH=src
-          python src/vkospi_fetch.py
-
-      # -------------------------
-      # F04 Put/Call (KRX) - 분기(3개월) 단위 백필
-      #   - 분기별로 cache_putcall.py를 반복 실행하여 putcall_ratio.parquet에 upsert
-      #   - 마지막에 f04_putcall.py로 스코어 생성
-      # -------------------------
-
-      - name: Cache Put/Call (KRX) 2018Q1
-        env:
-          KRX_AUTH_KEY: ${{ secrets.KRX_AUTH_KEY }}
-          KRX_EQSOP_URL: ${{ secrets.KRX_EQSOP_URL }}
-          KRX_EQKOP_URL: ${{ secrets.KRX_EQKOP_URL }}
-          BACKFILL_START: "20180101"
-          BACKFILL_END: "20180331"
-          PUTCALL_CACHE_PATH: data/cache/putcall_ratio.parquet
-        run: |
-          set -e
-          export PYTHONPATH=src
-          python src/caches/cache_putcall.py
-
-      - name: Cache Put/Call (KRX) 2018Q2
-        env:
-          KRX_AUTH_KEY: ${{ secrets.KRX_AUTH_KEY }}
-          KRX_EQSOP_URL: ${{ secrets.KRX_EQSOP_URL }}
-          KRX_EQKOP_URL: ${{ secrets.KRX_EQKOP_URL }}
-          BACKFILL_START: "20180401"
-          BACKFILL_END: "20180630"
-          PUTCALL_CACHE_PATH: data/cache/putcall_ratio.parquet
-        run: |
-          set -e
-          export PYTHONPATH=src
-          python src/caches/cache_putcall.py
-
-      - name: Cache Put/Call (KRX) 2018Q3
-        env:
-          KRX_AUTH_KEY: ${{ secrets.KRX_AUTH_KEY }}
-          KRX_EQSOP_URL: ${{ secrets.KRX_EQSOP_URL }}
-          KRX_EQKOP_URL: ${{ secrets.KRX_EQKOP_URL }}
-          BACKFILL_START: "20180701"
-          BACKFILL_END: "20180930"
-          PUTCALL_CACHE_PATH: data/cache/putcall_ratio.parquet
-        run: |
-          set -e
-          export PYTHONPATH=src
-          python src/caches/cache_putcall.py
-
-      - name: Cache Put/Call (KRX) 2018Q4
-        env:
-          KRX_AUTH_KEY: ${{ secrets.KRX_AUTH_KEY }}
-          KRX_EQSOP_URL: ${{ secrets.KRX_EQSOP_URL }}
-          KRX_EQKOP_URL: ${{ secrets.KRX_EQKOP_URL }}
-          BACKFILL_START: "20181001"
-          BACKFILL_END: "20181231"
-          PUTCALL_CACHE_PATH: data/cache/putcall_ratio.parquet
-        run: |
-          set -e
-          export PYTHONPATH=src
-          python src/caches/cache_putcall.py
-
-      - name: Cache Put/Call (KRX) 2019Q1
-        env:
-          KRX_AUTH_KEY: ${{ secrets.KRX_AUTH_KEY }}
-          KRX_EQSOP_URL: ${{ secrets.KRX_EQSOP_URL }}
-          KRX_EQKOP_URL: ${{ secrets.KRX_EQKOP_URL }}
-          BACKFILL_START: "20190101"
-          BACKFILL_END: "20190331"
-          PUTCALL_CACHE_PATH: data/cache/putcall_ratio.parquet
-        run: |
-          set -e
-          export PYTHONPATH=src
-          python src/caches/cache_putcall.py
-
-      - name: Cache Put/Call (KRX) 2019Q2
-        env:
-          KRX_AUTH_KEY: ${{ secrets.KRX_AUTH_KEY }}
-          KRX_EQSOP_URL: ${{ secrets.KRX_EQSOP_URL }}
-          KRX_EQKOP_URL: ${{ secrets.KRX_EQKOP_URL }}
-          BACKFILL_START: "20190401"
-          BACKFILL_END: "20190630"
-          PUTCALL_CACHE_PATH: data/cache/putcall_ratio.parquet
-        run: |
-          set -e
-          export PYTHONPATH=src
-          python src/caches/cache_putcall.py
-
-      - name: Cache Put/Call (KRX) 2019Q3
-        env:
-          KRX_AUTH_KEY: ${{ secrets.KRX_AUTH_KEY }}
-          KRX_EQSOP_URL: ${{ secrets.KRX_EQSOP_URL }}
-          KRX_EQKOP_URL: ${{ secrets.KRX_EQKOP_URL }}
-          BACKFILL_START: "20190701"
-          BACKFILL_END: "20190930"
-          PUTCALL_CACHE_PATH: data/cache/putcall_ratio.parquet
-        run: |
-          set -e
-          export PYTHONPATH=src
-          python src/caches/cache_putcall.py
-
-      - name: Cache Put/Call (KRX) 2019Q4
-        env:
-          KRX_AUTH_KEY: ${{ secrets.KRX_AUTH_KEY }}
-          KRX_EQSOP_URL: ${{ secrets.KRX_EQSOP_URL }}
-          KRX_EQKOP_URL: ${{ secrets.KRX_EQKOP_URL }}
-          BACKFILL_START: "20191001"
-          BACKFILL_END: "20191231"
-          PUTCALL_CACHE_PATH: data/cache/putcall_ratio.parquet
-        run: |
-          set -e
-          export PYTHONPATH=src
-          python src/caches/cache_putcall.py
-
-      - name: Cache Put/Call (KRX) 2020Q1
-        env:
-          KRX_AUTH_KEY: ${{ secrets.KRX_AUTH_KEY }}
-          KRX_EQSOP_URL: ${{ secrets.KRX_EQSOP_URL }}
-          KRX_EQKOP_URL: ${{ secrets.KRX_EQKOP_URL }}
-          BACKFILL_START: "20200101"
-          BACKFILL_END: "20200331"
-          PUTCALL_CACHE_PATH: data/cache/putcall_ratio.parquet
-        run: |
-          set -e
-          export PYTHONPATH=src
-          python src/caches/cache_putcall.py
-
-      - name: Cache Put/Call (KRX) 2020Q2
-        env:
-          KRX_AUTH_KEY: ${{ secrets.KRX_AUTH_KEY }}
-          KRX_EQSOP_URL: ${{ secrets.KRX_EQSOP_URL }}
-          KRX_EQKOP_URL: ${{ secrets.KRX_EQKOP_URL }}
-          BACKFILL_START: "20200401"
-          BACKFILL_END: "20200630"
-          PUTCALL_CACHE_PATH: data/cache/putcall_ratio.parquet
-        run: |
-          set -e
-          export PYTHONPATH=src
-          python src/caches/cache_putcall.py
-
-      - name: Cache Put/Call (KRX) 2020Q3
-        env:
-          KRX_AUTH_KEY: ${{ secrets.KRX_AUTH_KEY }}
-          KRX_EQSOP_URL: ${{ secrets.KRX_EQSOP_URL }}
-          KRX_EQKOP_URL: ${{ secrets.KRX_EQKOP_URL }}
-          BACKFILL_START: "20200701"
-          BACKFILL_END: "20200930"
-          PUTCALL_CACHE_PATH: data/cache/putcall_ratio.parquet
-        run: |
-          set -e
-          export PYTHONPATH=src
-          python src/caches/cache_putcall.py
-
-      - name: Cache Put/Call (KRX) 2020Q4
-        env:
-          KRX_AUTH_KEY: ${{ secrets.KRX_AUTH_KEY }}
-          KRX_EQSOP_URL: ${{ secrets.KRX_EQSOP_URL }}
-          KRX_EQKOP_URL: ${{ secrets.KRX_EQKOP_URL }}
-          BACKFILL_START: "20201001"
-          BACKFILL_END: "20201231"
-          PUTCALL_CACHE_PATH: data/cache/putcall_ratio.parquet
-        run: |
-          set -e
-          export PYTHONPATH=src
-          python src/caches/cache_putcall.py
-
-      - name: Cache Put/Call (KRX) 2021Q1
-        env:
-          KRX_AUTH_KEY: ${{ secrets.KRX_AUTH_KEY }}
-          KRX_EQSOP_URL: ${{ secrets.KRX_EQSOP_URL }}
-          KRX_EQKOP_URL: ${{ secrets.KRX_EQKOP_URL }}
-          BACKFILL_START: "20210101"
-          BACKFILL_END: "20210331"
-          PUTCALL_CACHE_PATH: data/cache/putcall_ratio.parquet
-        run: |
-          set -e
-          export PYTHONPATH=src
-          python src/caches/cache_putcall.py
-
-      - name: Cache Put/Call (KRX) 2021Q2
-        env:
-          KRX_AUTH_KEY: ${{ secrets.KRX_AUTH_KEY }}
-          KRX_EQSOP_URL: ${{ secrets.KRX_EQSOP_URL }}
-          KRX_EQKOP_URL: ${{ secrets.KRX_EQKOP_URL }}
-          BACKFILL_START: "20210401"
-          BACKFILL_END: "20210630"
-          PUTCALL_CACHE_PATH: data/cache/putcall_ratio.parquet
-        run: |
-          set -e
-          export PYTHONPATH=src
-          python src/caches/cache_putcall.py
-
-      - name: Cache Put/Call (KRX) 2021Q3
-        env:
-          KRX_AUTH_KEY: ${{ secrets.KRX_AUTH_KEY }}
-          KRX_EQSOP_URL: ${{ secrets.KRX_EQSOP_URL }}
-          KRX_EQKOP_URL: ${{ secrets.KRX_EQKOP_URL }}
-          BACKFILL_START: "20210701"
-          BACKFILL_END: "20210930"
-          PUTCALL_CACHE_PATH: data/cache/putcall_ratio.parquet
-        run: |
-          set -e
-          export PYTHONPATH=src
-          python src/caches/cache_putcall.py
-
-      - name: Cache Put/Call (KRX) 2021Q4
-        env:
-          KRX_AUTH_KEY: ${{ secrets.KRX_AUTH_KEY }}
-          KRX_EQSOP_URL: ${{ secrets.KRX_EQSOP_URL }}
-          KRX_EQKOP_URL: ${{ secrets.KRX_EQKOP_URL }}
-          BACKFILL_START: "20211001"
-          BACKFILL_END: "20211231"
-          PUTCALL_CACHE_PATH: data/cache/putcall_ratio.parquet
-        run: |
-          set -e
-          export PYTHONPATH=src
-          python src/caches/cache_putcall.py
-
-      - name: Cache Put/Call (KRX) 2022Q1
-        env:
-          KRX_AUTH_KEY: ${{ secrets.KRX_AUTH_KEY }}
-          KRX_EQSOP_URL: ${{ secrets.KRX_EQSOP_URL }}
-          KRX_EQKOP_URL: ${{ secrets.KRX_EQKOP_URL }}
-          BACKFILL_START: "20220101"
-          BACKFILL_END: "20220331"
-          PUTCALL_CACHE_PATH: data/cache/putcall_ratio.parquet
-        run: |
-          set -e
-          export PYTHONPATH=src
-          python src/caches/cache_putcall.py
-
-      - name: Cache Put/Call (KRX) 2022Q2
-        env:
-          KRX_AUTH_KEY: ${{ secrets.KRX_AUTH_KEY }}
-          KRX_EQSOP_URL: ${{ secrets.KRX_EQSOP_URL }}
-          KRX_EQKOP_URL: ${{ secrets.KRX_EQKOP_URL }}
-          BACKFILL_START: "20220401"
-          BACKFILL_END: "20220630"
-          PUTCALL_CACHE_PATH: data/cache/putcall_ratio.parquet
-        run: |
-          set -e
-          export PYTHONPATH=src
-          python src/caches/cache_putcall.py
-
-      - name: Cache Put/Call (KRX) 2022Q3
-        env:
-          KRX_AUTH_KEY: ${{ secrets.KRX_AUTH_KEY }}
-          KRX_EQSOP_URL: ${{ secrets.KRX_EQSOP_URL }}
-          KRX_EQKOP_URL: ${{ secrets.KRX_EQKOP_URL }}
-          BACKFILL_START: "20220701"
-          BACKFILL_END: "20220930"
-          PUTCALL_CACHE_PATH: data/cache/putcall_ratio.parquet
-        run: |
-          set -e
-          export PYTHONPATH=src
-          python src/caches/cache_putcall.py
-
-      - name: Cache Put/Call (KRX) 2022Q4
-        env:
-          KRX_AUTH_KEY: ${{ secrets.KRX_AUTH_KEY }}
-          KRX_EQSOP_URL: ${{ secrets.KRX_EQSOP_URL }}
-          KRX_EQKOP_URL: ${{ secrets.KRX_EQKOP_URL }}
-          BACKFILL_START: "20221001"
-          BACKFILL_END: "20221231"
-          PUTCALL_CACHE_PATH: data/cache/putcall_ratio.parquet
-        run: |
-          set -e
-          export PYTHONPATH=src
-          python src/caches/cache_putcall.py
-
-      - name: Cache Put/Call (KRX) 2023Q1
-        env:
-          KRX_AUTH_KEY: ${{ secrets.KRX_AUTH_KEY }}
-          KRX_EQSOP_URL: ${{ secrets.KRX_EQSOP_URL }}
-          KRX_EQKOP_URL: ${{ secrets.KRX_EQKOP_URL }}
-          BACKFILL_START: "20230101"
-          BACKFILL_END: "20230331"
-          PUTCALL_CACHE_PATH: data/cache/putcall_ratio.parquet
-        run: |
-          set -e
-          export PYTHONPATH=src
-          python src/caches/cache_putcall.py
-
-      - name: Cache Put/Call (KRX) 2023Q2
-        env:
-          KRX_AUTH_KEY: ${{ secrets.KRX_AUTH_KEY }}
-          KRX_EQSOP_URL: ${{ secrets.KRX_EQSOP_URL }}
-          KRX_EQKOP_URL: ${{ secrets.KRX_EQKOP_URL }}
-          BACKFILL_START: "20230401"
-          BACKFILL_END: "20230630"
-          PUTCALL_CACHE_PATH: data/cache/putcall_ratio.parquet
-        run: |
-          set -e
-          export PYTHONPATH=src
-          python src/caches/cache_putcall.py
-
-      - name: Cache Put/Call (KRX) 2023Q3
-        env:
-          KRX_AUTH_KEY: ${{ secrets.KRX_AUTH_KEY }}
-          KRX_EQSOP_URL: ${{ secrets.KRX_EQSOP_URL }}
-          KRX_EQKOP_URL: ${{ secrets.KRX_EQKOP_URL }}
-          BACKFILL_START: "20230701"
-          BACKFILL_END: "20230930"
-          PUTCALL_CACHE_PATH: data/cache/putcall_ratio.parquet
-        run: |
-          set -e
-          export PYTHONPATH=src
-          python src/caches/cache_putcall.py
-
-      - name: Cache Put/Call (KRX) 2023Q4
-        env:
-          KRX_AUTH_KEY: ${{ secrets.KRX_AUTH_KEY }}
-          KRX_EQSOP_URL: ${{ secrets.KRX_EQSOP_URL }}
-          KRX_EQKOP_URL: ${{ secrets.KRX_EQKOP_URL }}
-          BACKFILL_START: "20231001"
-          BACKFILL_END: "20231231"
-          PUTCALL_CACHE_PATH: data/cache/putcall_ratio.parquet
-        run: |
-          set -e
-          export PYTHONPATH=src
-          python src/caches/cache_putcall.py
-
-      - name: Cache Put/Call (KRX) 2024Q1
-        env:
-          KRX_AUTH_KEY: ${{ secrets.KRX_AUTH_KEY }}
-          KRX_EQSOP_URL: ${{ secrets.KRX_EQSOP_URL }}
-          KRX_EQKOP_URL: ${{ secrets.KRX_EQKOP_URL }}
-          BACKFILL_START: "20240101"
-          BACKFILL_END: "20240331"
-          PUTCALL_CACHE_PATH: data/cache/putcall_ratio.parquet
-        run: |
-          set -e
-          export PYTHONPATH=src
-          python src/caches/cache_putcall.py
-
-      - name: Cache Put/Call (KRX) 2024Q2
-        env:
-          KRX_AUTH_KEY: ${{ secrets.KRX_AUTH_KEY }}
-          KRX_EQSOP_URL: ${{ secrets.KRX_EQSOP_URL }}
-          KRX_EQKOP_URL: ${{ secrets.KRX_EQKOP_URL }}
-          BACKFILL_START: "20240401"
-          BACKFILL_END: "20240630"
-          PUTCALL_CACHE_PATH: data/cache/putcall_ratio.parquet
-        run: |
-          set -e
-          export PYTHONPATH=src
-          python src/caches/cache_putcall.py
-
-      - name: Cache Put/Call (KRX) 2024Q3
-        env:
-          KRX_AUTH_KEY: ${{ secrets.KRX_AUTH_KEY }}
-          KRX_EQSOP_URL: ${{ secrets.KRX_EQSOP_URL }}
-          KRX_EQKOP_URL: ${{ secrets.KRX_EQKOP_URL }}
-          BACKFILL_START: "20240701"
-          BACKFILL_END: "20240930"
-          PUTCALL_CACHE_PATH: data/cache/putcall_ratio.parquet
-        run: |
-          set -e
-          export PYTHONPATH=src
-          python src/caches/cache_putcall.py
-
-      - name: Cache Put/Call (KRX) 2024Q4
-        env:
-          KRX_AUTH_KEY: ${{ secrets.KRX_AUTH_KEY }}
-          KRX_EQSOP_URL: ${{ secrets.KRX_EQSOP_URL }}
-          KRX_EQKOP_URL: ${{ secrets.KRX_EQKOP_URL }}
-          BACKFILL_START: "20241001"
-          BACKFILL_END: "20241231"
-          PUTCALL_CACHE_PATH: data/cache/putcall_ratio.parquet
-        run: |
-          set -e
-          export PYTHONPATH=src
-          python src/caches/cache_putcall.py
-
-      - name: Cache Put/Call (KRX) 2025Q1
-        env:
-          KRX_AUTH_KEY: ${{ secrets.KRX_AUTH_KEY }}
-          KRX_EQSOP_URL: ${{ secrets.KRX_EQSOP_URL }}
-          KRX_EQKOP_URL: ${{ secrets.KRX_EQKOP_URL }}
-          BACKFILL_START: "20250101"
-          BACKFILL_END: "20250331"
-          PUTCALL_CACHE_PATH: data/cache/putcall_ratio.parquet
-        run: |
-          set -e
-          export PYTHONPATH=src
-          python src/caches/cache_putcall.py
-
-      - name: Cache Put/Call (KRX) 2025Q2
-        env:
-          KRX_AUTH_KEY: ${{ secrets.KRX_AUTH_KEY }}
-          KRX_EQSOP_URL: ${{ secrets.KRX_EQSOP_URL }}
-          KRX_EQKOP_URL: ${{ secrets.KRX_EQKOP_URL }}
-          BACKFILL_START: "20250401"
-          BACKFILL_END: "20250630"
-          PUTCALL_CACHE_PATH: data/cache/putcall_ratio.parquet
-        run: |
-          set -e
-          export PYTHONPATH=src
-          python src/caches/cache_putcall.py
-
-      - name: Cache Put/Call (KRX) 2025Q3
-        env:
-          KRX_AUTH_KEY: ${{ secrets.KRX_AUTH_KEY }}
-          KRX_EQSOP_URL: ${{ secrets.KRX_EQSOP_URL }}
-          KRX_EQKOP_URL: ${{ secrets.KRX_EQKOP_URL }}
-          BACKFILL_START: "20250701"
-          BACKFILL_END: "20250930"
-          PUTCALL_CACHE_PATH: data/cache/putcall_ratio.parquet
-        run: |
-          set -e
-          export PYTHONPATH=src
-          python src/caches/cache_putcall.py
-
-      - name: Cache Put/Call (KRX) 2025Q4
-        env:
-          KRX_AUTH_KEY: ${{ secrets.KRX_AUTH_KEY }}
-          KRX_EQSOP_URL: ${{ secrets.KRX_EQSOP_URL }}
-          KRX_EQKOP_URL: ${{ secrets.KRX_EQKOP_URL }}
-          BACKFILL_START: "20251001"
-          BACKFILL_END: "20251231"
-          PUTCALL_CACHE_PATH: data/cache/putcall_ratio.parquet
-        run: |
-          set -e
-          export PYTHONPATH=src
-          python src/caches/cache_putcall.py
-
-      # 진행 중 분기(현재 2026Q1)는 workflow에서 계산한 BACKFILL_END(어제)까지
-      - name: Cache Put/Call (KRX) 2026Q1 (to BACKFILL_END)
-        env:
-          KRX_AUTH_KEY: ${{ secrets.KRX_AUTH_KEY }}
-          KRX_EQSOP_URL: ${{ secrets.KRX_EQSOP_URL }}
-          KRX_EQKOP_URL: ${{ secrets.KRX_EQKOP_URL }}
-          BACKFILL_START: "20260101"
+          BACKFILL_START: ${{ env.BACKFILL_START }}
           BACKFILL_END: ${{ env.BACKFILL_END }}
-          PUTCALL_CACHE_PATH: data/cache/putcall_ratio.parquet
+          CACHE_BUFFER_DAYS: ${{ env.CACHE_BUFFER_DAYS }}
+          VKOSPI_OUT_PATH: data/vkospi_level.parquet
+          VKOSPI_INDEX_NAME: "코스피 200 변동성지수"
         run: |
           set -e
           export PYTHONPATH=src
-          python src/caches/cache_putcall.py
+          python src/caches/cache_vkospi_backfill_krx.py
 
-      - name: Sanity check caches exist
+      # -------------------------------------------------------
+      # Put/Call (KRX) : 분기 루프 + 분기마다 체크포인트 push
+      # -------------------------------------------------------
+      - name: Backfill Put/Call per quarter with checkpoint push
+        shell: bash
+        env:
+          KRX_AUTH_KEY: ${{ secrets.KRX_AUTH_KEY }}
+          KRX_EQSOP_URL: ${{ secrets.KRX_EQSOP_URL }}
+          KRX_EQKOP_URL: ${{ secrets.KRX_EQKOP_URL }}
+          FINAL_END: ${{ env.BACKFILL_END }}
+          CACHE_PATH: ${{ env.PUTCALL_CACHE_PATH }}
         run: |
-          set -e
-          echo "== data/cache =="
-          ls -lah data/cache || true
-          echo "== data =="
+          set -euo pipefail
+          export PYTHONPATH=src
+
+          # ---- helpers ----
+          ymd() { date -u -d "$1" +%Y%m%d; }
+          next_day() { date -u -d "$1 +1 day" +%Y%m%d; }
+
+          # 분기 시작일 계산: YYYY-Q -> YYYYMMDD
+          q_start() {
+            local y="$1"; local q="$2"
+            case "$q" in
+              1) echo "${y}0101" ;;
+              2) echo "${y}0401" ;;
+              3) echo "${y}0701" ;;
+              4) echo "${y}1001" ;;
+              *) echo "bad quarter: $q" >&2; exit 1 ;;
+            esac
+          }
+
+          # 분기 종료일 계산: 다음 분기 시작일 - 1일
+          q_end() {
+            local y="$1"; local q="$2"
+            local ns_y="$y"; local ns_q="$((q+1))"
+            if [ "$ns_q" -eq 5 ]; then ns_q=1; ns_y="$((y+1))"; fi
+            local next_start
+            next_start="$(q_start "$ns_y" "$ns_q")"
+            ymd "${next_start} -1 day"
+          }
+
+          # YYYYMMDD 비교/클램프
+          min_ymd() { [ "$1" -le "$2" ] && echo "$1" || echo "$2"; }
+          max_ymd() { [ "$1" -ge "$2" ] && echo "$1" || echo "$2"; }
+
+          # start 입력이 분기 중간일 수 있으니, 시작 분기를 찾아 거기서부터 진행
+          START_INPUT="${{ env.BACKFILL_START }}"
+          # 시작분기: START_INPUT이 속한 분기의 분기시작으로 내림
+          START_YEAR="${START_INPUT:0:4}"
+          START_MONTH="${START_INPUT:4:2}"
+          if [ "$START_MONTH" -ge 1 ] && [ "$START_MONTH" -le 3 ]; then START_Q=1
+          elif [ "$START_MONTH" -ge 4 ] && [ "$START_MONTH" -le 6 ]; then START_Q=2
+          elif [ "$START_MONTH" -ge 7 ] && [ "$START_MONTH" -le 9 ]; then START_Q=3
+          else START_Q=4
+          fi
+
+          # git user
+          git config user.name "github-actions"
+          git config user.email "github-actions@github.com"
+
+          # 루프 범위: 2018Q1 ~ 2026Q1 이 기본이지만,
+          # 실제로는 START_INPUT~FINAL_END까지만 수행
+          y="$START_YEAR"
+          q="$START_Q"
+
+          while true; do
+            qs="$(q_start "$y" "$q")"
+            qe="$(q_end "$y" "$q")"
+
+            # 실제 실행 범위 = [max(qs, START_INPUT), min(qe, FINAL_END)]
+            run_s="$(max_ymd "$qs" "$START_INPUT")"
+            run_e="$(min_ymd "$qe" "$FINAL_END")"
+
+            # run_s > run_e 이면 이 분기는 스킵
+            if [ "$run_s" -le "$run_e" ]; then
+              echo "=== Put/Call quarter backfill: ${y}Q${q} (${run_s}~${run_e}) ==="
+              BACKFILL_START="$run_s" BACKFILL_END="$run_e" PUTCALL_CACHE_PATH="$CACHE_PATH" \
+                python src/caches/cache_putcall.py
+
+              # 체크포인트 커밋/푸시: putcall_ratio.parquet만
+              git add "$CACHE_PATH" || true
+              if git diff --staged --quiet; then
+                echo "No changes to checkpoint for ${y}Q${q}."
+              else
+                # rebase-safe push
+                git stash push -u -m "actions-stash-before-rebase" || true
+                git fetch origin main
+                git pull --rebase origin main
+                git stash pop || true
+
+                git add "$CACHE_PATH" || true
+                if git diff --staged --quiet; then
+                  echo "No staged changes after rebase for ${y}Q${q}."
+                else
+                  git commit -m "Checkpoint F04 putcall cache ${y}Q${q} (${run_s}~${run_e})" || true
+                  git push origin HEAD:main
+                fi
+              fi
+            else
+              echo "Skip ${y}Q${q} (out of range)."
+            fi
+
+            # 종료 조건: 이 분기의 종료가 FINAL_END 이상이면 break
+            if [ "$qe" -ge "$FINAL_END" ]; then
+              echo "Reached FINAL_END=$FINAL_END at ${y}Q${q}."
+              break
+            fi
+
+            # 다음 분기로 이동
+            q=$((q+1))
+            if [ "$q" -eq 5 ]; then q=1; y=$((y+1)); fi
+
+            # 안전장치: 2026Q1까지만 (원하면 늘리세요)
+            if [ "$y" -gt 2026 ] || { [ "$y" -eq 2026 ] && [ "$q" -gt 1 ]; }; then
+              echo "Stop at 2026Q1 boundary."
+              break
+            fi
+          done
+
+      # -----------------------------
+      # Sanity check
+      # -----------------------------
+      - name: Sanity check caches
+        shell: bash
+        run: |
+          set -euo pipefail
           ls -lah data || true
-          test -f data/cache/k200_close.parquet
+          ls -lah data/cache || true
           test -f data/cache/putcall_ratio.parquet
+          test -f data/cache/k200_close.parquet
+          test -f data/cache/rates_3y_bundle.parquet
+          test -f data/cache/f08_foreigner_flow.parquet
+          test -f data/cache/f09_credit_deposit.parquet
           test -f data/usdkrw_level.parquet
           test -f data/vkospi_level.parquet
-          test -f data/cache/rates_3y_bundle.parquet
 
-      # -------------------------
-      # Factor 계산 (8y)
-      # -------------------------
-      - name: Calculate Factors (F01,F04,F06,F08,F09,F10)
-        env:
-          ROLLING_DAYS: "1260"
-          MIN_OBS: "252"
-          WINSOR_P: "0.01"
-          VOL_WINDOW_DAYS: "20"
-          K200_CACHE_PATH: data/cache/k200_close.parquet
-          USDKRW_CACHE_PATH: data/usdkrw_level.parquet
-          VKOSPI_CACHE_PATH: data/vkospi_level.parquet
-          F08_CACHE_PATH: data/cache/f08_foreigner_flow.parquet
-          PUTCALL_CACHE_PATH: data/cache/putcall_ratio.parquet
-          RATES_3Y_BUNDLE_PATH: data/cache/rates_3y_bundle.parquet
-          F07_HORIZON_DAYS: "20"
+      # -----------------------------
+      # Factors (8y)
+      # -----------------------------
+      - name: Calculate factors (F01, F04, F06, F08, F09, F10)
+        shell: bash
         run: |
-          set -e
+          set -euo pipefail
           export PYTHONPATH=src
+
+          # 공통 파라미터(프로젝트 기존 값에 맞춤)
+          export ROLLING_DAYS=1260
+          export MIN_OBS=252
+          export WINSOR_P=0.01
+          export VOL_WINDOW_DAYS=20
+
           python src/factors/f01_momentum.py
           python src/factors/f04_putcall.py
           python src/factors/f06_vkospi.py
@@ -593,41 +277,53 @@ jobs:
           python src/factors/f09_margin_ratio.py
           python src/factors/f10_fxvol.py
 
-      # -------------------------
-      # Assemble + Report
-      # -------------------------
-      - name: Assemble & Report Generation
+      # -----------------------------
+      # Assemble + report
+      # -----------------------------
+      - name: Render report & assemble index
+        shell: bash
         run: |
-          set -e
+          set -euo pipefail
           export PYTHONPATH=src
-          python src/report/render_report.py
+          python src/render_report.py
           python src/factors/f05_credit_spread.py
           python src/factors/f07_safehaven.py
-          python src/assemble/assemble_index.py
+          python src/assemble_index.py
 
-      - name: Convert parquet to CSV (index_daily)
+      - name: Parquet to CSV
+        shell: bash
         run: |
-          set -e
+          set -euo pipefail
           export PYTHONPATH=src
           python src/parquet_to_csv.py
 
-      - name: Commit & push outputs (rebase-safe)
+      # -----------------------------
+      # Final commit & push outputs
+      # -----------------------------
+      - name: Commit & push outputs
         shell: bash
         run: |
           set -euo pipefail
           git config user.name "github-actions"
           git config user.email "github-actions@github.com"
 
-          git add data/factors/ data/index_daily.* docs/index.html || true
-          git diff --quiet && git diff --staged --quiet && exit 0
+          git add data/factors/ index_daily.* docs/ data/*.csv data/*.parquet || true
+
+          if git diff --staged --quiet; then
+            echo "No final changes to commit."
+            exit 0
+          fi
 
           git stash push -u -m "actions-stash-before-rebase" || true
           git fetch origin main
           git pull --rebase origin main
           git stash pop || true
 
-          git add data/factors/ data/index_daily.* docs/index.html || true
-          git diff --quiet && git diff --staged --quiet && exit 0
+          git add data/factors/ index_daily.* docs/ data/*.csv data/*.parquet || true
+          if git diff --staged --quiet; then
+            echo "No staged changes after rebase."
+            exit 0
+          fi
 
-          git commit -m "Rebuild 8y factors/index $(date -u +%Y-%m-%d)" || true
+          git commit -m "Rebuild 8y outputs $(date -u +%Y-%m-%dT%H:%M:%SZ)" || true
           git push origin HEAD:main
