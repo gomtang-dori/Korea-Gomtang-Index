@@ -161,51 +161,6 @@ jobs:
           python src/factors/f09_margin_ratio.py
           python src/factors/f10_fxvol.py
 
-      - name: Cache Adv/Dec daily (KRX -> SQLite)
-        env:
-          ADVDEC_DB_PATH: data/cache/adv_dec_daily.sqlite
-          ADVDEC_MODE: incremental
-          ADVDEC_BLD: dbms/MDC/STAT/standard/MDCSTAT01602
-          ADVDEC_REFERER: https://data.krx.co.kr/contents/MDC/MDI/mdiLoader/index.cmd?menuId=MDC0201020102
-        run: |
-          set -euo pipefail
-          export PYTHONPATH=src
-
-          echo "==[advdec] pwd =="; pwd
-          echo "==[advdec] python =="; python -V
-          echo "==[advdec] env =="
-          echo "ADVDEC_DB_PATH=$ADVDEC_DB_PATH"
-          echo "ADVDEC_MODE=$ADVDEC_MODE"
-          echo "ADVDEC_BLD=$ADVDEC_BLD"
-          echo "ADVDEC_REFERER=$ADVDEC_REFERER"
-
-          echo "==[advdec] ensure dirs =="
-          mkdir -p data/cache
-          ls -lah data || true
-          ls -lah data/cache || true
-
-          echo "==[advdec] run collector =="
-          python -u src/caches/cache_adv_dec_daily_krx_sqlite.py
-
-          echo "==[advdec] after run: list cache dir =="
-          ls -lah data/cache || true
-
-          echo "==[advdec] verify sqlite exists =="
-          test -f data/cache/adv_dec_daily.sqlite
-
-      - name: Calculate Factors (F02,F03) from adv/dec SQLite
-        env:
-          ADVDEC_DB_PATH: data/cache/adv_dec_daily.sqlite
-          ROLLING_DAYS: "1260"
-          MIN_OBS: "252"
-          F02_PATH: data/factors/f02.parquet
-          F03_PATH: data/factors/f03.parquet
-        run: |
-          set -e
-          export PYTHONPATH=src
-          python src/factors/f02_strength.py
-          python src/factors/f03_breadth.py
-
       # -------------------------
       # Assemble + Report
       # -------------------------
