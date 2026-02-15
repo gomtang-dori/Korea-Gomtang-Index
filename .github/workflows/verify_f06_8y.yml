@@ -1,0 +1,148 @@
+name: verify_f06_8y
+
+on:
+  workflow_dispatch:
+    inputs:
+      start:
+        description: "VKOSPI 백필 시작일 (YYYYMMDD)"
+        required: true
+        default: "20180101"
+      cache_buffer_days:
+        description: "버퍼(days)"
+        required: true
+        default: "450"
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          set -e
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Set backfill range
+        shell: bash
+        run: |
+          set -euo pipefail
+          END=$(date -u -d '1 day ago' +%Y%m%d)
+          echo "BACKFILL_START=${{ inputs.start }}" >> "$GITHUB_ENV"
+          echo "BACKFILL_END=$END" >> "$GITHUB_ENV"
+          echo "CACHE_BUFFER_DAYS=${{ inputs.cache_buffer_days }}" >> "$GITHUB_ENV"
+          echo "[verify_f06_8y] START=${{ inputs.start }} END=$END BUFFER=${{ inputs.cache_buffer_days }}"
+
+      - name: Cache VKOSPI (KRX) [BACKFILL]
+        env:
+          KRX_AUTH_KEY: ${{ secrets.KRX_AUTH_KEY }}
+          KRX_DRVPROD_DD_TRD_URL: ${{ secrets.KRX_DVRPROD_DD_TRD_URL }}
+          BACKFILL_START: ${{ env.BACKFILL_START }}
+          BACKFILL_END: ${{ env.BACKFILL_END }}
+          CACHE_BUFFER_DAYS: ${{ env.CACHE_BUFFER_DAYS }}
+          VKOSPI_OUT_PATH: data/vkospi_level.parquet
+          VKOSPI_INDEX_NAME: "코스피 200 변동성지수"
+        run: |
+          set -e
+          export PYTHONPATH=src
+          python src/caches/cache_vkospi_backfill_krx.py
+
+      - name: Calculate F06
+        env:
+          ROLLING_DAYS: "1260"
+          MIN_OBS: "252"
+          WINSOR_P: "0.01"
+          VKOSPI_CACHE_PATH: data/vkospi_level.parquet
+          F06_PATH: data/factors/f06.parquet
+        run: |
+          set -e
+          export PYTHONPATH=src
+          python src/factors/f06_vkospi.py
+
+      - name: Show min/max date (standard)
+        shell: bash
+        env:
+          TARGETS: "data/vkospi_level.parquet,data/factors/f06.parquet"
+          DATE_COL_CANDIDATES: "date,Date,basDt,BASE_DT"
+        run: |
+          set -euo pipefail
+          python - << 'PY'
+          import os
+          from pathlib import Path
+          import pandas as pd
+
+          targets = [t.strip() for t in os.environ.get("TARGETS","").split(",") if t.strip()]
+          cand_cols = [c.strip() for c in os.environ.get("DATE_COL_CANDIDATES","date").split(",") if c.strip()]
+
+          def pick_date_col(df):
+            for c in cand_cols:
+              if c in df.columns:
+                return c
+            for c in df.columns:
+              if "date" in c.lower():
+                return c
+            return None
+
+          def read_any(path: Path):
+            suf = path.suffix.lower()
+            if suf == ".parquet":
+              return pd.read_parquet(path)
+            if suf == ".csv":
+              return pd.read_csv(path)
+            raise ValueError(f"Unsupported extension: {path}")
+
+          print("=== [min/max date] ===")
+          for t in targets:
+            p = Path(t)
+            if not p.exists():
+              print(f"[MISS] {t} (file not found)")
+              continue
+            df = read_any(p)
+            if df is None or df.empty:
+              print(f"[EMPTY] {t} rows=0")
+              continue
+            dc = pick_date_col(df)
+            s = pd.to_datetime(df[dc], errors="coerce").dropna() if dc else pd.Series([], dtype="datetime64[ns]")
+            if s.empty:
+              print(f"[NO_VALID_DATE] {t} date_col={dc} rows={len(df)}")
+              continue
+            print(f"[OK] {t} rows={len(df)} date_col={dc} min={s.min()} max={s.max()}")
+          PY
+
+      - name: Commit & push (if changed)
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions"
+          git config user.email "github-actions@github.com"
+
+          git add data/vkospi_level.parquet data/vkospi_level.csv data/factors/f06.parquet || true
+          if git diff --staged --quiet; then
+            echo "No changes to commit."
+            exit 0
+          fi
+
+          git stash push -u -m "actions-stash-before-rebase" || true
+          git fetch origin main
+          git pull --rebase origin main
+          git stash pop || true
+
+          git add data/vkospi_level.parquet data/vkospi_level.csv data/factors/f06.parquet || true
+          if git diff --staged --quiet; then
+            echo "No staged changes after rebase."
+            exit 0
+          fi
+
+          git commit -m "Verify/Backfill F06 VKOSPI (${BACKFILL_START}~${BACKFILL_END})" || true
+          git push origin HEAD:main
