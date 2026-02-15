@@ -6,14 +6,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-
-def rolling_percentile(s: pd.Series, window: int, min_obs: int) -> pd.Series:
-    def _pct(x):
-        x = pd.Series(x).dropna()
-        if len(x) < min_obs:
-            return np.nan
-        return float(x.rank(pct=True).iloc[-1] * 100.0)
-    return s.rolling(window=window, min_periods=min_obs).apply(_pct, raw=False)
+from utils.rolling_score import to_score_from_raw
 
 
 def main():
@@ -33,27 +26,29 @@ def main():
     df["date"] = pd.to_datetime(df["date"], errors="coerce")
     df = df.dropna(subset=["date"]).sort_values("date").reset_index(drop=True)
 
-    # [수정 포인트] 1. 원천 데이터(거래대금)가 있다면 비율을 직접 계산합니다.
     if "f04_put_trdval" in df.columns and "f04_call_trdval" in df.columns:
-        # 풋 거래대금을 콜 거래대금으로 나누어 비율을 산출합니다.
         df["putcall_ratio"] = df["f04_put_trdval"] / df["f04_call_trdval"]
         print("[f04] Raw trdval detected. Calculated putcall_ratio.")
 
-    # 2. 캐시 컬럼명 자동 탐지 (기존 코드 유지)
     candidates = ["putcall_ratio", "pcr", "put_call", "ratio", "putcall"]
     ratio_col = next((c for c in candidates if c in df.columns), None)
-    
+
     if ratio_col is None:
         raise RuntimeError(f"putcall cache columns={list(df.columns)}; expected one of {candidates}")
-    
+
     df[ratio_col] = pd.to_numeric(df[ratio_col], errors="coerce")
     df = df.dropna(subset=[ratio_col])
 
-    # F04 raw: PCR 자체(높을수록 공포)로 두는 경우가 일반적
     df["f04_raw"] = df[ratio_col]
 
-    # score: 퍼센타일(높을수록 공포) → assemble에서 flip을 하든, 그대로 fear로 쓰든 선택
-    df["f04_score"] = rolling_percentile(df["f04_raw"], window=window, min_obs=min_obs)
+    # PCR 높을수록 공포형 → invert=True
+    df["f04_score"] = to_score_from_raw(
+        df["f04_raw"],
+        window=window,
+        min_obs=min_obs,
+        winsor_p=0.01,
+        invert=True,
+    )
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
     df[["date", "f04_raw", "f04_score"]].to_parquet(out_path, index=False)
