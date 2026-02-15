@@ -123,16 +123,10 @@ jobs:
           BACKFILL_END: ${{ env.BACKFILL_END }}
           CACHE_BUFFER_DAYS: ${{ env.CACHE_BUFFER_DAYS }}
           PUTCALL_CACHE_PATH: data/cache/putcall_ratio.parquet
-
-          # ECOS 주가지수옵션거래
           PUTCALL_ECOS_STAT_CODE: "901Y058"
           PUTCALL_ECOS_CYCLE: "D"
-
-          # 거래량(계약)
           PUTCALL_ECOS_CALL_VOL_CODE1: "S26BA"
           PUTCALL_ECOS_PUT_VOL_CODE1: "S26CA"
-
-          # 거래대금(백만원)
           PUTCALL_ECOS_CALL_TRDVAL_CODE1: "S26BC"
           PUTCALL_ECOS_PUT_TRDVAL_CODE1: "S26CC"
         run: |
@@ -179,9 +173,6 @@ jobs:
           python src/factors/f09_margin_ratio.py
           python src/factors/f10_fxvol.py
 
-      # -------------------------
-      # Assemble + Report
-      # -------------------------
       - name: Assemble & Report Generation
         run: |
           set -e
