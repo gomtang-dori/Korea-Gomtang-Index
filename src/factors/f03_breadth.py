@@ -8,18 +8,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-
-def rolling_percentile_last(s: pd.Series, window: int, min_obs: int) -> pd.Series:
-    """
-    5년(기본) 롤링 윈도우에서 "마지막 값의 퍼센타일(0~100)"을 반환.
-    """
-    def _pct(x):
-        x = pd.Series(x).dropna()
-        if len(x) < min_obs:
-            return np.nan
-        return float(x.rank(pct=True).iloc[-1] * 100.0)
-
-    return s.rolling(window=window, min_periods=min_obs).apply(_pct, raw=False)
+from utils.rolling_score import to_score_from_raw
 
 
 def main():
@@ -52,16 +41,20 @@ def main():
     df["dec"] = pd.to_numeric(df["dec"], errors="coerce")
     df = df.dropna(subset=["date", "adv", "dec"]).sort_values("date").reset_index(drop=True)
 
-    # ADR(20 trading days): rolling sum adv / max(1, rolling sum dec)
     adv20 = df["adv"].rolling(20, min_periods=20).sum()
     dec20 = df["dec"].rolling(20, min_periods=20).sum()
 
-    # max(1, dec20)
-    dec20_safe = dec20.copy()
-    dec20_safe = dec20_safe.where(dec20_safe > 0, 1.0)
-
+    dec20_safe = dec20.where(dec20 > 0, 1.0)
     df["f03_raw"] = adv20 / dec20_safe
-    df["f03_score"] = rolling_percentile_last(df["f03_raw"], window=window, min_obs=min_obs)
+
+    # 탐욕형(adv 누적 우세=탐욕) → invert=False
+    df["f03_score"] = to_score_from_raw(
+        df["f03_raw"],
+        window=window,
+        min_obs=min_obs,
+        winsor_p=0.01,
+        invert=False,
+    )
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
     df[["date", "f03_raw", "f03_score"]].to_parquet(out_path, index=False)
