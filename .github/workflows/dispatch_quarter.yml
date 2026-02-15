@@ -1,0 +1,109 @@
+name: dispatch_quarter_advdec_backfill
+
+on:
+  workflow_dispatch:
+    inputs:
+      start:
+        description: "시작일 (YYYYMMDD) 예: 20190701"
+        required: true
+        default: "20190701"
+      end:
+        description: "종료일 (YYYYMMDD) 예: 20190930"
+        required: true
+        default: "20190930"
+      sleep_sec:
+        description: "호출 간 sleep(초). 추천 0.5"
+        required: true
+        default: "0.5"
+
+jobs:
+  backfill:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      # 캐시 복원(prefix): 가장 최신 adv_dec_daily.sqlite를 가져옵니다.
+      - name: Restore adv/dec SQLite cache (prefix)
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            data/cache/adv_dec_daily.sqlite
+            data/cache/adv_dec_daily.sqlite-wal
+            data/cache/adv_dec_daily.sqlite-shm
+          key: advdec-sqlite-${{ github.ref_name }}-dummy
+          restore-keys: |
+            advdec-sqlite-${{ github.ref_name }}-
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Ensure cache directory exists
+        run: |
+          set -euo pipefail
+          mkdir -p data/cache
+          echo "== before run: data/cache =="
+          ls -lah data/cache || true
+
+      # OpenAPI 실서비스 누적 백필
+      - name: Run adv/dec backfill (quarter) - OpenAPI
+        env:
+          KRX_API_KEY: ${{ secrets.KRX_API_KEY }}
+          ADVDEC_DB_PATH: data/cache/adv_dec_daily.sqlite
+          ADVDEC_MODE: backfill
+          ADVDEC_START: ${{ inputs.start }}
+          ADVDEC_END: ${{ inputs.end }}
+          ADVDEC_SLEEP_SEC: ${{ inputs.sleep_sec }}
+          ADVDEC_RETRY: "4"
+          ADVDEC_TIMEOUT_SEC: "90"
+        run: |
+          set -euo pipefail
+          export PYTHONPATH=src
+          mkdir -p data/cache
+          python -u src/caches/cache_adv_dec_daily_krx_sqlite.py
+          echo "== after run: data/cache =="
+          ls -lah data/cache || true
+          test -f data/cache/adv_dec_daily.sqlite
+
+      # F02/F03 생성
+      - name: Calculate factors from SQLite (F02/F03)
+        env:
+          ADVDEC_DB_PATH: data/cache/adv_dec_daily.sqlite
+          ROLLING_DAYS: "1260"
+          MIN_OBS: "252"
+          F02_PATH: data/factors/f02.parquet
+          F03_PATH: data/factors/f03.parquet
+        run: |
+          set -euo pipefail
+          export PYTHONPATH=src
+          python -u src/factors/f02_strength.py
+          python -u src/factors/f03_breadth.py
+
+      # 캐시 저장(매 실행 보장): run_id/run_attempt로 항상 새 key 생성
+      - name: Save adv/dec SQLite cache (always)
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            data/cache/adv_dec_daily.sqlite
+            data/cache/adv_dec_daily.sqlite-wal
+            data/cache/adv_dec_daily.sqlite-shm
+          key: advdec-sqlite-${{ github.ref_name }}-${{ github.run_id }}-${{ github.run_attempt }}
+
+      # SQLite는 커밋하지 않고, factor parquet만 커밋
+      - name: Commit factor outputs only (no sqlite)
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions"
+          git config user.email "github-actions@github.com"
+          git add data/factors/f02.parquet data/factors/f03.parquet || true
+          git diff --quiet && git diff --staged --quiet || (git commit -m "Backfill adv/dec factors ${{ inputs.start }}~${{ inputs.end }}" && git push)
