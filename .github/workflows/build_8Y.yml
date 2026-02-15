@@ -1,0 +1,108 @@
+name: build_8Y
+
+on:
+  workflow_dispatch:
+    inputs:
+      recent_days:
+        description: "빌드에 포함할 최근 일수(선택). 비우면 전체 기간."
+        required: false
+        default: ""
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    env:
+      PYTHONPATH: src
+
+      # 8Y 정책
+      ROLLING_DAYS: "1260"        # 5년 퍼센타일
+      MIN_OBS: "252"
+      WINSOR_P: "0.01"
+      FACTOR_EMA_SPAN: "10"       # 팩터 EMA10
+      INDEX_EMA_SPAN: "5"         # 최종 EMA5
+      EXCLUDE_FACTORS: "f09"      # ✅ 8Y에서는 F09 제외
+
+      # 산출물 분리
+      INDEX_PATH: "data/index_daily_8Y.parquet"
+      CSV_PATH: "data/index_daily_8Y.csv"
+      REPORT_PATH: "docs/Korea-Gomtang-Index_8Y.html"
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      # (선택) 최근 구간만 보고 싶으면 factor/assemble 결과를 필터링하는 별도 로직이 필요합니다.
+      # 여기서는 전체 기간 assemble을 기본으로 둡니다.
+
+      - name: Re-calc factors (8Y window = 5y percentile)
+        shell: bash
+        run: |
+          set -euo pipefail
+          python src/factors/f01_momentum.py
+          python src/factors/f02_strength.py || true
+          python src/factors/f03_adr_breadth.py || true
+          python src/factors/f04_putcall.py
+          python src/factors/f05_credit_spread.py
+          python src/factors/f06_vkospi.py
+          python src/factors/f07_safehaven.py
+          python src/factors/f08_foreigner_flow.py
+          # f09 제외(8Y 정책)
+          python src/factors/f10_fxvol.py
+
+      - name: Assemble index (8Y policy: EMA10 + EMA5, exclude f09)
+        shell: bash
+        run: |
+          set -euo pipefail
+          python src/assemble/assemble_index.py
+
+      - name: Convert parquet to CSV (8Y)
+        shell: bash
+        run: |
+          set -euo pipefail
+          python src/parquet_to_csv.py
+
+      - name: Render report (8Y)
+        shell: bash
+        run: |
+          set -euo pipefail
+          python src/report/render_report.py
+
+      - name: Commit & push (if changed)
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions"
+          git config user.email "github-actions@github.com"
+
+          git add data/factors/ || true
+          git add data/index_daily_8Y.parquet data/index_daily_8Y.csv || true
+          git add docs/Korea-Gomtang-Index_8Y.html || true
+
+          if git diff --staged --quiet; then
+            echo "No changes to commit."
+            exit 0
+          fi
+
+          git commit -m "Build 8Y index (EMA10/EMA5, 5y percentile) $(date -u +%Y-%m-%d)"
+
+          git stash push -u -m actions-stash-before-rebase || true
+          git fetch origin main
+          git pull --rebase origin main
+          git stash pop || true
+
+          git push origin HEAD:main
