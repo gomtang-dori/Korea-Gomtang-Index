@@ -93,25 +93,34 @@ jobs:
           export PYTHONPATH=src
           python src/caches/cache_k200_close_fdr.py
 
-      # ⚠️ USDKRW/VKOSPI는 아직 "장기백필" 미지원(별도 개선 필요)
-      - name: Cache USD/KRW (ECOS) (recent window)
+      - name: Cache USD/KRW (ECOS) [BACKFILL]
         env:
           ECOS_KEY: ${{ secrets.ECOS_KEY }}
           ECOS_USDKRW_STAT_CODE: ${{ secrets.ECOS_USDKRW_STAT_CODE }}
           ECOS_USDKRW_ITEM_CODE1: ${{ secrets.ECOS_USDKRW_ITEM_CODE1 }}
+          BACKFILL_START: ${{ env.BACKFILL_START }}
+          BACKFILL_END: ${{ env.BACKFILL_END }}
+          CACHE_BUFFER_DAYS: ${{ env.CACHE_BUFFER_DAYS }}
+          USDKRW_OUT_PATH: data/usdkrw_level.parquet
         run: |
           set -e
           export PYTHONPATH=src
-          python src/usdkrw_fetch.py
+          python src/caches/cache_usdkrw_backfill_ecos.py
 
-      - name: Cache VKOSPI (KRX) (recent window)
+      - name: Cache VKOSPI (KRX) [BACKFILL]
         env:
           KRX_AUTH_KEY: ${{ secrets.KRX_AUTH_KEY }}
           KRX_DVRPROD_DD_TRD_URL: ${{ secrets.KRX_DVRPROD_DD_TRD_URL }}
+          BACKFILL_START: ${{ env.BACKFILL_START }}
+          BACKFILL_END: ${{ env.BACKFILL_END }}
+          CACHE_BUFFER_DAYS: ${{ env.CACHE_BUFFER_DAYS }}
+          VKOSPI_OUT_PATH: data/vkospi_level.parquet
+          VKOSPI_INDEX_NAME: "코스피 200 변동성지수"
         run: |
           set -e
           export PYTHONPATH=src
-          python src/vkospi_fetch.py
+          python src/caches/cache_vkospi_backfill_krx.py
+
 
       # -------------------------
       # F04 Put/Call (KRX) - 분기별 + 분기마다 putcall_ratio.parquet만 커밋/푸시
