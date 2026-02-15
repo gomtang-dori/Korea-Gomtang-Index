@@ -41,7 +41,7 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: Re-calc factors (8Y window = 5y percentile)
+      - name: Re-calc factors (8Y = 5y percentile)
         shell: bash
         run: |
           set -euo pipefail
@@ -53,10 +53,9 @@ jobs:
           python src/factors/f06_vkospi.py
           python src/factors/f07_safehaven.py
           python src/factors/f08_foreigner_flow.py
-          # ✅ f09 제외(8Y 정책)
           python src/factors/f10_fxvol.py
 
-      - name: Assemble index (8Y policy: EMA10 + EMA5, exclude f09)
+      - name: Assemble index (EMA10 + EMA5, exclude f09)
         shell: bash
         run: |
           set -euo pipefail
