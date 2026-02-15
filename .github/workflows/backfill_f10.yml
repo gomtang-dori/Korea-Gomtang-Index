@@ -83,6 +83,23 @@ jobs:
           test -f data/usdkrw_level.parquet
           test -f data/factors/f10.parquet
           ls -lah data data/factors | sed -n '1,200p'
+          
+      - name: Show min/max date (USDKRW & F10)
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - << 'PY'
+          import pandas as pd
+
+          u = pd.read_parquet("data/usdkrw_level.parquet")
+          u["date"] = pd.to_datetime(u["date"], errors="coerce")
+          print("[usdkrs] rows=", len(u), "min=", u["date"].min(), "max=", u["date"].max())
+
+          f = pd.read_parquet("data/factors/f10.parquet")
+          f["date"] = pd.to_datetime(f["date"], errors="coerce")
+          print("[f10] rows=", len(f), "min=", f["date"].min(), "max=", f["date"].max())
+          PY
+          
 
       - name: Commit & push (if changed)
         shell: bash
