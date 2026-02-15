@@ -2,11 +2,6 @@ name: build_8Y
 
 on:
   workflow_dispatch:
-    inputs:
-      recent_days:
-        description: "빌드에 포함할 최근 일수(선택). 비우면 전체 기간."
-        required: false
-        default: ""
 
 jobs:
   build:
@@ -21,7 +16,7 @@ jobs:
       WINSOR_P: "0.01"
       FACTOR_EMA_SPAN: "10"       # 팩터 EMA10
       INDEX_EMA_SPAN: "5"         # 최종 EMA5
-      EXCLUDE_FACTORS: "f09"      # 8Y에서는 F09 제외
+      EXCLUDE_FACTORS: "f09"      # ✅ 8Y에서는 F09 제외
 
       # 산출물 분리
       INDEX_PATH: "data/index_daily_8Y.parquet"
@@ -46,9 +41,6 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      # (선택) 최근 구간만 보고 싶으면 factor/assemble 결과를 필터링하는 별도 로직이 필요합니다.
-      # 여기서는 전체 기간 assemble을 기본으로 둡니다.
-
       - name: Re-calc factors (8Y window = 5y percentile)
         shell: bash
         run: |
@@ -61,7 +53,7 @@ jobs:
           python src/factors/f06_vkospi.py
           python src/factors/f07_safehaven.py
           python src/factors/f08_foreigner_flow.py
-          # f09 제외(8Y 정책)
+          # ✅ f09 제외(8Y 정책)
           python src/factors/f10_fxvol.py
 
       - name: Assemble index (8Y policy: EMA10 + EMA5, exclude f09)
