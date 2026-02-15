@@ -21,7 +21,7 @@ jobs:
       WINSOR_P: "0.01"
       FACTOR_EMA_SPAN: "10"       # 팩터 EMA10
       INDEX_EMA_SPAN: "5"         # 최종 EMA5
-      EXCLUDE_FACTORS: "f09"      # ✅ 8Y에서는 F09 제외
+      EXCLUDE_FACTORS: "f09"      # 8Y에서는 F09 제외
 
       # 산출물 분리
       INDEX_PATH: "data/index_daily_8Y.parquet"
