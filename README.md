@@ -1,55 +1,13 @@
 # Korea-Gomtang-Index
 Korea-Gomtang-Index
-# src/utils/rolling_score.py
-from __future__ import annotations
-
-import numpy as np
-import pandas as pd
-
-
-def rolling_percentile_last_winsorized(
-    s: pd.Series,
-    *,
-    window: int = 1260,
-    min_obs: int = 252,
-    winsor_p: float = 0.01,
-) -> pd.Series:
-    """
-    롤링 윈도우(기본 1260영업일)마다:
-      1) 윈도우 내부에서 raw를 winsor_p ~ (1-winsor_p) 분위로 클리핑(winsorize)
-      2) '마지막 값'의 percentile(0~100)을 계산
-
-    반환: score 시리즈(0~100). min_obs 미만이면 NaN.
-    """
-    x = pd.to_numeric(s, errors="coerce").astype(float)
-
-    def _pct_last(arr: np.ndarray) -> float:
-        arr = arr.astype(float)
-        arr = arr[np.isfinite(arr)]
-        if arr.size < min_obs:
-            return np.nan
-
-        lo = np.quantile(arr, winsor_p)
-        hi = np.quantile(arr, 1.0 - winsor_p)
-        arr_w = np.clip(arr, lo, hi)
-
-        last = arr_w[-1]
-        return float(np.mean(arr_w <= last) * 100.0)
-
-    return x.rolling(window=window, min_periods=min_obs).apply(_pct_last, raw=True)
-
-
-def to_score_from_raw(
-    raw: pd.Series,
-    *,
-    window: int = 1260,
-    min_obs: int = 252,
-    winsor_p: float = 0.01,
-    invert: bool = False,
-) -> pd.Series:
-    """
-    raw -> (winsorize + rolling percentile) -> score(0~100)
-    invert=True이면 공포형 지표로 간주하여 100 - percentile 처리.
-    """
-    p = rolling_percentile_last_winsorized(raw, window=window, min_obs=min_obs, winsor_p=winsor_p)
-    return (100.0 - p) if invert else p
+Factor	이름 / 의미	데이터 소스	캐시 생성(스크립트)	캐시 파일(주요 컬럼)	RAW 계산식(핵심)	공포/탐욕 (invert)	팩터 계산(스크립트)	팩터 파일(컬럼)	Backfill 기준/비고
+F01	Market Momentum (시장 모멘텀: K200이 MA 위/아래)	FinanceDataReader (KOSPI200: KS200)	src/caches/cache_k200_close_fdr.py 또는 번들 src/caches/cache_index_levels_fdr.py	data/cache/k200_close.parquet (date, k200_close)	k200_close / MA(125) - 1	탐욕형 → invert=False	src/factors/f01_momentum.py	data/factors/f01.parquet (date, f01_raw, f01_score)	K200 캐시가 2018부터 있어야 8Y/1Y 모두 안정적. Source
+F02	Stock Price Strength (상승 종목 vs 하락 종목)	KRX OpenAPI(유가+코스닥 일별 등락)	src/caches/cache_adv_dec_daily_krx_sqlite.py	data/cache/adv_dec_daily.sqlite 테이블 adv_dec_daily (date, adv, dec, unch…)	(adv - dec) / (adv + dec) (보합 제외)	탐욕형 → invert=False	src/factors/f02_strength.py	data/factors/f02.parquet (date, f02_raw, f02_score)	adv/dec DB 백필이 핵심(주말 스킵/재시도 포함). Source Source
+F03	ADR / Breadth (20일 누적 상승/하락 비율)	KRX OpenAPI(adv/dec DB 재사용)	src/caches/cache_adv_dec_daily_krx_sqlite.py (F02와 동일)	data/cache/adv_dec_daily.sqlite	sum20(adv) / sum20(dec)	탐욕형(일반적 해석) → invert=False	(팩터 스크립트 파일명/경로는 레포에서 확인 필요)	(예상) data/factors/f03.parquet	사용자 설명 기준으로 F02 캐시를 그대로 사용. (내일 진행 시 F03 스크립트 경로만 알려주시면 표 링크까지 정확히 박아드릴게요.)
+F04	Put/Call Options (옵션 심리: PCR↑ 공포)	KRX OpenAPI(옵션 Put/Call)	src/caches/cache_putcall.py	data/cache/putcall_ratio.parquet (date, putcall_ratio 등)	putcall_ratio (또는 put/call 거래대금 기반 비율)	공포형(PCR↑) → invert=True	src/factors/f04_putcall.py	data/factors/f04.parquet (date, f04_raw, f04_score)	rebuild_8y를 F04 전용으로 분기 백필+분기별 checkpoint push 권장. Source Source
+F05	Junk Bond Demand (신용 스프레드: BBB-AA)	ECOS OpenAPI	src/caches/cache_rates_3y_bundle_ecos.py	data/cache/rates_3y_bundle.parquet (date,corp_aa_3y,corp_bbb_3y,ktb3y)	corp_bbb_3y - corp_aa_3y	공포형(스프레드↑) → invert=True	src/factors/f05_credit_spread.py	data/factors/f05.parquet (date, f05_raw, f05_score)	backfill_f05_f07 번들로 캐시+팩터 min/max 확인 권장. Source
+F06	Market Volatility (VKOSPI: VIX 유사)	KRXDrvProdIndexAPI (KRX data-dbg)	src/caches/cache_vkospi_backfill_krx.py	data/vkospi_level.parquet (date, vkospi)	f06_raw = vkospi	공포형(VKOSPI↑) → invert=True	src/factors/f06_vkospi.py	data/factors/f06.parquet (date, f06_raw, f06_score)	VKOSPI 8년 백필 성공 확인한 상태(키/URL 정상). Source Source
+F07	Safe Haven Demand (채권 vs 주식 상대강도)	ECOS(국고3Y) + K200	cache_rates_3y_bundle_ecos.py + cache_k200_close_fdr.py	rates_3y_bundle.parquet(ktb3y) + k200_close.parquet	bond_chg(h) - eq_ret(h) (기본 h=20일)	공포형(raw↑ risk-off) → invert=True	src/factors/f07_safehaven.py	data/factors/f07.parquet (date,f07_raw,f07_score)	금리/주가 캐시 둘 다 필요. backfill_f05_f07 번들 권장.
+F08	Foreigner Flow (외국인 순매수 강도)	pykrx	src/caches/cache_f08_foreigner_flow_pykrx.py	data/cache/f08_foreigner_flow.parquet (date,f08_foreigner_net_buy)	f08_raw = f08_foreigner_net_buy	탐욕형(순매수↑) → invert=False	src/factors/f08_foreigner_flow.py	data/factors/f08.parquet (date,f08_raw,f08_score)	팩터 스크립트가 dropna(f08_score)로 초반 구간이 잘릴 수 있음. Source
+F09	Margin Ratio (신용융자/예탁금: 레버리지)	data.go.kr(금융위)	src/caches/cache_f09_credit_deposit_datago.py	data/cache/f09_credit_deposit.parquet (date,margin_ratio_raw)	margin_ratio_raw = credit_whl / deposit	탐욕형(레버리지↑) → invert=False	src/factors/f09_margin_ratio.py	data/factors/f09.parquet (date,f09_raw,f09_score)	원천 데이터 등록/가용기간 이슈로 2021-11 이후만 → 1Y에만 포함 정책 적합. Source
+F10	FX Volatility (USD/KRW 변동성)	ECOS OpenAPI(USDKRW 레벨)	src/caches/cache_usdkrw_backfill_ecos.py	data/usdkrw_level.parquet (date,usdkrw)	std20(logret(usdkrw))	공포형(변동성↑) → invert=True	src/factors/f10_fxvol.py	data/factors/f10.parquet (date,f10_raw_fxvol,f10_score)	backfill_f10 번들로 캐시/팩터 min/max 확인 권장. Source
