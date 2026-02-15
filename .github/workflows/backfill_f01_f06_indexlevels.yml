@@ -29,6 +29,10 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 360
 
+    # ✅ 핵심: src를 모듈 루트로 잡아서 `from lib...` / `from utils...` 임포트가 CI에서도 동작
+    env:
+      PYTHONPATH: src
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -53,9 +57,11 @@ jobs:
           set -euo pipefail
           START_INPUT="${{ inputs.start }}"
           END_UTC="$(date -u -d 'yesterday' +%Y%m%d)"
+
           echo "BACKFILL_START=${START_INPUT}" >> $GITHUB_ENV
           echo "BACKFILL_END=${END_UTC}" >> $GITHUB_ENV
           echo "CACHE_BUFFER_DAYS=${{ inputs.cache_buffer_days }}" >> $GITHUB_ENV
+
           echo "ROLLING_DAYS=${{ inputs.rolling_days }}" >> $GITHUB_ENV
           echo "MIN_OBS=${{ inputs.min_obs }}" >> $GITHUB_ENV
           echo "F01_MA_DAYS=${{ inputs.f01_ma_days }}" >> $GITHUB_ENV
