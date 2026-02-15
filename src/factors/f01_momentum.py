@@ -6,13 +6,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-
-def rolling_percentile(s: pd.Series, window: int, min_obs: int) -> pd.Series:
-    def _pct(x):
-        if len(x) < min_obs:
-            return np.nan
-        return float(pd.Series(x).rank(pct=True).iloc[-1] * 100.0)
-    return s.rolling(window=window, min_periods=min_obs).apply(_pct, raw=False)
+from utils.rolling_score import to_score_from_raw
 
 
 def main():
@@ -30,7 +24,6 @@ def main():
     df = pd.read_parquet(k200_path)
     df["date"] = pd.to_datetime(df["date"], errors="coerce")
 
-    # 컬럼명 방어: cache_k200_close_fdr.py가 k200_close로 저장하도록 되어있음
     if "k200_close" not in df.columns:
         raise RuntimeError(f"[f01] missing column 'k200_close' in {k200_path}. cols={list(df.columns)}")
 
@@ -39,7 +32,15 @@ def main():
 
     df["ma"] = df["k200_close"].rolling(ma_days, min_periods=ma_days).mean()
     df["f01_raw"] = df["k200_close"] / df["ma"] - 1.0
-    df["f01_score"] = rolling_percentile(df["f01_raw"], window, min_obs)
+
+    # 탐욕형(상회=탐욕) → invert=False
+    df["f01_score"] = to_score_from_raw(
+        df["f01_raw"],
+        window=window,
+        min_obs=min_obs,
+        winsor_p=0.01,
+        invert=False,
+    )
 
     out = df[["date", "f01_raw", "f01_score"]].copy()
     out_path.parent.mkdir(parents=True, exist_ok=True)
