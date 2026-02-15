@@ -9,7 +9,7 @@ jobs:
     timeout-minutes: 360
     env:
       PYTHONPATH: src
-
+ 
       # 1Y 정책
       ROLLING_DAYS: "252"         # 1년 퍼센타일
       MIN_OBS: "60"              # 1Y에서 NaN 구간 줄이기(권장)
