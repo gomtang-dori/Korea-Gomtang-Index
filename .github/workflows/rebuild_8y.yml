@@ -4,18 +4,20 @@ on:
   workflow_dispatch:
     inputs:
       start:
-        description: "백필 시작일 (YYYYMMDD)"
+        description: "F04 Put/Call 백필 시작일 (YYYYMMDD)"
         required: true
         default: "20180101"
       cache_buffer_days:
-        description: "API/휴일 버퍼 (days)"
+        description: "API/휴일 버퍼 (days) - F04에는 보통 불필요하지만 입력 유지"
         required: true
-        default: "450"
+        default: "0"
 
 jobs:
-  rebuild:
+  rebuild_f04_only:
     runs-on: ubuntu-latest
     timeout-minutes: 360
+    env:
+      PYTHONPATH: src
 
     steps:
       - name: Checkout
@@ -29,100 +31,26 @@ jobs:
           python-version: "3.11"
 
       - name: Install dependencies
-        run: |
-          set -e
-          python -m pip install --upgrade pip
-          pip install -r requirements.txt
-
-      - name: Set date range
         shell: bash
         run: |
           set -euo pipefail
-          END=$(date -u -d '1 day ago' +%Y%m%d)
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Set date range (F04)
+        shell: bash
+        run: |
+          set -euo pipefail
+          END="$(date -u -d '1 day ago' +%Y%m%d)"
           echo "BACKFILL_START=${{ inputs.start }}" >> "$GITHUB_ENV"
           echo "BACKFILL_END=$END" >> "$GITHUB_ENV"
           echo "CACHE_BUFFER_DAYS=${{ inputs.cache_buffer_days }}" >> "$GITHUB_ENV"
           echo "PUTCALL_CACHE_PATH=data/cache/putcall_ratio.parquet" >> "$GITHUB_ENV"
 
-      # -----------------------------
-      # Non-Put/Call caches (1회 실행)
-      # -----------------------------
-      - name: Cache Rates 3Y bundle (ECOS)
-        env:
-          ECOS_KEY: ${{ secrets.ECOS_KEY }}
-          BACKFILL_START: ${{ env.BACKFILL_START }}
-          BACKFILL_END: ${{ env.BACKFILL_END }}
-          CACHE_BUFFER_DAYS: ${{ env.CACHE_BUFFER_DAYS }}
-        run: |
-          set -e
-          export PYTHONPATH=src
-          python src/caches/cache_rates_3y_bundle_ecos.py
-
-      - name: Cache F08 Foreigner flow (pykrx)
-        env:
-          BACKFILL_START: ${{ env.BACKFILL_START }}
-          BACKFILL_END: ${{ env.BACKFILL_END }}
-          CACHE_BUFFER_DAYS: ${{ env.CACHE_BUFFER_DAYS }}
-        run: |
-          set -e
-          export PYTHONPATH=src
-          python src/caches/cache_f08_foreigner_flow_pykrx.py
-
-      - name: Cache F09 Credit/Deposit (data.go.kr)
-        env:
-          DATAGO_KEY: ${{ secrets.DATAGO_KEY }}
-          BACKFILL_START: ${{ env.BACKFILL_START }}
-          BACKFILL_END: ${{ env.BACKFILL_END }}
-          CACHE_BUFFER_DAYS: ${{ env.CACHE_BUFFER_DAYS }}
-        run: |
-          set -e
-          export PYTHONPATH=src
-          python src/caches/cache_f09_credit_deposit_datago.py
-
-      - name: Cache K200 close (FDR)
-        env:
-          BACKFILL_START: ${{ env.BACKFILL_START }}
-          BACKFILL_END: ${{ env.BACKFILL_END }}
-          CACHE_BUFFER_DAYS: ${{ env.CACHE_BUFFER_DAYS }}
-        run: |
-          set -e
-          export PYTHONPATH=src
-          python src/caches/cache_k200_close_fdr.py
-
-      # USDKRW / VKOSPI 는 "최근 n일"만 뽑는 fetch 스크립트면 8년치가 안 차므로
-      # (가능하면) backfill용 스크립트를 호출하도록 구성
-      - name: Cache USD/KRW (ECOS) [BACKFILL]
-        env:
-          ECOS_KEY: ${{ secrets.ECOS_KEY }}
-          ECOS_USDKRW_STAT_CODE: ${{ secrets.ECOS_USDKRW_STAT_CODE }}
-          ECOS_USDKRW_ITEM_CODE1: ${{ secrets.ECOS_USDKRW_ITEM_CODE1 }}
-          BACKFILL_START: ${{ env.BACKFILL_START }}
-          BACKFILL_END: ${{ env.BACKFILL_END }}
-          CACHE_BUFFER_DAYS: ${{ env.CACHE_BUFFER_DAYS }}
-          USDKRW_OUT_PATH: data/usdkrw_level.parquet
-        run: |
-          set -e
-          export PYTHONPATH=src
-          python src/caches/cache_usdkrw_backfill_ecos.py
-
-      - name: Cache VKOSPI (KRX) [BACKFILL]
-        env:
-          KRX_AUTH_KEY: ${{ secrets.KRX_AUTH_KEY }}
-          KRX_DVRPROD_DD_TRD_URL: ${{ secrets.KRX_DVRPROD_DD_TRD_URL }}
-          BACKFILL_START: ${{ env.BACKFILL_START }}
-          BACKFILL_END: ${{ env.BACKFILL_END }}
-          CACHE_BUFFER_DAYS: ${{ env.CACHE_BUFFER_DAYS }}
-          VKOSPI_OUT_PATH: data/vkospi_level.parquet
-          VKOSPI_INDEX_NAME: "코스피 200 변동성지수"
-        run: |
-          set -e
-          export PYTHONPATH=src
-          python src/caches/cache_vkospi_backfill_krx.py
-
       # -------------------------------------------------------
-      # Put/Call (KRX) : 분기 루프 + 분기마다 체크포인트 push
+      # F04 Put/Call (KRX) : 분기 루프 + 분기마다 체크포인트 push
       # -------------------------------------------------------
-      - name: Backfill Put/Call per quarter with checkpoint push
+      - name: Backfill F04 Put/Call per quarter with checkpoint push
         shell: bash
         env:
           KRX_AUTH_KEY: ${{ secrets.KRX_AUTH_KEY }}
@@ -132,13 +60,10 @@ jobs:
           CACHE_PATH: ${{ env.PUTCALL_CACHE_PATH }}
         run: |
           set -euo pipefail
-          export PYTHONPATH=src
 
           # ---- helpers ----
           ymd() { date -u -d "$1" +%Y%m%d; }
-          next_day() { date -u -d "$1 +1 day" +%Y%m%d; }
 
-          # 분기 시작일 계산: YYYY-Q -> YYYYMMDD
           q_start() {
             local y="$1"; local q="$2"
             case "$q" in
@@ -150,7 +75,6 @@ jobs:
             esac
           }
 
-          # 분기 종료일 계산: 다음 분기 시작일 - 1일
           q_end() {
             local y="$1"; local q="$2"
             local ns_y="$y"; local ns_q="$((q+1))"
@@ -160,27 +84,22 @@ jobs:
             ymd "${next_start} -1 day"
           }
 
-          # YYYYMMDD 비교/클램프
           min_ymd() { [ "$1" -le "$2" ] && echo "$1" || echo "$2"; }
           max_ymd() { [ "$1" -ge "$2" ] && echo "$1" || echo "$2"; }
 
-          # start 입력이 분기 중간일 수 있으니, 시작 분기를 찾아 거기서부터 진행
           START_INPUT="${{ env.BACKFILL_START }}"
-          # 시작분기: START_INPUT이 속한 분기의 분기시작으로 내림
           START_YEAR="${START_INPUT:0:4}"
           START_MONTH="${START_INPUT:4:2}"
-          if [ "$START_MONTH" -ge 1 ] && [ "$START_MONTH" -le 3 ]; then START_Q=1
+
+          if   [ "$START_MONTH" -ge 1 ] && [ "$START_MONTH" -le 3 ]; then START_Q=1
           elif [ "$START_MONTH" -ge 4 ] && [ "$START_MONTH" -le 6 ]; then START_Q=2
           elif [ "$START_MONTH" -ge 7 ] && [ "$START_MONTH" -le 9 ]; then START_Q=3
           else START_Q=4
           fi
 
-          # git user
           git config user.name "github-actions"
           git config user.email "github-actions@github.com"
 
-          # 루프 범위: 2018Q1 ~ 2026Q1 이 기본이지만,
-          # 실제로는 START_INPUT~FINAL_END까지만 수행
           y="$START_YEAR"
           q="$START_Q"
 
@@ -188,22 +107,20 @@ jobs:
             qs="$(q_start "$y" "$q")"
             qe="$(q_end "$y" "$q")"
 
-            # 실제 실행 범위 = [max(qs, START_INPUT), min(qe, FINAL_END)]
             run_s="$(max_ymd "$qs" "$START_INPUT")"
             run_e="$(min_ymd "$qe" "$FINAL_END")"
 
-            # run_s > run_e 이면 이 분기는 스킵
             if [ "$run_s" -le "$run_e" ]; then
-              echo "=== Put/Call quarter backfill: ${y}Q${q} (${run_s}~${run_e}) ==="
+              echo "=== F04 Put/Call backfill: ${y}Q${q} (${run_s}~${run_e}) ==="
+
               BACKFILL_START="$run_s" BACKFILL_END="$run_e" PUTCALL_CACHE_PATH="$CACHE_PATH" \
                 python src/caches/cache_putcall.py
 
-              # 체크포인트 커밋/푸시: putcall_ratio.parquet만
+              # checkpoint commit/push: putcall cache only
               git add "$CACHE_PATH" || true
               if git diff --staged --quiet; then
                 echo "No changes to checkpoint for ${y}Q${q}."
               else
-                # rebase-safe push
                 git stash push -u -m "actions-stash-before-rebase" || true
                 git fetch origin main
                 git pull --rebase origin main
@@ -221,109 +138,56 @@ jobs:
               echo "Skip ${y}Q${q} (out of range)."
             fi
 
-            # 종료 조건: 이 분기의 종료가 FINAL_END 이상이면 break
             if [ "$qe" -ge "$FINAL_END" ]; then
               echo "Reached FINAL_END=$FINAL_END at ${y}Q${q}."
               break
             fi
 
-            # 다음 분기로 이동
             q=$((q+1))
             if [ "$q" -eq 5 ]; then q=1; y=$((y+1)); fi
 
-            # 안전장치: 2026Q1까지만 (원하면 늘리세요)
-            if [ "$y" -gt 2026 ] || { [ "$y" -eq 2026 ] && [ "$q" -gt 1 ]; }; then
-              echo "Stop at 2026Q1 boundary."
+            # 안전장치
+            if [ "$y" -gt 2026 ] || { [ "$y" -eq 2026 ] && [ "$q" -gt 4 ]; }; then
+              echo "Stop at boundary."
               break
             fi
           done
 
-      # -----------------------------
-      # Sanity check
-      # -----------------------------
-      - name: Sanity check caches
+      - name: Show min/max date (F04 cache)
         shell: bash
+        env:
+          TARGETS: "data/cache/putcall_ratio.parquet"
+          DATE_COL_CANDIDATES: "date,Date,basDt,BASE_DT"
         run: |
           set -euo pipefail
-          ls -lah data || true
-          ls -lah data/cache || true
-          test -f data/cache/putcall_ratio.parquet
-          test -f data/cache/k200_close.parquet
-          test -f data/cache/rates_3y_bundle.parquet
-          test -f data/cache/f08_foreigner_flow.parquet
-          test -f data/cache/f09_credit_deposit.parquet
-          test -f data/usdkrw_level.parquet
-          test -f data/vkospi_level.parquet
+          python - << 'PY'
+          import os
+          from pathlib import Path
+          import pandas as pd
 
-      # -----------------------------
-      # Factors (8y)
-      # -----------------------------
-      - name: Calculate factors (F01, F04, F06, F08, F09, F10)
-        shell: bash
-        run: |
-          set -euo pipefail
-          export PYTHONPATH=src
+          targets = [t.strip() for t in os.getenv("TARGETS","").split(",") if t.strip()]
+          cand_cols = [c.strip() for c in os.getenv("DATE_COL_CANDIDATES","date").split(",") if c.strip()]
 
-          # 공통 파라미터(프로젝트 기존 값에 맞춤)
-          export ROLLING_DAYS=1260
-          export MIN_OBS=252
-          export WINSOR_P=0.01
-          export VOL_WINDOW_DAYS=20
+          def pick_date_col(df):
+            for c in cand_cols:
+              if c in df.columns:
+                return c
+            for c in df.columns:
+              if "date" in c.lower():
+                return c
+            return None
 
-          python src/factors/f01_momentum.py
-          python src/factors/f04_putcall.py
-          python src/factors/f06_vkospi.py
-          python src/factors/f08_foreigner_flow.py
-          python src/factors/f09_margin_ratio.py
-          python src/factors/f10_fxvol.py
-
-      # -----------------------------
-      # Assemble + report
-      # -----------------------------
-      - name: Render report & assemble index
-        shell: bash
-        run: |
-          set -euo pipefail
-          export PYTHONPATH=src
-          python src/render_report.py
-          python src/factors/f05_credit_spread.py
-          python src/factors/f07_safehaven.py
-          python src/assemble_index.py
-
-      - name: Parquet to CSV
-        shell: bash
-        run: |
-          set -euo pipefail
-          export PYTHONPATH=src
-          python src/parquet_to_csv.py
-
-      # -----------------------------
-      # Final commit & push outputs
-      # -----------------------------
-      - name: Commit & push outputs
-        shell: bash
-        run: |
-          set -euo pipefail
-          git config user.name "github-actions"
-          git config user.email "github-actions@github.com"
-
-          git add data/factors/ index_daily.* docs/ data/*.csv data/*.parquet || true
-
-          if git diff --staged --quiet; then
-            echo "No final changes to commit."
-            exit 0
-          fi
-
-          git stash push -u -m "actions-stash-before-rebase" || true
-          git fetch origin main
-          git pull --rebase origin main
-          git stash pop || true
-
-          git add data/factors/ index_daily.* docs/ data/*.csv data/*.parquet || true
-          if git diff --staged --quiet; then
-            echo "No staged changes after rebase."
-            exit 0
-          fi
-
-          git commit -m "Rebuild 8y outputs $(date -u +%Y-%m-%dT%H:%M:%SZ)" || true
-          git push origin HEAD:main
+          print("=== [min/max date] ===")
+          for t in targets:
+            p = Path(t)
+            if not p.exists():
+              print(f"[MISS] {t}")
+              continue
+            df = pd.read_parquet(p)
+            dc = pick_date_col(df)
+            if not dc:
+              print(f"[NO_DATE_COL] {t} cols={list(df.columns)[:25]}")
+              continue
+            s = pd.to_datetime(df[dc], errors="coerce").dropna()
+            print(f"[OK] {t} rows={len(df)} date_col={dc} min={s.min()} max={s.max()}")
+          PY
