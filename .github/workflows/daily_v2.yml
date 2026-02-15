@@ -1,7 +1,12 @@
 name: daily_v2
 
 on:
-  workflow_dispatch:  # 수동 실행 버튼 활성화
+  workflow_dispatch:
+    inputs:
+      recent_days:
+        description: "최근 N일만 갱신 (YYYYMMDD 범위 계산용). 기본 31"
+        required: true
+        default: "31"
   schedule:
     - cron: "15 1 * * 1-5"  # 평일 한국시간 오전 10:15 (UTC 01:15)
 
@@ -23,20 +28,24 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: Set date range
+      - name: Set date range (recent only)
         run: |
-          # 어제(영업일 기준 안전)와 30일 전 날짜 계산
           END=$(date -u -d '1 day ago' +%Y%m%d)
-          START=$(date -u -d '31 days ago' +%Y%m%d)
+
+          # workflow_dispatch면 inputs.recent_days 사용, schedule이면 기본 31
+          RECENT_DAYS="${{ inputs.recent_days }}"
+          if [ -z "$RECENT_DAYS" ]; then RECENT_DAYS="31"; fi
+
+          START=$(date -u -d "$((RECENT_DAYS+0)) days ago" +%Y%m%d)
 
           echo "BACKFILL_END=$END" >> $GITHUB_ENV
           echo "BACKFILL_START=$START" >> $GITHUB_ENV
           echo "CACHE_BUFFER_DAYS=450" >> $GITHUB_ENV
 
-          echo "[date_range] START=$START END=$END"
+          echo "[date_range] RECENT_DAYS=$RECENT_DAYS START=$START END=$END"
 
       # -------------------------
-      # 데이터 수집 (Caches)
+      # 데이터 수집 (Caches) - 최근구간만
       # -------------------------
       - name: Cache Rates 3Y Bundle (ECOS 817Y002) [KTB3Y + Corp AA-/BBB-]
         env:
@@ -78,7 +87,7 @@ jobs:
           export PYTHONPATH=src
           python src/caches/cache_f09_credit_deposit_datago.py
 
-      - name: Cache K200 close (FDR 사용으로 '지수명' 에러 우회)
+      - name: Cache K200 close (FDR)
         env:
           BACKFILL_START: ${{ env.BACKFILL_START }}
           BACKFILL_END: ${{ env.BACKFILL_END }}
@@ -122,14 +131,11 @@ jobs:
           export PYTHONPATH=src
           python src/caches/cache_putcall.py
 
-      - name: Sanity check caches exist (actual paths)
+      - name: Sanity check caches exist
         run: |
           set -e
-          echo "== data/cache =="
           ls -lah data/cache || true
-          echo "== data =="
           ls -lah data || true
-
           test -f data/cache/k200_close.parquet
           test -f data/cache/putcall_ratio.parquet
           test -f data/usdkrw_level.parquet
@@ -161,9 +167,6 @@ jobs:
           python src/factors/f09_margin_ratio.py
           python src/factors/f10_fxvol.py
 
-      # -------------------------
-      # Assemble + Report
-      # -------------------------
       - name: Assemble & Report Generation
         run: |
           set -e
@@ -179,10 +182,22 @@ jobs:
           export PYTHONPATH=src
           python src/parquet_to_csv.py
 
-      - name: Commit & push outputs
+      - name: Commit & push outputs (rebase-safe)
         run: |
-          set -e
+          set -euo pipefail
           git config user.name "github-actions"
           git config user.email "github-actions@github.com"
+
           git add data/factors/ data/index_daily.* docs/index.html || true
-          git diff --quiet && git diff --staged --quiet || (git commit -m "Daily update $(date +%Y-%m-%d)" && git push)
+          git diff --quiet && git diff --staged --quiet && exit 0
+
+          git stash push -u -m "actions-stash-before-rebase" || true
+          git fetch origin main
+          git pull --rebase origin main
+          git stash pop || true
+
+          git add data/factors/ data/index_daily.* docs/index.html || true
+          git diff --quiet && git diff --staged --quiet && exit 0
+
+          git commit -m "Daily update $(date -u +%Y-%m-%d)" || true
+          git push origin HEAD:main
