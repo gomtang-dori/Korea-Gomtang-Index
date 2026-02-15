@@ -1,0 +1,183 @@
+name: backfill_f08_f09
+
+on:
+  workflow_dispatch:
+    inputs:
+      start:
+        description: "백필 시작일 (YYYYMMDD)"
+        required: true
+        default: "20180101"
+      cache_buffer_days:
+        description: "API/휴일 버퍼 (days)"
+        required: true
+        default: "450"
+
+jobs:
+  backfill:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          set -e
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Set backfill range (START=input, END=yesterday UTC)
+        shell: bash
+        run: |
+          set -euo pipefail
+          END=$(date -u -d '1 day ago' +%Y%m%d)
+          echo "BACKFILL_START=${{ inputs.start }}" >> "$GITHUB_ENV"
+          echo "BACKFILL_END=$END" >> "$GITHUB_ENV"
+          echo "CACHE_BUFFER_DAYS=${{ inputs.cache_buffer_days }}" >> "$GITHUB_ENV"
+          echo "[backfill_f08_f09] START=${{ inputs.start }} END=$END BUFFER=${{ inputs.cache_buffer_days }}"
+
+      - name: Cache F08 (Foreigner flow) [pykrx]
+        env:
+          BACKFILL_START: ${{ env.BACKFILL_START }}
+          BACKFILL_END: ${{ env.BACKFILL_END }}
+          CACHE_BUFFER_DAYS: ${{ env.CACHE_BUFFER_DAYS }}
+          F08_CACHE_PATH: data/cache/f08_foreigner_flow.parquet
+        run: |
+          set -e
+          export PYTHONPATH=src
+          python src/caches/cache_f08_foreigner_flow_pykrx.py
+
+      - name: Cache F09 (Credit/Deposit) [data.go.kr]
+        env:
+          DATA_GO_KR_SERVICE_KEY: ${{ secrets.DATA_GO_KR_SERVICE_KEY }}
+          BACKFILL_START: ${{ env.BACKFILL_START }}
+          BACKFILL_END: ${{ env.BACKFILL_END }}
+          CACHE_BUFFER_DAYS: ${{ env.CACHE_BUFFER_DAYS }}
+          F09_CACHE_PATH: data/cache/f09_credit_deposit.parquet
+        run: |
+          set -e
+          export PYTHONPATH=src
+          python src/caches/cache_f09_credit_deposit_datago.py
+
+      - name: Calculate F08 + F09 (from caches)
+        env:
+          ROLLING_DAYS: "1260"
+          MIN_OBS: "252"
+          WINSOR_P: "0.01"
+          F08_CACHE_PATH: data/cache/f08_foreigner_flow.parquet
+          F08_OUT_PATH: data/factors/f08.parquet
+          F09_CACHE_PATH: data/cache/f09_credit_deposit.parquet
+          F09_OUT_PATH: data/factors/f09.parquet
+        run: |
+          set -e
+          export PYTHONPATH=src
+          python src/factors/f08_foreigner_flow.py
+          python src/factors/f09_margin_ratio.py
+
+      - name: Quick sanity check
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f data/cache/f08_foreigner_flow.parquet
+          test -f data/cache/f09_credit_deposit.parquet
+          test -f data/factors/f08.parquet
+          test -f data/factors/f09.parquet
+          ls -lah data/cache data/factors | sed -n '1,200p'
+
+      - name: Show min/max date (standard)
+        shell: bash
+        env:
+          TARGETS: "data/cache/f08_foreigner_flow.parquet,data/cache/f09_credit_deposit.parquet,data/factors/f08.parquet,data/factors/f09.parquet"
+          DATE_COL_CANDIDATES: "date,Date,basDt,BASE_DT"
+        run: |
+          set -euo pipefail
+          python - << 'PY'
+          import os
+          from pathlib import Path
+          import pandas as pd
+
+          targets = [t.strip() for t in os.environ.get("TARGETS","").split(",") if t.strip()]
+          cand_cols = [c.strip() for c in os.environ.get("DATE_COL_CANDIDATES","date").split(",") if c.strip()]
+
+          def pick_date_col(df):
+            for c in cand_cols:
+              if c in df.columns:
+                return c
+            for c in df.columns:
+              if "date" in c.lower():
+                return c
+            return None
+
+          def read_any(path: Path):
+            suf = path.suffix.lower()
+            if suf == ".parquet":
+              return pd.read_parquet(path)
+            if suf == ".csv":
+              return pd.read_csv(path)
+            raise ValueError(f"Unsupported extension: {path}")
+
+          print("=== [min/max date] ===")
+          for t in targets:
+            p = Path(t)
+            if not p.exists():
+              print(f"[MISS] {t} (file not found)")
+              continue
+            try:
+              df = read_any(p)
+            except Exception as e:
+              print(f"[FAIL] {t} read error: {e}")
+              continue
+            if df is None or df.empty:
+              print(f"[EMPTY] {t} rows=0")
+              continue
+            dc = pick_date_col(df)
+            if not dc:
+              print(f"[NO_DATE_COL] {t} cols={list(df.columns)[:20]}")
+              continue
+            s = pd.to_datetime(df[dc], errors="coerce").dropna()
+            if s.empty:
+              print(f"[NO_VALID_DATE] {t} date_col={dc} rows={len(df)}")
+              continue
+            print(f"[OK] {t} rows={len(df)} date_col={dc} min={s.min()} max={s.max()}")
+          PY
+
+      - name: Commit & push (if changed)
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions"
+          git config user.email "github-actions@github.com"
+
+          git add data/cache/f08_foreigner_flow.parquet \
+                  data/cache/f09_credit_deposit.parquet \
+                  data/factors/f08.parquet data/factors/f09.parquet || true
+
+          if git diff --staged --quiet; then
+            echo "No changes to commit."
+            exit 0
+          fi
+
+          git stash push -u -m "actions-stash-before-rebase" || true
+          git fetch origin main
+          git pull --rebase origin main
+          git stash pop || true
+
+          git add data/cache/f08_foreigner_flow.parquet \
+                  data/cache/f09_credit_deposit.parquet \
+                  data/factors/f08.parquet data/factors/f09.parquet || true
+
+          if git diff --staged --quiet; then
+            echo "No staged changes after rebase."
+            exit 0
+          fi
+
+          git commit -m "Backfill bundle F08/F09 (${BACKFILL_START}~${BACKFILL_END})" || true
+          git push origin HEAD:main
