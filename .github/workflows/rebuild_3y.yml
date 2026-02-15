@@ -1,0 +1,551 @@
+name: rebuild_3y
+
+on:
+  workflow_dispatch:
+    inputs:
+      start:
+        description: "3년치 시작일 (YYYYMMDD)"
+        required: true
+        default: "20230101"
+
+jobs:
+  rebuild:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Set date range (3y rebuild)
+        shell: bash
+        run: |
+          set -e
+          END=$(date -u -d '1 day ago' +%Y%m%d)
+          START="${{ inputs.start }}"
+          echo "BACKFILL_END=$END" >> "$GITHUB_ENV"
+          echo "BACKFILL_START=$START" >> "$GITHUB_ENV"
+          echo "CACHE_BUFFER_DAYS=450" >> "$GITHUB_ENV"
+          echo "[rebuild_3y] START=$START END=$END BUFFER=450"
+
+      # -------------------------
+      # 캐시(백필 가능한 것들)
+      # -------------------------
+      - name: Cache Rates 3Y Bundle (ECOS)
+        env:
+          ECOS_KEY: ${{ secrets.ECOS_KEY }}
+          BACKFILL_START: ${{ env.BACKFILL_START }}
+          BACKFILL_END: ${{ env.BACKFILL_END }}
+          CACHE_BUFFER_DAYS: "450"
+          RATES_STAT_CODE: "817Y002"
+          RATES_CYCLE: "D"
+          ECOS_KTB3Y_ITEM_CODE1: "010200000"
+          ECOS_CORP3Y_AA_ITEM_CODE1: "010300000"
+          ECOS_CORP3Y_BBB_ITEM_CODE1: "010320000"
+          RATES_3Y_BUNDLE_PATH: data/cache/rates_3y_bundle.parquet
+        run: |
+          set -e
+          export PYTHONPATH=src
+          python src/caches/cache_rates_3y_bundle_ecos.py
+
+      - name: Cache F08 (Foreigner flow) [pykrx]
+        env:
+          BACKFILL_START: ${{ env.BACKFILL_START }}
+          BACKFILL_END: ${{ env.BACKFILL_END }}
+          CACHE_BUFFER_DAYS: "450"
+          F08_CACHE_PATH: data/cache/f08_foreigner_flow.parquet
+        run: |
+          set -e
+          export PYTHONPATH=src
+          python src/caches/cache_f08_foreigner_flow_pykrx.py
+
+      - name: Cache F09 (Credit/Deposit) [data.go.kr]
+        env:
+          DATA_GO_KR_SERVICE_KEY: ${{ secrets.DATA_GO_KR_SERVICE_KEY }}
+          BACKFILL_START: ${{ env.BACKFILL_START }}
+          BACKFILL_END: ${{ env.BACKFILL_END }}
+          CACHE_BUFFER_DAYS: "450"
+          F09_CACHE_PATH: data/cache/f09_credit_deposit.parquet
+        run: |
+          set -e
+          export PYTHONPATH=src
+          python src/caches/cache_f09_credit_deposit_datago.py
+
+      - name: Cache K200 close (FDR)
+        env:
+          BACKFILL_START: ${{ env.BACKFILL_START }}
+          BACKFILL_END: ${{ env.BACKFILL_END }}
+          CACHE_BUFFER_DAYS: "450"
+          K200_CACHE_PATH: data/cache/k200_close.parquet
+          K200_SYMBOL: "KS200"
+        run: |
+          set -e
+          export PYTHONPATH=src
+          python src/caches/cache_k200_close_fdr.py
+
+      # ⚠️ USDKRW/VKOSPI는 아직 "장기백필" 미지원(별도 개선 필요)
+      - name: Cache USD/KRW (ECOS) (recent window)
+        env:
+          ECOS_KEY: ${{ secrets.ECOS_KEY }}
+          ECOS_USDKRW_STAT_CODE: ${{ secrets.ECOS_USDKRW_STAT_CODE }}
+          ECOS_USDKRW_ITEM_CODE1: ${{ secrets.ECOS_USDKRW_ITEM_CODE1 }}
+        run: |
+          set -e
+          export PYTHONPATH=src
+          python src/usdkrw_fetch.py
+
+      - name: Cache VKOSPI (KRX) (recent window)
+        env:
+          KRX_AUTH_KEY: ${{ secrets.KRX_AUTH_KEY }}
+          KRX_DVRPROD_DD_TRD_URL: ${{ secrets.KRX_DVRPROD_DD_TRD_URL }}
+        run: |
+          set -e
+          export PYTHONPATH=src
+          python src/vkospi_fetch.py
+
+      # -------------------------
+      # F04 Put/Call (KRX) - 분기별 + 분기마다 putcall_ratio.parquet만 커밋/푸시
+      # -------------------------
+      - name: Cache Put/Call (KRX) 2023Q1
+        env:
+          KRX_AUTH_KEY: ${{ secrets.KRX_AUTH_KEY }}
+          KRX_EQSOP_URL: ${{ secrets.KRX_EQSOP_URL }}
+          KRX_EQKOP_URL: ${{ secrets.KRX_EQKOP_URL }}
+          BACKFILL_START: "20230101"
+          BACKFILL_END: "20230331"
+          PUTCALL_CACHE_PATH: data/cache/putcall_ratio.parquet
+        run: |
+          set -e
+          export PYTHONPATH=src
+          python src/caches/cache_putcall.py
+
+      - name: Checkpoint push putcall cache 2023Q1
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions"
+          git config user.email "github-actions@github.com"
+          git add data/cache/putcall_ratio.parquet || true
+          git diff --quiet && git diff --staged --quiet && exit 0
+          git stash push -u -m "actions-stash-before-rebase" || true
+          git fetch origin main
+          git pull --rebase origin main
+          git stash pop || true
+          git add data/cache/putcall_ratio.parquet || true
+          git commit -m "Checkpoint putcall cache 2023Q1" || true
+          git push origin HEAD:main
+
+      - name: Cache Put/Call (KRX) 2023Q2
+        env:
+          KRX_AUTH_KEY: ${{ secrets.KRX_AUTH_KEY }}
+          KRX_EQSOP_URL: ${{ secrets.KRX_EQSOP_URL }}
+          KRX_EQKOP_URL: ${{ secrets.KRX_EQKOP_URL }}
+          BACKFILL_START: "20230401"
+          BACKFILL_END: "20230630"
+          PUTCALL_CACHE_PATH: data/cache/putcall_ratio.parquet
+        run: |
+          set -e
+          export PYTHONPATH=src
+          python src/caches/cache_putcall.py
+
+      - name: Checkpoint push putcall cache 2023Q2
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions"
+          git config user.email "github-actions@github.com"
+          git add data/cache/putcall_ratio.parquet || true
+          git diff --quiet && git diff --staged --quiet && exit 0
+          git stash push -u -m "actions-stash-before-rebase" || true
+          git fetch origin main
+          git pull --rebase origin main
+          git stash pop || true
+          git add data/cache/putcall_ratio.parquet || true
+          git commit -m "Checkpoint putcall cache 2023Q2" || true
+          git push origin HEAD:main
+
+      - name: Cache Put/Call (KRX) 2023Q3
+        env:
+          KRX_AUTH_KEY: ${{ secrets.KRX_AUTH_KEY }}
+          KRX_EQSOP_URL: ${{ secrets.KRX_EQSOP_URL }}
+          KRX_EQKOP_URL: ${{ secrets.KRX_EQKOP_URL }}
+          BACKFILL_START: "20230701"
+          BACKFILL_END: "20230930"
+          PUTCALL_CACHE_PATH: data/cache/putcall_ratio.parquet
+        run: |
+          set -e
+          export PYTHONPATH=src
+          python src/caches/cache_putcall.py
+
+      - name: Checkpoint push putcall cache 2023Q3
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions"
+          git config user.email "github-actions@github.com"
+          git add data/cache/putcall_ratio.parquet || true
+          git diff --quiet && git diff --staged --quiet && exit 0
+          git stash push -u -m "actions-stash-before-rebase" || true
+          git fetch origin main
+          git pull --rebase origin main
+          git stash pop || true
+          git add data/cache/putcall_ratio.parquet || true
+          git commit -m "Checkpoint putcall cache 2023Q3" || true
+          git push origin HEAD:main
+
+      - name: Cache Put/Call (KRX) 2023Q4
+        env:
+          KRX_AUTH_KEY: ${{ secrets.KRX_AUTH_KEY }}
+          KRX_EQSOP_URL: ${{ secrets.KRX_EQSOP_URL }}
+          KRX_EQKOP_URL: ${{ secrets.KRX_EQKOP_URL }}
+          BACKFILL_START: "20231001"
+          BACKFILL_END: "20231231"
+          PUTCALL_CACHE_PATH: data/cache/putcall_ratio.parquet
+        run: |
+          set -e
+          export PYTHONPATH=src
+          python src/caches/cache_putcall.py
+
+      - name: Checkpoint push putcall cache 2023Q4
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions"
+          git config user.email "github-actions@github.com"
+          git add data/cache/putcall_ratio.parquet || true
+          git diff --quiet && git diff --staged --quiet && exit 0
+          git stash push -u -m "actions-stash-before-rebase" || true
+          git fetch origin main
+          git pull --rebase origin main
+          git stash pop || true
+          git add data/cache/putcall_ratio.parquet || true
+          git commit -m "Checkpoint putcall cache 2023Q4" || true
+          git push origin HEAD:main
+
+      - name: Cache Put/Call (KRX) 2024Q1
+        env:
+          KRX_AUTH_KEY: ${{ secrets.KRX_AUTH_KEY }}
+          KRX_EQSOP_URL: ${{ secrets.KRX_EQSOP_URL }}
+          KRX_EQKOP_URL: ${{ secrets.KRX_EQKOP_URL }}
+          BACKFILL_START: "20240101"
+          BACKFILL_END: "20240331"
+          PUTCALL_CACHE_PATH: data/cache/putcall_ratio.parquet
+        run: |
+          set -e
+          export PYTHONPATH=src
+          python src/caches/cache_putcall.py
+
+      - name: Checkpoint push putcall cache 2024Q1
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions"
+          git config user.email "github-actions@github.com"
+          git add data/cache/putcall_ratio.parquet || true
+          git diff --quiet && git diff --staged --quiet && exit 0
+          git stash push -u -m "actions-stash-before-rebase" || true
+          git fetch origin main
+          git pull --rebase origin main
+          git stash pop || true
+          git add data/cache/putcall_ratio.parquet || true
+          git commit -m "Checkpoint putcall cache 2024Q1" || true
+          git push origin HEAD:main
+
+      - name: Cache Put/Call (KRX) 2024Q2
+        env:
+          KRX_AUTH_KEY: ${{ secrets.KRX_AUTH_KEY }}
+          KRX_EQSOP_URL: ${{ secrets.KRX_EQSOP_URL }}
+          KRX_EQKOP_URL: ${{ secrets.KRX_EQKOP_URL }}
+          BACKFILL_START: "20240401"
+          BACKFILL_END: "20240630"
+          PUTCALL_CACHE_PATH: data/cache/putcall_ratio.parquet
+        run: |
+          set -e
+          export PYTHONPATH=src
+          python src/caches/cache_putcall.py
+
+      - name: Checkpoint push putcall cache 2024Q2
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions"
+          git config user.email "github-actions@github.com"
+          git add data/cache/putcall_ratio.parquet || true
+          git diff --quiet && git diff --staged --quiet && exit 0
+          git stash push -u -m "actions-stash-before-rebase" || true
+          git fetch origin main
+          git pull --rebase origin main
+          git stash pop || true
+          git add data/cache/putcall_ratio.parquet || true
+          git commit -m "Checkpoint putcall cache 2024Q2" || true
+          git push origin HEAD:main
+
+      - name: Cache Put/Call (KRX) 2024Q3
+        env:
+          KRX_AUTH_KEY: ${{ secrets.KRX_AUTH_KEY }}
+          KRX_EQSOP_URL: ${{ secrets.KRX_EQSOP_URL }}
+          KRX_EQKOP_URL: ${{ secrets.KRX_EQKOP_URL }}
+          BACKFILL_START: "20240701"
+          BACKFILL_END: "20240930"
+          PUTCALL_CACHE_PATH: data/cache/putcall_ratio.parquet
+        run: |
+          set -e
+          export PYTHONPATH=src
+          python src/caches/cache_putcall.py
+
+      - name: Checkpoint push putcall cache 2024Q3
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions"
+          git config user.email "github-actions@github.com"
+          git add data/cache/putcall_ratio.parquet || true
+          git diff --quiet && git diff --staged --quiet && exit 0
+          git stash push -u -m "actions-stash-before-rebase" || true
+          git fetch origin main
+          git pull --rebase origin main
+          git stash pop || true
+          git add data/cache/putcall_ratio.parquet || true
+          git commit -m "Checkpoint putcall cache 2024Q3" || true
+          git push origin HEAD:main
+
+      - name: Cache Put/Call (KRX) 2024Q4
+        env:
+          KRX_AUTH_KEY: ${{ secrets.KRX_AUTH_KEY }}
+          KRX_EQSOP_URL: ${{ secrets.KRX_EQSOP_URL }}
+          KRX_EQKOP_URL: ${{ secrets.KRX_EQKOP_URL }}
+          BACKFILL_START: "20241001"
+          BACKFILL_END: "20241231"
+          PUTCALL_CACHE_PATH: data/cache/putcall_ratio.parquet
+        run: |
+          set -e
+          export PYTHONPATH=src
+          python src/caches/cache_putcall.py
+
+      - name: Checkpoint push putcall cache 2024Q4
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions"
+          git config user.email "github-actions@github.com"
+          git add data/cache/putcall_ratio.parquet || true
+          git diff --quiet && git diff --staged --quiet && exit 0
+          git stash push -u -m "actions-stash-before-rebase" || true
+          git fetch origin main
+          git pull --rebase origin main
+          git stash pop || true
+          git add data/cache/putcall_ratio.parquet || true
+          git commit -m "Checkpoint putcall cache 2024Q4" || true
+          git push origin HEAD:main
+
+      - name: Cache Put/Call (KRX) 2025Q1
+        env:
+          KRX_AUTH_KEY: ${{ secrets.KRX_AUTH_KEY }}
+          KRX_EQSOP_URL: ${{ secrets.KRX_EQSOP_URL }}
+          KRX_EQKOP_URL: ${{ secrets.KRX_EQKOP_URL }}
+          BACKFILL_START: "20250101"
+          BACKFILL_END: "20250331"
+          PUTCALL_CACHE_PATH: data/cache/putcall_ratio.parquet
+        run: |
+          set -e
+          export PYTHONPATH=src
+          python src/caches/cache_putcall.py
+
+      - name: Checkpoint push putcall cache 2025Q1
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions"
+          git config user.email "github-actions@github.com"
+          git add data/cache/putcall_ratio.parquet || true
+          git diff --quiet && git diff --staged --quiet && exit 0
+          git stash push -u -m "actions-stash-before-rebase" || true
+          git fetch origin main
+          git pull --rebase origin main
+          git stash pop || true
+          git add data/cache/putcall_ratio.parquet || true
+          git commit -m "Checkpoint putcall cache 2025Q1" || true
+          git push origin HEAD:main
+
+      - name: Cache Put/Call (KRX) 2025Q2
+        env:
+          KRX_AUTH_KEY: ${{ secrets.KRX_AUTH_KEY }}
+          KRX_EQSOP_URL: ${{ secrets.KRX_EQSOP_URL }}
+          KRX_EQKOP_URL: ${{ secrets.KRX_EQKOP_URL }}
+          BACKFILL_START: "20250401"
+          BACKFILL_END: "20250630"
+          PUTCALL_CACHE_PATH: data/cache/putcall_ratio.parquet
+        run: |
+          set -e
+          export PYTHONPATH=src
+          python src/caches/cache_putcall.py
+
+      - name: Checkpoint push putcall cache 2025Q2
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions"
+          git config user.email "github-actions@github.com"
+          git add data/cache/putcall_ratio.parquet || true
+          git diff --quiet && git diff --staged --quiet && exit 0
+          git stash push -u -m "actions-stash-before-rebase" || true
+          git fetch origin main
+          git pull --rebase origin main
+          git stash pop || true
+          git add data/cache/putcall_ratio.parquet || true
+          git commit -m "Checkpoint putcall cache 2025Q2" || true
+          git push origin HEAD:main
+
+      - name: Cache Put/Call (KRX) 2025Q3
+        env:
+          KRX_AUTH_KEY: ${{ secrets.KRX_AUTH_KEY }}
+          KRX_EQSOP_URL: ${{ secrets.KRX_EQSOP_URL }}
+          KRX_EQKOP_URL: ${{ secrets.KRX_EQKOP_URL }}
+          BACKFILL_START: "20250701"
+          BACKFILL_END: "20250930"
+          PUTCALL_CACHE_PATH: data/cache/putcall_ratio.parquet
+        run: |
+          set -e
+          export PYTHONPATH=src
+          python src/caches/cache_putcall.py
+
+      - name: Checkpoint push putcall cache 2025Q3
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions"
+          git config user.email "github-actions@github.com"
+          git add data/cache/putcall_ratio.parquet || true
+          git diff --quiet && git diff --staged --quiet && exit 0
+          git stash push -u -m "actions-stash-before-rebase" || true
+          git fetch origin main
+          git pull --rebase origin main
+          git stash pop || true
+          git add data/cache/putcall_ratio.parquet || true
+          git commit -m "Checkpoint putcall cache 2025Q3" || true
+          git push origin HEAD:main
+
+      - name: Cache Put/Call (KRX) 2025Q4
+        env:
+          KRX_AUTH_KEY: ${{ secrets.KRX_AUTH_KEY }}
+          KRX_EQSOP_URL: ${{ secrets.KRX_EQSOP_URL }}
+          KRX_EQKOP_URL: ${{ secrets.KRX_EQKOP_URL }}
+          BACKFILL_START: "20251001"
+          BACKFILL_END: "20251231"
+          PUTCALL_CACHE_PATH: data/cache/putcall_ratio.parquet
+        run: |
+          set -e
+          export PYTHONPATH=src
+          python src/caches/cache_putcall.py
+
+      - name: Checkpoint push putcall cache 2025Q4
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions"
+          git config user.email "github-actions@github.com"
+          git add data/cache/putcall_ratio.parquet || true
+          git diff --quiet && git diff --staged --quiet && exit 0
+          git stash push -u -m "actions-stash-before-rebase" || true
+          git fetch origin main
+          git pull --rebase origin main
+          git stash pop || true
+          git add data/cache/putcall_ratio.parquet || true
+          git commit -m "Checkpoint putcall cache 2025Q4" || true
+          git push origin HEAD:main
+
+      - name: Cache Put/Call (KRX) 2026Q1 (to BACKFILL_END)
+        env:
+          KRX_AUTH_KEY: ${{ secrets.KRX_AUTH_KEY }}
+          KRX_EQSOP_URL: ${{ secrets.KRX_EQSOP_URL }}
+          KRX_EQKOP_URL: ${{ secrets.KRX_EQKOP_URL }}
+          BACKFILL_START: "20260101"
+          BACKFILL_END: ${{ env.BACKFILL_END }}
+          PUTCALL_CACHE_PATH: data/cache/putcall_ratio.parquet
+        run: |
+          set -e
+          export PYTHONPATH=src
+          python src/caches/cache_putcall.py
+
+      - name: Checkpoint push putcall cache 2026Q1
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions"
+          git config user.email "github-actions@github.com"
+          git add data/cache/putcall_ratio.parquet || true
+          git diff --quiet && git diff --staged --quiet && exit 0
+          git stash push -u -m "actions-stash-before-rebase" || true
+          git fetch origin main
+          git pull --rebase origin main
+          git stash pop || true
+          git add data/cache/putcall_ratio.parquet || true
+          git commit -m "Checkpoint putcall cache 2026Q1" || true
+          git push origin HEAD:main
+
+      # -------------------------
+      # Factor 계산 + Assemble (3y라도 window=1260이므로 초기 NaN은 정상)
+      # -------------------------
+      - name: Calculate Factors (F01,F04,F06,F08,F09,F10)
+        env:
+          ROLLING_DAYS: "1260"
+          MIN_OBS: "252"
+          WINSOR_P: "0.01"
+          VOL_WINDOW_DAYS: "20"
+          K200_CACHE_PATH: data/cache/k200_close.parquet
+          USDKRW_CACHE_PATH: data/usdkrw_level.parquet
+          VKOSPI_CACHE_PATH: data/vkospi_level.parquet
+          F08_CACHE_PATH: data/cache/f08_foreigner_flow.parquet
+          PUTCALL_CACHE_PATH: data/cache/putcall_ratio.parquet
+          RATES_3Y_BUNDLE_PATH: data/cache/rates_3y_bundle.parquet
+          F07_HORIZON_DAYS: "20"
+        run: |
+          set -e
+          export PYTHONPATH=src
+          python src/factors/f01_momentum.py
+          python src/factors/f04_putcall.py
+          python src/factors/f06_vkospi.py
+          python src/factors/f08_foreigner_flow.py
+          python src/factors/f09_margin_ratio.py
+          python src/factors/f10_fxvol.py
+
+      - name: Assemble & Report Generation
+        run: |
+          set -e
+          export PYTHONPATH=src
+          python src/report/render_report.py
+          python src/factors/f05_credit_spread.py
+          python src/factors/f07_safehaven.py
+          python src/assemble/assemble_index.py
+
+      - name: Convert parquet to CSV (index_daily)
+        run: |
+          set -e
+          export PYTHONPATH=src
+          python src/parquet_to_csv.py
+
+      - name: Commit & push outputs (final)
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions"
+          git config user.email "github-actions@github.com"
+          git add data/factors/ data/index_daily.* docs/index.html || true
+          git diff --quiet && git diff --staged --quiet && exit 0
+          git stash push -u -m "actions-stash-before-rebase" || true
+          git fetch origin main
+          git pull --rebase origin main
+          git stash pop || true
+          git add data/factors/ data/index_daily.* docs/index.html || true
+          git commit -m "Rebuild 3y factors/index $(date -u +%Y-%m-%d)" || true
+          git push origin HEAD:main
