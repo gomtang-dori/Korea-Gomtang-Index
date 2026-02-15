@@ -4,13 +4,25 @@ on:
   workflow_dispatch:
     inputs:
       start:
-        description: "백필 시작일 (YYYYMMDD)"
+        description: "BACKFILL_START (YYYYMMDD)"
         required: true
         default: "20180101"
       cache_buffer_days:
-        description: "버퍼(days)"
+        description: "Cache buffer days (int)"
         required: true
         default: "450"
+      rolling_days:
+        description: "ROLLING_DAYS for scoring (default 1260 = 5y trading days)"
+        required: true
+        default: "1260"
+      min_obs:
+        description: "MIN_OBS for scoring (default 252)"
+        required: true
+        default: "252"
+      f01_ma_days:
+        description: "F01 moving average days (default 125)"
+        required: true
+        default: "125"
 
 jobs:
   backfill:
@@ -29,8 +41,9 @@ jobs:
           python-version: "3.11"
 
       - name: Install dependencies
+        shell: bash
         run: |
-          set -e
+          set -euo pipefail
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
@@ -38,55 +51,52 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          END=$(date -u -d '1 day ago' +%Y%m%d)
-          echo "BACKFILL_START=${{ inputs.start }}" >> "$GITHUB_ENV"
-          echo "BACKFILL_END=$END" >> "$GITHUB_ENV"
-          echo "CACHE_BUFFER_DAYS=${{ inputs.cache_buffer_days }}" >> "$GITHUB_ENV"
-          echo "[backfill_f01_f06_indexlevels] START=${{ inputs.start }} END=$END BUFFER=${{ inputs.cache_buffer_days }}"
+          START_INPUT="${{ inputs.start }}"
+          END_UTC="$(date -u -d 'yesterday' +%Y%m%d)"
+          echo "BACKFILL_START=${START_INPUT}" >> $GITHUB_ENV
+          echo "BACKFILL_END=${END_UTC}" >> $GITHUB_ENV
+          echo "CACHE_BUFFER_DAYS=${{ inputs.cache_buffer_days }}" >> $GITHUB_ENV
+          echo "ROLLING_DAYS=${{ inputs.rolling_days }}" >> $GITHUB_ENV
+          echo "MIN_OBS=${{ inputs.min_obs }}" >> $GITHUB_ENV
+          echo "F01_MA_DAYS=${{ inputs.f01_ma_days }}" >> $GITHUB_ENV
+          echo "WINSOR_P=0.01" >> $GITHUB_ENV
 
-      - name: Cache Index Levels (FDR) [KOSPI+KOSDAQ+KOSPI200]
-        env:
-          BACKFILL_START: ${{ env.BACKFILL_START }}
-          BACKFILL_END: ${{ env.BACKFILL_END }}
-          CACHE_BUFFER_DAYS: ${{ env.CACHE_BUFFER_DAYS }}
-          KOSPI_SYMBOL: "KS11"
-          KOSDAQ_SYMBOL: "KQ11"
-          K200_SYMBOL: "KS200"
-          INDEX_LEVELS_PATH: data/cache/index_levels.parquet
-          K200_CACHE_PATH: data/cache/k200_close.parquet
+      - name: Cache index levels (FDR) [BACKFILL]
+        shell: bash
         run: |
-          set -e
-          export PYTHONPATH=src
+          set -euo pipefail
           python src/caches/cache_index_levels_fdr.py
 
       - name: Cache VKOSPI (KRX) [BACKFILL]
+        shell: bash
         env:
           KRX_AUTH_KEY: ${{ secrets.KRX_AUTH_KEY }}
-          KRX_DRVPROD_DD_TRD_URL: ${{ secrets.KRX_DVRPROD_DD_TRD_URL }}
-          BACKFILL_START: ${{ env.BACKFILL_START }}
-          BACKFILL_END: ${{ env.BACKFILL_END }}
-          CACHE_BUFFER_DAYS: ${{ env.CACHE_BUFFER_DAYS }}
-          VKOSPI_OUT_PATH: data/vkospi_level.parquet
-          VKOSPI_INDEX_NAME: "코스피 200 변동성지수"
+          KRX_DVRPROD_DD_TRD_URL: ${{ secrets.KRX_DVRPROD_DD_TRD_URL }}
         run: |
-          set -e
-          export PYTHONPATH=src
+          set -euo pipefail
           python src/caches/cache_vkospi_backfill_krx.py
 
-      - name: Calculate F01 + F06
-        env:
-          ROLLING_DAYS: "1260"
-          MIN_OBS: "252"
-          WINSOR_P: "0.01"
-          K200_CACHE_PATH: data/cache/k200_close.parquet
-          F01_PATH: data/factors/f01.parquet
-          VKOSPI_CACHE_PATH: data/vkospi_level.parquet
-          F06_PATH: data/factors/f06.parquet
+      - name: Calculate F01
+        shell: bash
         run: |
-          set -e
-          export PYTHONPATH=src
+          set -euo pipefail
           python src/factors/f01_momentum.py
+
+      - name: Calculate F06
+        shell: bash
+        run: |
+          set -euo pipefail
           python src/factors/f06_vkospi.py
+
+      - name: Quick sanity check (files exist)
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f data/cache/index_levels.parquet
+          test -f data/cache/k200_close.parquet
+          test -f data/vkospi_level.parquet
+          test -f data/factors/f01.parquet
+          test -f data/factors/f06.parquet
 
       - name: Show min/max date (standard)
         shell: bash
@@ -100,8 +110,8 @@ jobs:
           from pathlib import Path
           import pandas as pd
 
-          targets = [t.strip() for t in os.environ.get("TARGETS","").split(",") if t.strip()]
-          cand_cols = [c.strip() for c in os.environ.get("DATE_COL_CANDIDATES","date").split(",") if c.strip()]
+          targets = [t.strip() for t in os.getenv("TARGETS","").split(",") if t.strip()]
+          cand_cols = [c.strip() for c in os.getenv("DATE_COL_CANDIDATES","date").split(",") if c.strip()]
 
           def pick_date_col(df):
             for c in cand_cols:
@@ -112,28 +122,34 @@ jobs:
                 return c
             return None
 
-          def read_any(path: Path):
-            suf = path.suffix.lower()
-            if suf == ".parquet":
-              return pd.read_parquet(path)
-            if suf == ".csv":
-              return pd.read_csv(path)
-            raise ValueError(f"Unsupported extension: {path}")
+          def read_any(p: Path):
+            if p.suffix.lower() == ".parquet":
+              return pd.read_parquet(p)
+            if p.suffix.lower() == ".csv":
+              return pd.read_csv(p)
+            raise ValueError(f"Unsupported: {p}")
 
           print("=== [min/max date] ===")
           for t in targets:
             p = Path(t)
             if not p.exists():
-              print(f"[MISS] {t} (file not found)")
+              print(f"[MISS] {t}")
               continue
-            df = read_any(p)
-            if df is None or df.empty:
-              print(f"[EMPTY] {t} rows=0")
+            try:
+              df = read_any(p)
+            except Exception as e:
+              print(f"[FAIL] {t} {e}")
+              continue
+            if df is None or len(df) == 0:
+              print(f"[EMPTY] {t}")
               continue
             dc = pick_date_col(df)
-            s = pd.to_datetime(df[dc], errors="coerce").dropna() if dc else pd.Series([], dtype="datetime64[ns]")
+            if not dc:
+              print(f"[NO_DATE_COL] {t} cols={list(df.columns)[:20]}")
+              continue
+            s = pd.to_datetime(df[dc], errors="coerce").dropna()
             if s.empty:
-              print(f"[NO_VALID_DATE] {t} date_col={dc} rows={len(df)}")
+              print(f"[NO_VALID_DATE] {t}")
               continue
             print(f"[OK] {t} rows={len(df)} date_col={dc} min={s.min()} max={s.max()}")
           PY
@@ -145,32 +161,21 @@ jobs:
           git config user.name "github-actions"
           git config user.email "github-actions@github.com"
 
-          git add \
-            data/cache/index_levels.parquet data/cache/index_levels.csv \
-            data/cache/k200_close.parquet \
-            data/vkospi_level.parquet data/vkospi_level.csv \
-            data/factors/f01.parquet data/factors/f06.parquet || true
+          git add data/cache/index_levels.parquet data/cache/index_levels.csv || true
+          git add data/cache/k200_close.parquet data/cache/k200_close.csv || true
+          git add data/vkospi_level.parquet data/vkospi_level.csv || true
+          git add data/factors/f01.parquet data/factors/f06.parquet || true
 
           if git diff --staged --quiet; then
             echo "No changes to commit."
             exit 0
           fi
 
-          git stash push -u -m "actions-stash-before-rebase" || true
+          git commit -m "Backfill F01+F06 (index levels + vkospi) $(date -u +%Y-%m-%d)"
+
+          git stash push -u -m actions-stash-before-rebase || true
           git fetch origin main
           git pull --rebase origin main
           git stash pop || true
 
-          git add \
-            data/cache/index_levels.parquet data/cache/index_levels.csv \
-            data/cache/k200_close.parquet \
-            data/vkospi_level.parquet data/vkospi_level.csv \
-            data/factors/f01.parquet data/factors/f06.parquet || true
-
-          if git diff --staged --quiet; then
-            echo "No staged changes after rebase."
-            exit 0
-          fi
-
-          git commit -m "Backfill bundle F01/F06 + index levels (${BACKFILL_START}~${BACKFILL_END})" || true
           git push origin HEAD:main
