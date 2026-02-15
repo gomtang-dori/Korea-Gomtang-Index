@@ -5,16 +5,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-
-def _rolling_percentile(series: pd.Series, window: int, min_obs: int) -> pd.Series:
-    def pct_rank_last(x: np.ndarray) -> float:
-        x = pd.Series(x).dropna().to_numpy()
-        if len(x) == 0:
-            return np.nan
-        last = x[-1]
-        return float((x <= last).mean() * 100.0)
-
-    return series.rolling(window=window, min_periods=min_obs).apply(pct_rank_last, raw=True)
+from utils.rolling_score import to_score_from_raw
 
 
 def main():
@@ -55,11 +46,16 @@ def main():
     df["eq_ret_20d"] = np.log(df["k200_close"]).diff(horizon)
     df["bond_chg_20d"] = df["ktb3y"].diff(horizon)
 
-    # risk-off일수록 raw 커지게
     df["f07_raw"] = df["bond_chg_20d"] - df["eq_ret_20d"]
 
-    pct = _rolling_percentile(df["f07_raw"], window=rolling_days, min_obs=min_obs)
-    df["f07_score"] = 100.0 - pct  # Fear-type
+    # raw↑(risk-off) 공포형 → invert=True
+    df["f07_score"] = to_score_from_raw(
+        df["f07_raw"],
+        window=rolling_days,
+        min_obs=min_obs,
+        winsor_p=0.01,
+        invert=True,
+    )
 
     out = df[["date", "f07_raw", "f07_score"]].copy()
     out_path.parent.mkdir(parents=True, exist_ok=True)
