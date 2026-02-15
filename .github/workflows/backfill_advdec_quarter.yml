@@ -30,18 +30,18 @@ jobs:
         with:
           python-version: "3.11"
 
-      # (핵심) SQLite 누적을 위해 Actions Cache에서 복원
-      - name: Restore adv/dec SQLite cache
-        uses: actions/cache@v4
+      # (핵심) 캐시 복원: prefix 기반으로 가장 최신 캐시를 끌어옵니다.
+      - name: Restore adv/dec SQLite cache (prefix)
+        uses: actions/cache/restore@v4
         with:
           path: |
             data/cache/adv_dec_daily.sqlite
             data/cache/adv_dec_daily.sqlite-wal
             data/cache/adv_dec_daily.sqlite-shm
-          # 브랜치별 누적 (main이면 advdec-sqlite-main)
-          key: advdec-sqlite-${{ github.ref_name }}
+          # 캐시를 "항상 복원"하기 위한 prefix
+          key: advdec-sqlite-${{ github.ref_name }}-dummy
           restore-keys: |
-            advdec-sqlite-
+            advdec-sqlite-${{ github.ref_name }}-
 
       - name: Install dependencies
         run: |
@@ -55,7 +55,7 @@ jobs:
           echo "== before run: data/cache =="
           ls -lah data/cache || true
 
-      - name: Run adv/dec backfill (quarter)
+      - name: Run adv/dec backfill (quarter) - OpenAPI
         env:
           KRX_API_KEY: ${{ secrets.KRX_API_KEY }}
           ADVDEC_DB_PATH: data/cache/adv_dec_daily.sqlite
@@ -74,13 +74,6 @@ jobs:
           ls -lah data/cache || true
           test -f data/cache/adv_dec_daily.sqlite
 
-      - name: Verify SQLite exists (pre-save)
-        run: |
-          set -euo pipefail
-          echo "== pre-save: data/cache =="
-          ls -lah data/cache || true
-          test -f data/cache/adv_dec_daily.sqlite
-
       - name: Calculate factors from SQLite (F02/F03)
         env:
           ADVDEC_DB_PATH: data/cache/adv_dec_daily.sqlite
@@ -93,6 +86,17 @@ jobs:
           export PYTHONPATH=src
           python -u src/factors/f02_strength.py
           python -u src/factors/f03_breadth.py
+
+      # (핵심) 캐시 저장: run_id/run_attempt를 포함해 매 실행마다 "새 key"로 저장 → 저장 보장
+      - name: Save adv/dec SQLite cache (always)
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            data/cache/adv_dec_daily.sqlite
+            data/cache/adv_dec_daily.sqlite-wal
+            data/cache/adv_dec_daily.sqlite-shm
+          key: advdec-sqlite-${{ github.ref_name }}-${{ github.run_id }}-${{ github.run_attempt }}
 
       - name: Commit factor outputs only (no sqlite)
         run: |
