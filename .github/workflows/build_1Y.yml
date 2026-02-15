@@ -1,0 +1,102 @@
+name: build_1Y
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    env:
+      PYTHONPATH: src
+
+      # 1Y 정책
+      ROLLING_DAYS: "252"         # 1년 퍼센타일
+      MIN_OBS: "60"              # ✅ 1Y는 252를 그대로 두면 초반 NaN이 길 수 있어 60~126 추천
+      WINSOR_P: "0.01"
+      FACTOR_EMA_SPAN: "20"      # 팩터 EMA20
+      INDEX_EMA_SPAN: "5"        # 최종 EMA5
+      # 1Y에서는 F09 포함 → EXCLUDE_FACTORS 비움
+      EXCLUDE_FACTORS: ""
+
+      # 산출물 분리
+      INDEX_PATH: "data/index_daily_1Y.parquet"
+      CSV_PATH: "data/index_daily_1Y.csv"
+      REPORT_PATH: "docs/Korea-Gomtang-Index_1Y.html"
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Re-calc factors (1Y window = 1y percentile)
+        shell: bash
+        run: |
+          set -euo pipefail
+          python src/factors/f01_momentum.py
+          python src/factors/f02_strength.py || true
+          python src/factors/f03_adr_breadth.py || true
+          python src/factors/f04_putcall.py
+          python src/factors/f05_credit_spread.py
+          python src/factors/f06_vkospi.py
+          python src/factors/f07_safehaven.py
+          python src/factors/f08_foreigner_flow.py
+          # ✅ 1Y에만 F09 포함
+          python src/factors/f09_margin_ratio.py || true
+          python src/factors/f10_fxvol.py
+
+      - name: Assemble index (1Y policy: EMA20 + EMA5)
+        shell: bash
+        run: |
+          set -euo pipefail
+          python src/assemble/assemble_index.py
+
+      - name: Convert parquet to CSV (1Y)
+        shell: bash
+        run: |
+          set -euo pipefail
+          python src/parquet_to_csv.py
+
+      - name: Render report (1Y)
+        shell: bash
+        run: |
+          set -euo pipefail
+          python src/report/render_report.py
+
+      - name: Commit & push (if changed)
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions"
+          git config user.email "github-actions@github.com"
+
+          git add data/factors/ || true
+          git add data/index_daily_1Y.parquet data/index_daily_1Y.csv || true
+          git add docs/Korea-Gomtang-Index_1Y.html || true
+
+          if git diff --staged --quiet; then
+            echo "No changes to commit."
+            exit 0
+          fi
+
+          git commit -m "Build 1Y index (EMA20/EMA5, 1y percentile) $(date -u +%Y-%m-%d)"
+
+          git stash push -u -m actions-stash-before-rebase || true
+          git fetch origin main
+          git pull --rebase origin main
+          git stash pop || true
+
+          git push origin HEAD:main
