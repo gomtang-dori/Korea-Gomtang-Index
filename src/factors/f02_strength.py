@@ -8,19 +8,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-
-def rolling_percentile_last(s: pd.Series, window: int, min_obs: int) -> pd.Series:
-    """
-    5년(기본) 롤링 윈도우에서 "마지막 값의 퍼센타일(0~100)"을 반환.
-    기존 레포의 percentile 스타일과 동일한 패턴 유지.
-    """
-    def _pct(x):
-        x = pd.Series(x).dropna()
-        if len(x) < min_obs:
-            return np.nan
-        return float(x.rank(pct=True).iloc[-1] * 100.0)
-
-    return s.rolling(window=window, min_periods=min_obs).apply(_pct, raw=False)
+from utils.rolling_score import to_score_from_raw
 
 
 def main():
@@ -53,11 +41,17 @@ def main():
     df["dec"] = pd.to_numeric(df["dec"], errors="coerce")
     df = df.dropna(subset=["date", "adv", "dec"]).sort_values("date").reset_index(drop=True)
 
-    # F02_raw = (adv - dec) / (adv + dec), 보합 분모 제외 (확정)
     denom = (df["adv"] + df["dec"]).replace(0, np.nan)
     df["f02_raw"] = (df["adv"] - df["dec"]) / denom
 
-    df["f02_score"] = rolling_percentile_last(df["f02_raw"], window=window, min_obs=min_obs)
+    # 탐욕형(adv>dec 탐욕) → invert=False
+    df["f02_score"] = to_score_from_raw(
+        df["f02_raw"],
+        window=window,
+        min_obs=min_obs,
+        winsor_p=0.01,
+        invert=False,
+    )
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
     df[["date", "f02_raw", "f02_score"]].to_parquet(out_path, index=False)
