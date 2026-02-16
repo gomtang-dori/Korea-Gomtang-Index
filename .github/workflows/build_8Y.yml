@@ -149,6 +149,7 @@ jobs:
           HORIZON_DAYS: "10"
           TARGET_INDEX: "k200_close"
           EXCLUDE_FACTORS: "f09"
+          ADD_CONTRARIAN: "1"
           INDEX_LEVELS_PATH: data/cache/index_levels.parquet
           OUT_CSV: data/analysis/predict_10d_metrics_8Y.csv
           OUT_HTML: docs/predict_10d_report_8Y.html
