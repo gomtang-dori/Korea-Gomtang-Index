@@ -2,7 +2,7 @@
 pandas>=2.2.3
 numpy>=1.26.0,<2.1.0
 pyarrow>=18.1.0
-
+scipy>=1.11.0
 # 금융 데이터 수집 및 분석
 finance-datareader
 pykrx
