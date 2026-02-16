@@ -88,6 +88,7 @@ def _validate(cfg: GroupSumConfig) -> None:
             raise ValueError(f"[{cfg.name}] group {g} has sum>0 but no allowed members.")
 
 
+
 # -----------------------------
 # 2) 정책별 그룹합 (고정)
 # -----------------------------
