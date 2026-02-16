@@ -121,20 +121,23 @@ jobs:
           set -euo pipefail
           python src/report/render_corr_index.py
           
-      - name: Predictive power report (10D, 1Y)
+      - name: Predictive power report (H=5,10,20; target=KOSPI; 1Y)
         shell: bash
         run: |
           set -euo pipefail
-          python src/analysis/predict_10d_report.py
+          python src/analysis/predict_horizons_report.py
         env:
           PYTHONPATH: src
-          HORIZON_DAYS: "10"
-          TARGET_INDEX: "k200_close"
+          TAG: "1Y"
+          HORIZONS: "5,10,20"
+          TARGET_INDEX: "kospi_close"
           EXCLUDE_FACTORS: ""
           ADD_CONTRARIAN: "1"
           INDEX_LEVELS_PATH: data/cache/index_levels.parquet
-          OUT_CSV: data/analysis/predict_10d_metrics_1Y.csv
-          OUT_HTML: docs/predict_10d_report_1Y.html
+          OUT_PREFIX: "predict_h5_10_20_1Y_kospi"
+          OUT_DIR: "data/analysis"
+          OUT_HTML: "docs/predict_h5_10_20_1Y_kospi.html"
+
           
 
       - name: Commit
@@ -148,8 +151,11 @@ jobs:
           git add data/analysis/ || true
           git add docs/factor_corr_1Y_*.html docs/factor_corr_1Y_*.png || true
           git add docs/corr.html || true
-          git add data/analysis/predict_10d_metrics_*.csv || true
           git add docs/predict_10d_report_*.html || true
+          git add data/analysis/predict_h5_10_20_*.csv || true
+          git add data/analysis/predict_h5_10_20_*_best_h*.csv || true
+          git add docs/predict_h5_10_20_*.html || true
+          # git add data/analysis/predict_10d_metrics_*.csv || true
           
           
           if git diff --staged --quiet; then
