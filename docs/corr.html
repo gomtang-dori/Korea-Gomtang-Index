@@ -1,0 +1,220 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <title>GOMTANG - Correlation Links</title>
+  <style>
+    :root {
+      --bg: #0b1220;
+      --card: #111a2e;
+      --text: #e8eefc;
+      --muted: #a8b3d6;
+      --line: rgba(255,255,255,0.08);
+      --link: #7aa7ff;
+    }
+    body {
+      margin: 0;
+      background: linear-gradient(180deg, #071022 0%, #0b1220 40%, #070d18 100%);
+      color: var(--text);
+      font-family: -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+    }
+    .container {
+      max-width: 1100px;
+      margin: 0 auto;
+      padding: 22px 16px 40px;
+    }
+    header {
+      display: flex;
+      justify-content: space-between;
+      align-items: baseline;
+      gap: 12px;
+      margin-bottom: 14px;
+    }
+    h1 {
+      margin: 0;
+      font-size: 20px;
+      letter-spacing: 0.2px;
+    }
+    .meta {
+      color: var(--muted);
+      font-size: 12px;
+    }
+    a {
+      color: var(--link);
+      text-decoration: none;
+    }
+    a:hover {
+      text-decoration: underline;
+    }
+    .card {
+      background: rgba(17,26,46,0.92);
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      padding: 14px 14px;
+      margin: 12px 0;
+      box-shadow: 0 10px 30px rgba(0,0,0,0.35);
+    }
+    .card h2 {
+      margin: 0 0 12px 0;
+      font-size: 15px;
+      color: #dbe6ff;
+    }
+    .muted {
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.5;
+    }
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+      gap: 12px;
+    }
+    .item {
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      padding: 10px;
+      background: rgba(0,0,0,0.10);
+    }
+    .item-title {
+      font-size: 13px;
+      margin-bottom: 8px;
+      word-break: break-all;
+    }
+    .thumb img {
+      width: 100%;
+      height: auto;
+      border-radius: 10px;
+      border: 1px solid rgba(255,255,255,0.10);
+      background: rgba(255,255,255,0.03);
+      display: block;
+    }
+    .small-links {
+      margin-top: 6px;
+      font-size: 12px;
+      color: var(--muted);
+    }
+    .csv-list {
+      margin: 0;
+      padding-left: 18px;
+      line-height: 1.8;
+      font-size: 13px;
+    }
+    .top-links {
+      display:flex;
+      gap: 12px;
+      flex-wrap: wrap;
+      margin-top: 6px;
+      font-size: 13px;
+    }
+    .pill {
+      display:inline-block;
+      padding: 6px 10px;
+      border-radius: 999px;
+      border: 1px solid var(--line);
+      background: rgba(255,255,255,0.06);
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <header>
+      <h1>GOMTANG · Correlation (F01~F10 + Index)</h1>
+      <div class="meta">updated: 2026-02-16 06:01 UTC</div>
+    </header>
+
+    <div class="top-links">
+      <a class="pill" href="index.html">메인(Index)</a>
+      <a class="pill" href="Korea-Gomtang-Index_8Y.html">8Y 리포트</a>
+      <a class="pill" href="Korea-Gomtang-Index_1Y.html">1Y 리포트</a>
+    </div>
+
+    
+    <section class="card">
+      <h2>Heatmaps (HTML/PNG)</h2>
+      
+          <div class="grid">
+            
+              <div class="item">
+                <div class="item-title">
+                  <a href="factor_corr_8Y_pearson_levels.html" target="_blank" rel="noopener">factor_corr_8Y_pearson_levels.html</a>
+                </div>
+                
+                  <a class="thumb" href="factor_corr_8Y_pearson_levels.html" target="_blank" rel="noopener">
+                    <img src="factor_corr_8Y_pearson_levels.png" alt="factor_corr_8Y_pearson_levels.png"/>
+                  </a>
+                  <div class="small-links">
+                    <a href="factor_corr_8Y_pearson_levels.png" target="_blank" rel="noopener">PNG 열기</a>
+                  </div>
+                
+              </div>
+            
+              <div class="item">
+                <div class="item-title">
+                  <a href="factor_corr_8Y_pearson_returns.html" target="_blank" rel="noopener">factor_corr_8Y_pearson_returns.html</a>
+                </div>
+                
+                  <a class="thumb" href="factor_corr_8Y_pearson_returns.html" target="_blank" rel="noopener">
+                    <img src="factor_corr_8Y_pearson_returns.png" alt="factor_corr_8Y_pearson_returns.png"/>
+                  </a>
+                  <div class="small-links">
+                    <a href="factor_corr_8Y_pearson_returns.png" target="_blank" rel="noopener">PNG 열기</a>
+                  </div>
+                
+              </div>
+            
+          </div>
+        
+          <div class="grid">
+            
+              <div class="item">
+                <div class="item-title">
+                  <a href="factor_corr_1Y_pearson_levels.html" target="_blank" rel="noopener">factor_corr_1Y_pearson_levels.html</a>
+                </div>
+                
+                  <a class="thumb" href="factor_corr_1Y_pearson_levels.html" target="_blank" rel="noopener">
+                    <img src="factor_corr_1Y_pearson_levels.png" alt="factor_corr_1Y_pearson_levels.png"/>
+                  </a>
+                  <div class="small-links">
+                    <a href="factor_corr_1Y_pearson_levels.png" target="_blank" rel="noopener">PNG 열기</a>
+                  </div>
+                
+              </div>
+            
+              <div class="item">
+                <div class="item-title">
+                  <a href="factor_corr_1Y_pearson_returns.html" target="_blank" rel="noopener">factor_corr_1Y_pearson_returns.html</a>
+                </div>
+                
+                  <a class="thumb" href="factor_corr_1Y_pearson_returns.html" target="_blank" rel="noopener">
+                    <img src="factor_corr_1Y_pearson_returns.png" alt="factor_corr_1Y_pearson_returns.png"/>
+                  </a>
+                  <div class="small-links">
+                    <a href="factor_corr_1Y_pearson_returns.png" target="_blank" rel="noopener">PNG 열기</a>
+                  </div>
+                
+              </div>
+            
+          </div>
+        
+    </section>
+    
+
+    
+    <section class="card">
+      <h2>CSV Downloads (data/analysis)</h2>
+      <ul class='csv-list'><li><a href='../data/analysis/corr_1Y_scores_plus_index_levels_pearson.csv' target='_blank' rel='noopener'>corr_1Y_scores_plus_index_levels_pearson.csv</a></li><li><a href='../data/analysis/corr_1Y_scores_plus_index_returns_pearson.csv' target='_blank' rel='noopener'>corr_1Y_scores_plus_index_returns_pearson.csv</a></li><li><a href='../data/analysis/corr_8Y_scores_plus_index_levels_pearson.csv' target='_blank' rel='noopener'>corr_8Y_scores_plus_index_levels_pearson.csv</a></li><li><a href='../data/analysis/corr_8Y_scores_plus_index_returns_pearson.csv' target='_blank' rel='noopener'>corr_8Y_scores_plus_index_returns_pearson.csv</a></li><li><a href='../data/analysis/factor_corr_1Y_pearson_levels.csv' target='_blank' rel='noopener'>factor_corr_1Y_pearson_levels.csv</a></li><li><a href='../data/analysis/factor_corr_1Y_pearson_returns.csv' target='_blank' rel='noopener'>factor_corr_1Y_pearson_returns.csv</a></li><li><a href='../data/analysis/factor_corr_8Y_pearson_levels.csv' target='_blank' rel='noopener'>factor_corr_8Y_pearson_levels.csv</a></li><li><a href='../data/analysis/factor_corr_8Y_pearson_returns.csv' target='_blank' rel='noopener'>factor_corr_8Y_pearson_returns.csv</a></li></ul>
+    </section>
+    
+
+    <section class="card">
+      <h2>Notes</h2>
+      <div class="muted">
+        GitHub Pages는 <code>/docs</code> 폴더를 사이트 루트로 제공합니다.
+        상관관계 파일은 build_8Y/build_1Y 워크플로에서 생성 후 커밋되면 자동 배포됩니다.
+      </div>
+    </section>
+
+  </div>
+</body>
+</html>
