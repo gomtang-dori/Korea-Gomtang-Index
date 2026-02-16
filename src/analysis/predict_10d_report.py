@@ -188,6 +188,8 @@ def main():
         raise RuntimeError(f"Invalid TARGET_INDEX={target_index}. choose one of {INDEX_LEVEL_COLS}")
 
     exclude = set(x.lower() for x in _parse_list(_env("EXCLUDE_FACTORS", "")))
+    add_contrarian = (_env("ADD_CONTRARIAN", "0") == "1")
+    contrarian_suffix = _env("CONTRARIAN_SUFFIX", "_c")
 
     start = _safe_to_datetime(_env("START_DATE", ""))
     end = _safe_to_datetime(_env("END_DATE", ""))
@@ -216,10 +218,23 @@ def main():
     # drop last horizon rows (no forward)
     base = base.dropna(subset=[f"fwd_ret{horizon}d"]).reset_index(drop=True)
 
+    # ------------ Optional: add contrarian columns (100 - score) ------------
+    # 목적: "높을수록 공포" 점수가 실제로는 10일 후 반등확률에 유리할 수 있어,
+    #       역발상(contrarian) 버전도 함께 평가
+    factor_cols_base = [c for c in base.columns if c in FACTOR_SCORE_COLS.keys()]  # f01..f10 tags present
+    if add_contrarian:
+        for ftag in factor_cols_base:
+            s = pd.to_numeric(base[ftag], errors="coerce")
+            base[f"{ftag}{contrarian_suffix}"] = 100.0 - s
+        print(f"[predict10d] ADD_CONTRARIAN=1 -> added columns like f06{contrarian_suffix} = 100 - f06")
+
+
     # ------------ Evaluate each factor ------------
     rows = []
-    factor_cols = [c for c in base.columns if c in FACTOR_SCORE_COLS.keys()]  # f01..f10 tags present
-
+    factor_cols = list(factor_cols_base)
+    if add_contrarian:
+        factor_cols = factor_cols + [f"{c}{contrarian_suffix}" for c in factor_cols_base if f"{c}{contrarian_suffix}" in base.columns]
+        
     for ftag in factor_cols:
         s = pd.to_numeric(base[ftag], errors="coerce")
         y_ret = pd.to_numeric(base[f"fwd_ret{horizon}d"], errors="coerce")
@@ -242,6 +257,7 @@ def main():
                 "n": int(m.sum()),
                 "target_index": target_index,
                 "horizon_days": horizon,
+                "is_contrarian": int(add_contrarian and ftag.endswith(contrarian_suffix)),                
                 "ic_spearman": ic_spearman,
                 "ic_pearson": ic_pearson,
                 "auc_hit_up": auc,
@@ -280,6 +296,7 @@ def main():
     # build HTML table
     cols = [
         "factor", "n",
+        "is_contrarian",        
         "ic_spearman", "ic_pearson",
         "auc_hit_up",
         "p_up_top20", "p_up_bottom20", "delta_p_up",
