@@ -144,6 +144,9 @@ jobs:
           git add data/factors/ || true
           git add data/index_daily_8Y.parquet data/index_daily_8Y.csv || true
           git add docs/Korea-Gomtang-Index_8Y.html || true
+          git add data/analysis/ || true
+          git add docs/factor_corr_8Y_*.html docs/factor_corr_8Y_*.png || true
+
 
           if git diff --staged --quiet; then
             echo "No changes to commit."
