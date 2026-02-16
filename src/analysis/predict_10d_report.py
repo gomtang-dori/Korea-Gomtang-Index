@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 
 import numpy as np
 import pandas as pd
-
+import html
 
 FACTOR_SCORE_COLS = {
     "f01": "f01_score",
