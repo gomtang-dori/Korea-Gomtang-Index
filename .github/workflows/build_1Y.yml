@@ -90,6 +90,7 @@ jobs:
           git add data/factors/ || true
           git add data/index_daily_1Y.parquet data/index_daily_1Y.csv || true
           git add docs/Korea-Gomtang-Index_1Y.html || true
+          git add data/analysis/ || true
           if git diff --staged --quiet; then
             echo "No changes"
             exit 0
