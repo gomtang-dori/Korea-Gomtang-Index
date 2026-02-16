@@ -147,6 +147,9 @@ jobs:
           git add data/analysis/ || true
           git add docs/factor_corr_1Y_*.html docs/factor_corr_1Y_*.png || true
           git add docs/corr.html || true
+          git add data/analysis/predict_10d_metrics_*.csv || true
+          git add docs/predict_10d_report_*.html || true
+          
           
           if git diff --staged --quiet; then
             echo "No changes"
