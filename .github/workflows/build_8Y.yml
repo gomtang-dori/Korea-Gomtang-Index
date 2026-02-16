@@ -72,6 +72,32 @@ jobs:
         run: |
           set -euo pipefail
           python src/report/render_report.py
+          
+      - name: Corr matrix (8Y) - scores + index levels (Pearson)
+        shell: bash
+        run: |
+          set -euo pipefail
+          python src/analysis/corr_factors_plus_index.py
+        env:
+          PYTHONPATH: src
+          CORR_METHOD: pearson
+          USE_RETURNS: "0"
+          EXCLUDE_FACTORS: f09
+          INDEX_LEVELS_PATH: data/cache/index_levels.parquet
+          OUT_PATH: data/analysis/corr_8Y_scores_plus_index_levels_pearson.csv
+
+      - name: Corr matrix (8Y) - scores + index returns (Pearson)
+        shell: bash
+        run: |
+          set -euo pipefail
+          python src/analysis/corr_factors_plus_index.py
+        env:
+          PYTHONPATH: src
+          CORR_METHOD: pearson
+          USE_RETURNS: "1"
+          EXCLUDE_FACTORS: f09
+          INDEX_LEVELS_PATH: data/cache/index_levels.parquet
+          OUT_PATH: data/analysis/corr_8Y_scores_plus_index_returns_pearson.csv
 
       - name: Commit & push (if changed)
         shell: bash
