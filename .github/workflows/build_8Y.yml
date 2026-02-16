@@ -139,21 +139,23 @@ jobs:
           set -euo pipefail
           python src/report/render_corr_index.py
           
-      - name: Predictive power report (10D, 8Y)
+      - name: Predictive power report (H=5,10,20; target=KOSPI; 8Y)
         shell: bash
         run: |
           set -euo pipefail
-          python src/analysis/predict_10d_report.py
+          python src/analysis/predict_horizons_report.py
         env:
           PYTHONPATH: src
-          HORIZON_DAYS: "10"
-          TARGET_INDEX: "k200_close"
+          TAG: "8Y"
+          HORIZONS: "5,10,20"
+          TARGET_INDEX: "kospi_close"
           EXCLUDE_FACTORS: "f09"
           ADD_CONTRARIAN: "1"
           INDEX_LEVELS_PATH: data/cache/index_levels.parquet
-          OUT_CSV: data/analysis/predict_10d_metrics_8Y.csv
-          OUT_HTML: docs/predict_10d_report_8Y.html
-          
+          OUT_PREFIX: "predict_h5_10_20_8Y_kospi"
+          OUT_DIR: "data/analysis"
+          OUT_HTML: "docs/predict_h5_10_20_8Y_kospi.html"
+
           
 
       - name: Commit & push (if changed)
