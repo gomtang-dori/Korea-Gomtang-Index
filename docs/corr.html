@@ -3,14 +3,14 @@
 <head>
   <meta charset="utf-8"/>
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
-  <title>GOMTANG - Correlation Links</title>
+  <title>GOMTANG · Correlation</title>
   <style>
     :root {
       --bg: #0b1220;
-      --card: #111a2e;
+      --card: rgba(17,26,46,0.92);
       --text: #e8eefc;
       --muted: #a8b3d6;
-      --line: rgba(255,255,255,0.08);
+      --line: rgba(255,255,255,0.10);
       --link: #7aa7ff;
     }
     body {
@@ -20,16 +20,16 @@
       font-family: -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
     }
     .container {
-      max-width: 1100px;
+      max-width: 1120px;
       margin: 0 auto;
-      padding: 22px 16px 40px;
+      padding: 22px 16px 42px;
     }
     header {
       display: flex;
       justify-content: space-between;
       align-items: baseline;
       gap: 12px;
-      margin-bottom: 14px;
+      margin-bottom: 12px;
     }
     h1 {
       margin: 0;
@@ -44,14 +44,12 @@
       color: var(--link);
       text-decoration: none;
     }
-    a:hover {
-      text-decoration: underline;
-    }
+    a:hover { text-decoration: underline; }
     .card {
-      background: rgba(17,26,46,0.92);
+      background: var(--card);
       border: 1px solid var(--line);
       border-radius: 14px;
-      padding: 14px 14px;
+      padding: 14px;
       margin: 12px 0;
       box-shadow: 0 10px 30px rgba(0,0,0,0.35);
     }
@@ -63,7 +61,27 @@
     .muted {
       color: var(--muted);
       font-size: 13px;
-      line-height: 1.5;
+      line-height: 1.55;
+    }
+    .top-links {
+      display: flex;
+      gap: 10px;
+      flex-wrap: wrap;
+      margin: 10px 0 2px;
+      font-size: 13px;
+    }
+    .pill {
+      display: inline-block;
+      padding: 6px 10px;
+      border-radius: 999px;
+      border: 1px solid var(--line);
+      background: rgba(255,255,255,0.06);
+    }
+    .tag-title {
+      margin: 8px 0 8px;
+      font-size: 13px;
+      color: #cfe0ff;
+      letter-spacing: 0.4px;
     }
     .grid {
       display: grid;
@@ -85,7 +103,7 @@
       width: 100%;
       height: auto;
       border-radius: 10px;
-      border: 1px solid rgba(255,255,255,0.10);
+      border: 1px solid rgba(255,255,255,0.12);
       background: rgba(255,255,255,0.03);
       display: block;
     }
@@ -97,30 +115,21 @@
     .csv-list {
       margin: 0;
       padding-left: 18px;
-      line-height: 1.8;
+      line-height: 1.85;
       font-size: 13px;
     }
-    .top-links {
-      display:flex;
-      gap: 12px;
-      flex-wrap: wrap;
-      margin-top: 6px;
-      font-size: 13px;
-    }
-    .pill {
-      display:inline-block;
-      padding: 6px 10px;
-      border-radius: 999px;
-      border: 1px solid var(--line);
-      background: rgba(255,255,255,0.06);
+    code {
+      background: rgba(255,255,255,0.08);
+      padding: 1px 6px;
+      border-radius: 8px;
     }
   </style>
 </head>
 <body>
   <div class="container">
     <header>
-      <h1>GOMTANG · Correlation (F01~F10 + Index)</h1>
-      <div class="meta">updated: 2026-02-16 06:07 UTC</div>
+      <h1>GOMTANG · Correlation (F01~F10 + KOSPI/KOSDAQ/K200)</h1>
+      <div class="meta">updated: 2026-02-16 06:43 UTC</div>
     </header>
 
     <div class="top-links">
@@ -129,12 +138,11 @@
       <a class="pill" href="Korea-Gomtang-Index_1Y.html">1Y 리포트</a>
     </div>
 
-    
     <section class="card">
       <h2>Heatmaps (HTML/PNG)</h2>
       
+          <div class="tag-title">8Y</div>
           <div class="grid">
-            
               <div class="item">
                 <div class="item-title">
                   <a href="factor_corr_8Y_pearson_levels.html" target="_blank" rel="noopener">factor_corr_8Y_pearson_levels.html</a>
@@ -162,11 +170,10 @@
                   </div>
                 
               </div>
-            
-          </div>
+            </div>
         
+          <div class="tag-title">1Y</div>
           <div class="grid">
-            
               <div class="item">
                 <div class="item-title">
                   <a href="factor_corr_1Y_pearson_levels.html" target="_blank" rel="noopener">factor_corr_1Y_pearson_levels.html</a>
@@ -194,27 +201,22 @@
                   </div>
                 
               </div>
-            
-          </div>
+            </div>
         
     </section>
-    
 
-    
     <section class="card">
       <h2>CSV Downloads (data/analysis)</h2>
       <ul class='csv-list'><li><a href='../data/analysis/corr_1Y_scores_plus_index_levels_pearson.csv' target='_blank' rel='noopener'>corr_1Y_scores_plus_index_levels_pearson.csv</a></li><li><a href='../data/analysis/corr_1Y_scores_plus_index_returns_pearson.csv' target='_blank' rel='noopener'>corr_1Y_scores_plus_index_returns_pearson.csv</a></li><li><a href='../data/analysis/corr_8Y_scores_plus_index_levels_pearson.csv' target='_blank' rel='noopener'>corr_8Y_scores_plus_index_levels_pearson.csv</a></li><li><a href='../data/analysis/corr_8Y_scores_plus_index_returns_pearson.csv' target='_blank' rel='noopener'>corr_8Y_scores_plus_index_returns_pearson.csv</a></li><li><a href='../data/analysis/factor_corr_1Y_pearson_levels.csv' target='_blank' rel='noopener'>factor_corr_1Y_pearson_levels.csv</a></li><li><a href='../data/analysis/factor_corr_1Y_pearson_returns.csv' target='_blank' rel='noopener'>factor_corr_1Y_pearson_returns.csv</a></li><li><a href='../data/analysis/factor_corr_8Y_pearson_levels.csv' target='_blank' rel='noopener'>factor_corr_8Y_pearson_levels.csv</a></li><li><a href='../data/analysis/factor_corr_8Y_pearson_returns.csv' target='_blank' rel='noopener'>factor_corr_8Y_pearson_returns.csv</a></li></ul>
     </section>
-    
 
     <section class="card">
       <h2>Notes</h2>
       <div class="muted">
-        GitHub Pages는 <code>/docs</code> 폴더를 사이트 루트로 제공합니다.
-        상관관계 파일은 build_8Y/build_1Y 워크플로에서 생성 후 커밋되면 자동 배포됩니다.
+        GitHub Pages는 <code>/docs</code> 폴더를 사이트 루트로 제공합니다.<br/>
+        파일이 생성되었는데도 페이지에서 안 보이면, (1) 워크플로가 커밋까지 했는지, (2) Settings → Pages의 Latest deployment가 성공인지 확인하세요.
       </div>
     </section>
-
   </div>
 </body>
 </html>
