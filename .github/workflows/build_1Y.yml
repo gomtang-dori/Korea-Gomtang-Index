@@ -82,6 +82,38 @@ jobs:
           USE_RETURNS: "1"
           INDEX_LEVELS_PATH: data/cache/index_levels.parquet
           OUT_PATH: data/analysis/corr_1Y_scores_plus_index_returns_pearson.csv
+          
+      - name: Corr matrix + heatmap (1Y, levels)
+        shell: bash
+        run: |
+          set -euo pipefail
+          python src/analysis/factor_corr_matrix.py
+        env:
+          PYTHONPATH: src
+          TAG: 1Y
+          MODE: levels
+          CORR_METHOD: pearson
+          INDEX_LEVELS_PATH: data/cache/index_levels.parquet
+          OUT_CSV: data/analysis/factor_corr_1Y_pearson_levels.csv
+          OUT_HTML: docs/factor_corr_1Y_pearson_levels.html
+          OUT_PNG: docs/factor_corr_1Y_pearson_levels.png
+          SAVE_PNG: "1"
+
+      - name: Corr matrix + heatmap (1Y, returns)
+        shell: bash
+        run: |
+          set -euo pipefail
+          python src/analysis/factor_corr_matrix.py
+        env:
+          PYTHONPATH: src
+          TAG: 1Y
+          MODE: returns
+          CORR_METHOD: pearson
+          INDEX_LEVELS_PATH: data/cache/index_levels.parquet
+          OUT_CSV: data/analysis/factor_corr_1Y_pearson_returns.csv
+          OUT_HTML: docs/factor_corr_1Y_pearson_returns.html
+          OUT_PNG: docs/factor_corr_1Y_pearson_returns.png
+          SAVE_PNG: "1"
 
       - name: Commit
         run: |
@@ -91,6 +123,9 @@ jobs:
           git add data/index_daily_1Y.parquet data/index_daily_1Y.csv || true
           git add docs/Korea-Gomtang-Index_1Y.html || true
           git add data/analysis/ || true
+          git add data/analysis/ || true
+          git add docs/factor_corr_1Y_*.html docs/factor_corr_1Y_*.png || true
+          
           if git diff --staged --quiet; then
             echo "No changes"
             exit 0
