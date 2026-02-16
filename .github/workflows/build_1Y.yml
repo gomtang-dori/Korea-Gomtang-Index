@@ -121,6 +121,20 @@ jobs:
           set -euo pipefail
           python src/report/render_corr_index.py
           
+      - name: Predictive power report (10D, 1Y)
+        shell: bash
+        run: |
+          set -euo pipefail
+          python src/analysis/predict_10d_report.py
+        env:
+          PYTHONPATH: src
+          HORIZON_DAYS: "10"
+          TARGET_INDEX: "k200_close"
+          EXCLUDE_FACTORS: ""
+          INDEX_LEVELS_PATH: data/cache/index_levels.parquet
+          OUT_CSV: data/analysis/predict_10d_metrics_1Y.csv
+          OUT_HTML: docs/predict_10d_report_1Y.html
+          
 
       - name: Commit
         run: |
