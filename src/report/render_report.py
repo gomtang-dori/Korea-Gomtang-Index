@@ -387,7 +387,6 @@ HTML_TMPL = r"""
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>{{ title }}</title>
-  <script src="https://cdn.plot.ly/plotly-2.27.0.min.js"></script>
   <style>
     body { font-family: -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,"Apple SD Gothic Neo","Noto Sans KR","Malgun Gothic",sans-serif;
            margin: 18px; color: #111; background: #fff; }
@@ -716,13 +715,15 @@ def main():
         fig = _line_fig(f, date_col, ycol, ttl)
         if fig is None:
             continue
-        factor_cards.append(fig.to_html(include_plotlyjs=False, full_html=False))
+        factor_cards.append(fig.to_html(include_plotlyjs=True, full_html=False))
 
     # Convert figs to HTML blocks
     def _fig_html(fig):
         if fig is None:
             return "<div style='color:#666;font-size:12px'>데이터 없음</div>"
-        return fig.to_html(include_plotlyjs=False, full_html=False)
+        # Plotly를 HTML에 내장(가장 안전)
+        return fig.to_html(include_plotlyjs=True, full_html=False)
+        
 
     html = Template(HTML_TMPL).render(
         title=title,
