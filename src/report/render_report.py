@@ -1,16 +1,20 @@
 # -*- coding: utf-8 -*-
 """
-Gomtang Index Daily Report
+Gomtang Index Daily Report (vNext)
 
-Key specs (user-confirmed):
-- Heatmap X-axis state is based on GOMTANG INDEX trend (index_score_total Δ3/Δ5), not KOSPI
-- Flat threshold for trend state: SCORE_FLAT_PTS = 1.0 point
-- Heatmap text visibility: larger font, bold main value, n on second line
-- Factor charts: rename + add descriptions (F01~F10)
-- ML prob_up_10d: display last non-null value + its date (to avoid NaN on latest row)
-- Investment opinion: conservative 0.6/0.4; ML missing -> trend-only fallback; apply trend filter
-- Highlight today's heatmap cell (today bucket_5pt × today state)
-- Mean-return heatmap: clip ±3% (option A)
+User-confirmed specs:
+- Heatmap X-axis state based on GOMTANG trend (index_score_total Δ3/Δ5), not KOSPI
+- Flat threshold for trend: SCORE_FLAT_PTS = 1.0 point
+- X-axis labels: GOMTANG 5D↓, GOMTANG 3D↓, GOMTANG Flat, GOMTANG 3D↑, GOMTANG 5D↑
+- Factor band percentiles: 20/40/60/80
+- Greed-direction:
+  * Higher = Greed: F01,F02,F03,F07,F08,F09
+  * Lower = Greed:  F04,F05,F06,F10 (same percentile; display band flipped)
+- Factor charts: show metadata + percentile + band + SPEC lines at P20/P40/P60/P80
+- Backtesting: include score bucket table/plot, and top/bottom 20% summary (fixed 20%)
+- Mean-return heatmap clipped ±3%
+- prob_up_10d: show last non-null value + date
+- Opinion: conservative (>=0.6 BUY / <0.4 SELL) else HOLD, ML NaN -> trend-only fallback, apply trend filter
 """
 
 import os
@@ -19,7 +23,6 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
-
 import plotly.graph_objects as go
 from jinja2 import Template
 
@@ -100,7 +103,7 @@ def _bucket_5pt(score: float) -> str:
 
 
 def _regime_label(score: float) -> str:
-    # user confirmed: Fear < 40, Neutral 40~60, Greed > 60
+    # Fear < 40, Neutral 40~60, Greed > 60
     if score is None or (isinstance(score, float) and np.isnan(score)):
         return "-"
     if score < 40:
@@ -108,6 +111,19 @@ def _regime_label(score: float) -> str:
     if score <= 60:
         return "Neutral"
     return "Greed"
+
+
+# ---------------------------
+# Heatmap state labels
+# ---------------------------
+STATE_LABEL = {
+    "5D decline": "GOMTANG 5D↓",
+    "3D decline": "GOMTANG 3D↓",
+    "Flat":       "GOMTANG Flat",
+    "3D rise":    "GOMTANG 3D↑",
+    "5D rise":    "GOMTANG 5D↑",
+}
+STATE_ORDER_INTERNAL = ["5D decline", "3D decline", "Flat", "3D rise", "5D rise"]
 
 
 # ---------------------------
@@ -125,6 +141,42 @@ FACTOR_META = {
     "f09": ("신용융자/예탁금", "신용융자 잔고 / 투자자예탁금"),
     "f10": ("원/달러 환율 변동성", "StdDev20(USD_KRW_Ret)"),
 }
+
+# Greed-direction:
+# True: higher is greed
+# False: lower is greed (display band flipped)
+FACTOR_GREED_IS_HIGH = {
+    "f01": True, "f02": True, "f03": True, "f07": True, "f08": True, "f09": True,
+    "f04": False, "f05": False, "f06": False, "f10": False,
+}
+
+
+# ---------------------------
+# Factor percentile bands (20/40/60/80)
+# ---------------------------
+BAND_THRESH = [0.20, 0.40, 0.60, 0.80]
+BAND_NAMES = ["EXTREME FEAR", "FEAR", "NEUTRAL", "GREED", "EXTREME GREED"]
+BAND_ORDER = BAND_NAMES[:]  # for flip
+
+
+def pct_to_band(p: float) -> str:
+    # p in [0,1]
+    if p < BAND_THRESH[0]:
+        return BAND_NAMES[0]
+    if p < BAND_THRESH[1]:
+        return BAND_NAMES[1]
+    if p < BAND_THRESH[2]:
+        return BAND_NAMES[2]
+    if p < BAND_THRESH[3]:
+        return BAND_NAMES[3]
+    return BAND_NAMES[4]
+
+
+def flip_band(band: str) -> str:
+    # reverse order
+    if band not in BAND_ORDER:
+        return band
+    return BAND_ORDER[::-1][BAND_ORDER.index(band)]
 
 
 # ---------------------------
@@ -273,6 +325,52 @@ def _heatmap_fig(
     return fig
 
 
+def _barline_bucket_fig(tbl: pd.DataFrame, title: str):
+    """
+    tbl index: bucket label; columns: n, win, avg
+    Plot: avg as bars, win as line (secondary y)
+    """
+    if tbl is None or len(tbl) == 0:
+        return None
+
+    x = tbl.index.tolist()
+    avg = tbl["avg"].values.astype(float)
+    win = tbl["win"].values.astype(float)
+    n = tbl["n"].values.astype(float)
+
+    # Show sample counts in hover
+    fig = go.Figure()
+    fig.add_trace(go.Bar(
+        x=x, y=avg,
+        name="Mean 10D return",
+        marker_color="#3b82f6",
+        hovertemplate="Bucket=%{x}<br>Mean=%{y:.2%}<br>n=%{customdata}<extra></extra>",
+        customdata=n,
+        opacity=0.85,
+    ))
+    fig.add_trace(go.Scatter(
+        x=x, y=win,
+        name="Win-rate",
+        yaxis="y2",
+        mode="lines+markers",
+        line=dict(color="#10b981", width=2),
+        hovertemplate="Bucket=%{x}<br>Win=%{y:.1%}<br>n=%{customdata}<extra></extra>",
+        customdata=n,
+    ))
+
+    fig.update_layout(
+        title=title,
+        height=380,
+        template="plotly_white",
+        margin=dict(l=40, r=40, t=50, b=80),
+        xaxis=dict(tickangle=-45),
+        yaxis=dict(title="Mean return", tickformat=".1%"),
+        yaxis2=dict(title="Win-rate", overlaying="y", side="right", tickformat=".0%", range=[0, 1]),
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0),
+    )
+    return fig
+
+
 # ---------------------------
 # Stats helpers
 # ---------------------------
@@ -291,8 +389,6 @@ def _group_cell_stats(df: pd.DataFrame, state_col: str, bucket_col: str, fwd_col
 
 
 def _regime_forward_stats(df: pd.DataFrame, score_col: str, close_col: str, horizon: int, regime: str):
-    if score_col not in df.columns or close_col not in df.columns:
-        return {"n": 0, "win": np.nan, "avg": np.nan}
     d = df[[score_col, close_col]].dropna().copy()
     if len(d) == 0:
         return {"n": 0, "win": np.nan, "avg": np.nan}
@@ -311,7 +407,6 @@ def _regime_forward_stats(df: pd.DataFrame, score_col: str, close_col: str, hori
 # Opinion logic
 # ---------------------------
 def _opinion_from_prob(prob: float):
-    # user confirmed: conservative thresholds 0.6/0.4
     if prob is None or (isinstance(prob, float) and np.isnan(prob)):
         return None
     if prob >= 0.6:
@@ -322,7 +417,6 @@ def _opinion_from_prob(prob: float):
 
 
 def _opinion_from_trend(delta3: float, delta5: float):
-    # trend-only fallback
     if (delta3 is None or np.isnan(delta3)) or (delta5 is None or np.isnan(delta5)):
         return "HOLD"
     if delta3 >= 0 and delta5 >= 0:
@@ -333,7 +427,6 @@ def _opinion_from_trend(delta3: float, delta5: float):
 
 
 def _apply_trend_filter(opinion: str, delta3: float, delta5: float):
-    # If both down => downgrade; if both up => upgrade
     if opinion not in ("BUY", "HOLD", "SELL"):
         return opinion
     if (delta3 is None or np.isnan(delta3)) or (delta5 is None or np.isnan(delta5)):
@@ -382,8 +475,11 @@ HTML_TMPL = r"""
     .plot { border: 1px solid #eee; border-radius: 12px; padding: 8px; background:#fff; }
     .section { margin-top: 18px; }
     .sec-title { font-size: 16px; font-weight: 900; margin: 6px 0 8px; }
-    .links a { color:#0b57d0; text-decoration:none; }
-    .links a:hover { text-decoration:underline; }
+    .small { font-size: 12px; color:#444; }
+    table { border-collapse: collapse; width: 100%; font-size: 12px; }
+    th, td { border: 1px solid #eee; padding: 6px 8px; text-align: right; }
+    th { background: #fafafa; text-align: right; }
+    th:first-child, td:first-child { text-align: left; }
   </style>
 </head>
 <body>
@@ -398,7 +494,7 @@ HTML_TMPL = r"""
       <div class="v">{{ gomtang_score }}</div>
       <div class="v2">Bucket: {{ gomtang_bucket }} · Regime: {{ regime }}</div>
       <div class="muted">Δ3: {{ gomtang_d3 }} · Δ5: {{ gomtang_d5 }} · Δ10: {{ gomtang_d10 }}</div>
-      <div class="muted">Trend state: <b>{{ gomtang_state }}</b></div>
+      <div class="muted">Trend state: <b>{{ gomtang_state_label }}</b></div>
     </div>
 
     <div class="card">
@@ -436,7 +532,7 @@ HTML_TMPL = r"""
 
   <div class="grid section">
     <div class="card">
-      <div class="k">현재 셀 통계 ({{ cell_bucket }} × {{ cell_state }})</div>
+      <div class="k">현재 셀 통계 ({{ cell_bucket }} × {{ cell_state_label }})</div>
       <div class="v2">n={{ cell_n }} · win={{ cell_win }} · avg={{ cell_avg }}</div>
       <div class="muted">median={{ cell_med }} · Q1/Q3={{ cell_q1 }}/{{ cell_q3 }}</div>
       {% if cell_warn %}
@@ -452,20 +548,22 @@ HTML_TMPL = r"""
     </div>
 
     <div class="card">
-      <div class="k">참고</div>
-      <div class="muted links">
-        - Index assemble:
-          <a href="https://raw.githubusercontent.com/gomtang-dori/Korea-Gomtang-Index/main/src/assemble/assemble_index.py" target="_blank">assemble_index.py</a><br>
-        - Merge prob:
-          <a href="https://raw.githubusercontent.com/gomtang-dori/Korea-Gomtang-Index/main/src/analysis/merge_prob_into_index.py" target="_blank">merge_prob_into_index.py</a><br>
-        - adv/dec workflow:
-          <a href="https://raw.githubusercontent.com/gomtang-dori/Korea-Gomtang-Index/main/.github/workflows/advdec_daily.yml" target="_blank">advdec_daily.yml</a>
-      </div>
+      <div class="k">백테스트 요약 (10D fwd, score 상/하위 20%)</div>
+      <div class="v2">Top20: win={{ bt_top_win }} (n={{ bt_top_n }}), avg={{ bt_top_avg }}</div>
+      <div class="v2">Bot20: win={{ bt_bot_win }} (n={{ bt_bot_n }}), avg={{ bt_bot_avg }}</div>
+      <div class="muted small">{{ bt_note }}</div>
     </div>
   </div>
 
   <div class="section">
-    <div class="sec-title">팩터 차트 (RAW 우선, 없으면 SCORE)</div>
+    <div class="sec-title">Backtesting: Score bucket × 10D forward KOSPI</div>
+    <div class="plot">{{ fig_bt_bucket|safe }}</div>
+    <div class="small">표(버킷별): n / win-rate / mean / median</div>
+    {{ bt_table_html|safe }}
+  </div>
+
+  <div class="section">
+    <div class="sec-title">팩터 차트 (RAW 우선, 없으면 SCORE) + 밴드/스펙(P20/40/60/80)</div>
     {% for fc in factor_cards %}
       <div class="plot">{{ fc|safe }}</div>
     {% endfor %}
@@ -475,9 +573,6 @@ HTML_TMPL = r"""
 """
 
 
-# ---------------------------
-# Main
-# ---------------------------
 def main():
     index_path = _env("INDEX_PATH", "data/index_daily.parquet")
     report_path = _env("REPORT_PATH", "docs/index.html")
@@ -486,17 +581,15 @@ def main():
     factors_dir = _env("FACTORS_DIR", "data/factors")
     index_levels_path = _env("INDEX_LEVELS_PATH", "data/cache/index_levels.parquet")
 
-    # Columns
     date_col = _env("DATE_COL", "date")
     score_col = _env("SCORE_COL", "index_score_total")
     kospi_col = _env("KOSPI_COL", "kospi_close")
     kosdaq_col = _env("KOSDAQ_COL", "kosdaq_close")
     k200_col = _env("K200_COL", "kospi200_close")
 
-    # Heatmap x-axis flat threshold in points (user confirmed: 1.0)
+    # User confirmed
     score_flat_pts = float(_env("SCORE_FLAT_PTS", "1.0"))
 
-    # Heatmap font size
     hm_font_size = int(_env("HEATMAP_FONT_SIZE", "16"))
 
     Path(report_path).parent.mkdir(parents=True, exist_ok=True)
@@ -505,11 +598,10 @@ def main():
     df = pd.read_parquet(index_path)
     if date_col not in df.columns:
         raise RuntimeError(f"[report] missing '{date_col}' in {index_path}")
-
     df[date_col] = pd.to_datetime(df[date_col])
     df = df.sort_values(date_col).reset_index(drop=True)
 
-    # Load index levels and merge (for KOSPI/KOSDAQ/K200 lines)
+    # Merge index levels for KOSPI/KOSDAQ/K200 raw lines
     if Path(index_levels_path).exists():
         lv = pd.read_parquet(index_levels_path)
         if date_col in lv.columns:
@@ -517,13 +609,12 @@ def main():
             lv = lv.sort_values(date_col)
             df = df.merge(lv, on=date_col, how="left", suffixes=("", "_lv"))
 
-    # Lookback slice
     base = df.tail(lookback_days).copy()
 
-    if kospi_col not in base.columns:
-        raise RuntimeError(f"[report] missing '{kospi_col}'. Check INDEX_LEVELS_PATH merge.")
     if score_col not in base.columns:
-        raise RuntimeError(f"[report] missing '{score_col}'. Check index assembly output.")
+        raise RuntimeError(f"[report] missing '{score_col}'")
+    if kospi_col not in base.columns:
+        raise RuntimeError(f"[report] missing '{kospi_col}' (check INDEX_LEVELS_PATH merge)")
 
     asof_date = base[date_col].iloc[-1].date().isoformat()
 
@@ -535,7 +626,8 @@ def main():
     g_d3 = _delta_over_n(base[score_col], 3)
     g_d5 = _delta_over_n(base[score_col], 5)
     g_d10 = _delta_over_n(base[score_col], 10)
-    g_state = _gomtang_state_5bins(g_d3, g_d5, score_flat_pts)
+    g_state_internal = _gomtang_state_5bins(g_d3, g_d5, score_flat_pts)
+    g_state_label = STATE_LABEL.get(g_state_internal, g_state_internal)
 
     # KOSPI KPIs
     kospi_close = float(base[kospi_col].iloc[-1])
@@ -553,7 +645,6 @@ def main():
         prob_last = v
         if pd.notna(idx):
             prob_asof = pd.to_datetime(idx).date().isoformat()
-
     prob_disp = "-" if (prob_last is None or (isinstance(prob_last, float) and np.isnan(prob_last))) else f"{prob_last:.3f}"
 
     # Opinion
@@ -595,29 +686,43 @@ def main():
                 yaxis=dict(range=[0, 1]),
             )
 
-    # Heatmap prep: use GOMTANG trend state on X-axis; forward KOSPI 10D on cell values
+    # Work DF for heatmaps & backtests:
+    # - X-axis state: gomtang Δ3/Δ5
+    # - Cell values: 10D forward KOSPI
     work = base[[date_col, score_col, kospi_col]].dropna().copy()
     work["bucket_5pt"] = work[score_col].apply(_bucket_5pt)
     work["g_d3"] = work[score_col].diff(3)
     work["g_d5"] = work[score_col].diff(5)
-    work["market_state"] = [
+    work["state_internal"] = [
         _gomtang_state_5bins(d3, d5, score_flat_pts)
         for d3, d5 in zip(work["g_d3"].fillna(0), work["g_d5"].fillna(0))
     ]
+    work["market_state"] = work["state_internal"]  # keep internal for grouping
     work["fwd10"] = _forward_return(work[kospi_col], 10)
 
     today_bucket = g_bucket
-    today_state = g_state
+    today_state_internal = g_state_internal
+    today_state_label = STATE_LABEL.get(today_state_internal, today_state_internal)
 
+    # Heatmap pivots
     grp = work.dropna(subset=["fwd10"]).groupby(["bucket_5pt", "market_state"])["fwd10"]
     pivot_mean = grp.mean().unstack("market_state")
     pivot_n = grp.count().unstack("market_state")
 
-    # clip ±3% (option A)
+    # ensure order, then relabel columns for display
+    pivot_mean = pivot_mean.reindex(columns=STATE_ORDER_INTERNAL)
+    pivot_n = pivot_n.reindex(columns=STATE_ORDER_INTERNAL)
+
+    # clip ±3% for display
     pivot_mean_clip = pivot_mean.clip(lower=-0.03, upper=0.03)
 
+    # display labels
+    pivot_mean_clip.columns = [STATE_LABEL.get(c, c) for c in pivot_mean_clip.columns]
+    pivot_n.columns = [STATE_LABEL.get(c, c) for c in pivot_n.columns]
+
     grp_win = work.dropna(subset=["fwd10"]).groupby(["bucket_5pt", "market_state"])["fwd10"].apply(lambda x: (x > 0).mean())
-    pivot_win = grp_win.unstack("market_state")
+    pivot_win = grp_win.unstack("market_state").reindex(columns=STATE_ORDER_INTERNAL)
+    pivot_win.columns = [STATE_LABEL.get(c, c) for c in pivot_win.columns]
     pivot_win_n = pivot_n
 
     fig_hm_mean = _heatmap_fig(
@@ -629,7 +734,7 @@ def main():
         zmin=-0.03,
         zmax=0.03,
         is_percent=False,
-        highlight_xy=(today_state, today_bucket),
+        highlight_xy=(today_state_label, today_bucket),
         cell_font_size=hm_font_size,
     )
 
@@ -642,26 +747,76 @@ def main():
         zmin=0.0,
         zmax=1.0,
         is_percent=True,
-        highlight_xy=(today_state, today_bucket),
+        highlight_xy=(today_state_label, today_bucket),
         cell_font_size=hm_font_size,
     )
 
-    # Current cell stats (unclipped fwd10)
+    # Current cell stats (unclipped)
     cell_stats = _group_cell_stats(
         df=work,
         state_col="market_state",
         bucket_col="bucket_5pt",
         fwd_col="fwd10",
-        state=today_state,
+        state=today_state_internal,
         bucket=today_bucket,
     )
     cell_warn = "표본 부족 (n<10) — 해석 주의" if cell_stats["n"] < 10 else ""
 
-    # Regime stats 20D / 60D
+    # Regime stats 20D/60D (within report window)
     reg20 = _regime_forward_stats(work, score_col, kospi_col, 20, regime)
     reg60 = _regime_forward_stats(work, score_col, kospi_col, 60, regime)
 
-    # Factor cards: rename + description; plot RAW if present else SCORE
+    # ---------------------------
+    # Backtesting section
+    # (1) bucket table & plot
+    # ---------------------------
+    bt = work.dropna(subset=["fwd10"]).copy()
+    bt_tbl = bt.groupby("bucket_5pt").agg(
+        n=("fwd10", "count"),
+        win=("fwd10", lambda x: (x > 0).mean()),
+        avg=("fwd10", "mean"),
+        med=("fwd10", "median"),
+    ).sort_index()
+
+    fig_bt_bucket = _barline_bucket_fig(bt_tbl, "Backtest: bucket별 10D forward KOSPI (mean + win-rate)")
+
+    # HTML table
+    if len(bt_tbl) > 0:
+        bt_tbl_disp = bt_tbl.copy()
+        bt_tbl_disp["win"] = bt_tbl_disp["win"].map(lambda x: _fmt_pct(x, 1, signed=False))
+        bt_tbl_disp["avg"] = bt_tbl_disp["avg"].map(lambda x: _fmt_pct(x, 2, signed=True))
+        bt_tbl_disp["med"] = bt_tbl_disp["med"].map(lambda x: _fmt_pct(x, 2, signed=True))
+        bt_table_html = bt_tbl_disp.reset_index().rename(columns={"bucket_5pt": "bucket"}).to_html(
+            index=False, escape=False, classes=""
+        )
+    else:
+        bt_table_html = "<div class='small'>데이터 없음</div>"
+
+    # (2) top/bottom 20% summary (fixed 20%)
+    bt_note = "score(곰탕지수) 상/하위 20%를 기준으로 10D forward KOSPI 요약 (리포트 기간 내)"
+    bt_top_n = bt_bot_n = 0
+    bt_top_win = bt_bot_win = np.nan
+    bt_top_avg = bt_bot_avg = np.nan
+
+    if len(bt) >= 30:
+        q80 = bt[score_col].quantile(0.80)
+        q20 = bt[score_col].quantile(0.20)
+
+        top = bt[bt[score_col] >= q80]["fwd10"].dropna()
+        bot = bt[bt[score_col] <= q20]["fwd10"].dropna()
+
+        bt_top_n = int(len(top))
+        bt_bot_n = int(len(bot))
+        bt_top_win = float((top > 0).mean()) if len(top) > 0 else np.nan
+        bt_bot_win = float((bot > 0).mean()) if len(bot) > 0 else np.nan
+        bt_top_avg = float(top.mean()) if len(top) > 0 else np.nan
+        bt_bot_avg = float(bot.mean()) if len(bot) > 0 else np.nan
+    else:
+        bt_note += " (표본 부족으로 신뢰 낮음)"
+
+    # ---------------------------
+    # Factor cards: meta + percentile band + SPEC lines
+    # ---------------------------
     factor_cards = []
     for i in range(1, 11):
         tag = f"f{i:02d}"
@@ -674,6 +829,7 @@ def main():
             continue
         if date_col not in f.columns:
             continue
+
         f[date_col] = pd.to_datetime(f[date_col])
         f = f.sort_values(date_col)
         f = f[(f[date_col] >= base[date_col].min()) & (f[date_col] <= base[date_col].max())].copy()
@@ -696,21 +852,69 @@ def main():
 
         name, desc = FACTOR_META.get(tag, (tag.upper(), ""))
 
+        # Percentile band based on RAW (preferred). If only SCORE exists, use SCORE distribution.
+        series = f[ycol].dropna()
+        if len(series) >= 5:
+            today_val = float(series.iloc[-1])
+            pct = float(series.rank(pct=True).iloc[-1])  # 0..1
+            band = pct_to_band(pct)
+
+            # Flip display band if "lower is greed"
+            greed_is_high = FACTOR_GREED_IS_HIGH.get(tag, True)
+            band_disp = band if greed_is_high else flip_band(band)
+
+            # SPEC lines at P20/P40/P60/P80 on the plotted series distribution
+            q20, q40, q60, q80 = series.quantile([0.2, 0.4, 0.6, 0.8]).tolist()
+        else:
+            today_val = np.nan
+            pct = np.nan
+            band_disp = "-"
+            q20 = q40 = q60 = q80 = None
+
         fig = _line_fig(f, date_col, ycol, f"{tag.upper()} · {name} ({mode})")
         if fig is None:
             continue
+
+        # Add SPEC lines
+        if q20 is not None and pd.notna(q20):
+            for q, lab in [(q20, "P20"), (q40, "P40"), (q60, "P60"), (q80, "P80")]:
+                fig.add_hline(
+                    y=float(q),
+                    line_width=1,
+                    line_dash="dot",
+                    line_color="#666",
+                    annotation_text=lab,
+                    annotation_position="top left",
+                )
+
+        # Add latest-point marker
+        if pd.notna(today_val):
+            fig.add_trace(go.Scatter(
+                x=[f[date_col].iloc[-1]], y=[today_val],
+                mode="markers",
+                marker=dict(size=10, color="#111"),
+                name="Today",
+                hovertemplate="Today=%{y}<extra></extra>",
+            ))
+
+        # Header
+        pct_disp = "-" if np.isnan(pct) else f"{pct*100:,.1f}%"
+        today_disp = "-" if (isinstance(today_val, float) and np.isnan(today_val)) else _fmt_float(today_val, 4)
+        direction_note = "높을수록 탐욕" if FACTOR_GREED_IS_HIGH.get(tag, True) else "낮을수록 탐욕(표시 밴드 반전)"
 
         header_html = (
             f"<div class='card' style='margin:4px 4px 10px 4px'>"
             f"  <div class='k'>{tag.upper()} · {name}</div>"
             f"  <div class='muted'>{desc}</div>"
+            f"  <div class='muted'>Today: <b>{today_disp}</b> · Percentile: <b>{pct_disp}</b> · Band: <b>{band_disp}</b></div>"
+            f"  <div class='muted small'>Direction: {direction_note} · Bands: 20/40/60/80 percentile · SPEC lines: P20/P40/P60/P80</div>"
             f"</div>"
         )
 
-        # Important: to avoid CDN issues, embed plotly.js for each figure (safe mode)
+        # Safe-mode: embed plotly.js inside each block
         factor_cards.append(header_html + fig.to_html(include_plotlyjs=True, full_html=False))
 
-    # Embed Plotly safely in each figure block (safe mode)
+    # Safe embed for all other figs too
     def _fig_html(fig):
         if fig is None:
             return "<div style='color:#666;font-size:12px'>데이터 없음</div>"
@@ -728,7 +932,7 @@ def main():
         gomtang_d3=_fmt_float(g_d3, 1),
         gomtang_d5=_fmt_float(g_d5, 1),
         gomtang_d10=_fmt_float(g_d10, 1),
-        gomtang_state=g_state,
+        gomtang_state_label=g_state_label,
 
         kospi_close=_fmt_float(kospi_close, 2),
         kospi_r3=_fmt_pct(kospi_r3, 2, signed=True),
@@ -751,7 +955,7 @@ def main():
         fig_hm_win=_fig_html(fig_hm_win),
 
         cell_bucket=today_bucket,
-        cell_state=today_state,
+        cell_state_label=today_state_label,
         cell_n=_fmt_int(cell_stats["n"]),
         cell_win=_fmt_pct(cell_stats["win"], 1, signed=False),
         cell_avg=_fmt_pct(cell_stats["avg"], 2, signed=True),
@@ -767,6 +971,18 @@ def main():
         reg60_n=_fmt_int(reg60["n"]),
         reg60_win=_fmt_pct(reg60["win"], 1, signed=False),
         reg60_avg=_fmt_pct(reg60["avg"], 2, signed=True),
+
+        bt_top_n=_fmt_int(bt_top_n),
+        bt_top_win=_fmt_pct(bt_top_win, 1, signed=False),
+        bt_top_avg=_fmt_pct(bt_top_avg, 2, signed=True),
+
+        bt_bot_n=_fmt_int(bt_bot_n),
+        bt_bot_win=_fmt_pct(bt_bot_win, 1, signed=False),
+        bt_bot_avg=_fmt_pct(bt_bot_avg, 2, signed=True),
+
+        bt_note=bt_note,
+        fig_bt_bucket=_fig_html(fig_bt_bucket),
+        bt_table_html=bt_table_html,
 
         factor_cards=factor_cards,
     )
