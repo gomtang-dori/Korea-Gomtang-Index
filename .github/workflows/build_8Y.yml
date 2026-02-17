@@ -97,7 +97,7 @@ jobs:
           VKOSPI_LEVELS_PATH: data/cache/vkospi_level.parquet
           F08_FLOW_PATH: data/cache/f08_foreigner_flow.parquet
           USDKRW_PATH: data/usdkrw_level.parquet
-          ADD_USDKRW_RET20: "1"          
+          ADD_USDKRW_RET20: "0"          
 
       - name: Merge prob_up_10d into index parquet/csv (8Y)
         shell: bash
