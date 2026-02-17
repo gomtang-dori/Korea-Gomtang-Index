@@ -238,6 +238,7 @@ jobs:
           git add data/analysis/final_weights_*.csv || true
           git add data/analysis/prob_up_10d_8Y.parquet data/analysis/ml_prob_up10_8Y_metrics.csv || true
           git add docs/diagnostics_8Y.html || true
+          git add docs/weights_used_*.json || true
 
           # git add data/analysis/predict_10d_metrics_*.csv || true
 
