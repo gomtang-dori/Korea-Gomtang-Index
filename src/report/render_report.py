@@ -1,20 +1,26 @@
 # -*- coding: utf-8 -*-
 """
-Gomtang Index Daily Report (vNext)
+Gomtang Index Daily Report (v3: Overview → Factors → Heatmaps → Backtesting → Conclusion)
 
-User-confirmed specs:
-- Heatmap X-axis state based on GOMTANG trend (index_score_total Δ3/Δ5), not KOSPI
-- Flat threshold for trend: SCORE_FLAT_PTS = 1.0 point
-- X-axis labels: GOMTANG 5D↓, GOMTANG 3D↓, GOMTANG Flat, GOMTANG 3D↑, GOMTANG 5D↑
-- Factor band percentiles: 20/40/60/80
+Confirmed specs:
+- Heatmap X-axis state: GOMTANG trend (index_score_total Δ3/Δ5), flat threshold SCORE_FLAT_PTS=1.0 point
+- Heatmap X labels: GOMTANG 5D↓, GOMTANG 3D↓, GOMTANG Flat, GOMTANG 3D↑, GOMTANG 5D↑
+- Factor bands: percentile 20/40/60/80 (0-20/20-40/40-60/60-80/80-100)
 - Greed-direction:
   * Higher = Greed: F01,F02,F03,F07,F08,F09
-  * Lower = Greed:  F04,F05,F06,F10 (same percentile; display band flipped)
-- Factor charts: show metadata + percentile + band + SPEC lines at P20/P40/P60/P80
-- Backtesting: include score bucket table/plot, and top/bottom 20% summary (fixed 20%)
+  * Lower  = Greed: F04,F05,F06,F10  (same percentile, display band flipped)
+- Factor charts: name+desc, Today value, Percentile, Band, and SPEC lines at P20/P40/P60/P80
+- Backtesting (within report window): bucket table/plot + Top20/Bot20 summary (fixed 20%)
 - Mean-return heatmap clipped ±3%
 - prob_up_10d: show last non-null value + date
-- Opinion: conservative (>=0.6 BUY / <0.4 SELL) else HOLD, ML NaN -> trend-only fallback, apply trend filter
+- Opinion: BUY/HOLD/SELL using prob (>=0.6 BUY, <0.4 SELL else HOLD). If ML missing → trend-only fallback, then apply trend filter.
+- Position guide (%): Option2 standard
+  * BUY +10~+20, HOLD 0, SELL -10~-30
+  * If Confidence Low → halve the guidance (BUY +5~+10, SELL -5~-15)
+- Confidence:
+  * High: ML exists AND current-cell n>=30
+  * Medium: ML exists OR n>=15
+  * Low: otherwise
 """
 
 import os
@@ -127,7 +133,7 @@ STATE_ORDER_INTERNAL = ["5D decline", "3D decline", "Flat", "3D rise", "5D rise"
 
 
 # ---------------------------
-# Factor names / descriptions (user-provided)
+# Factor meta + greed-direction
 # ---------------------------
 FACTOR_META = {
     "f01": ("Market Momentum", "KOSPI 200 / 125거래일 이동평균 - 1"),
@@ -141,10 +147,6 @@ FACTOR_META = {
     "f09": ("신용융자/예탁금", "신용융자 잔고 / 투자자예탁금"),
     "f10": ("원/달러 환율 변동성", "StdDev20(USD_KRW_Ret)"),
 }
-
-# Greed-direction:
-# True: higher is greed
-# False: lower is greed (display band flipped)
 FACTOR_GREED_IS_HIGH = {
     "f01": True, "f02": True, "f03": True, "f07": True, "f08": True, "f09": True,
     "f04": False, "f05": False, "f06": False, "f10": False,
@@ -156,11 +158,10 @@ FACTOR_GREED_IS_HIGH = {
 # ---------------------------
 BAND_THRESH = [0.20, 0.40, 0.60, 0.80]
 BAND_NAMES = ["EXTREME FEAR", "FEAR", "NEUTRAL", "GREED", "EXTREME GREED"]
-BAND_ORDER = BAND_NAMES[:]  # for flip
+BAND_ORDER = BAND_NAMES[:]
 
 
 def pct_to_band(p: float) -> str:
-    # p in [0,1]
     if p < BAND_THRESH[0]:
         return BAND_NAMES[0]
     if p < BAND_THRESH[1]:
@@ -173,20 +174,15 @@ def pct_to_band(p: float) -> str:
 
 
 def flip_band(band: str) -> str:
-    # reverse order
     if band not in BAND_ORDER:
         return band
     return BAND_ORDER[::-1][BAND_ORDER.index(band)]
 
 
 # ---------------------------
-# Gomtang trend state (X-axis for heatmaps)
+# Gomtang trend state (Δ3/Δ5 in points)
 # ---------------------------
 def _gomtang_state_5bins(d3: float, d5: float, flat_pts: float) -> str:
-    """
-    Priority: 5D down/up, then 3D down/up, else flat.
-    d3/d5 are point changes in index_score_total, not %.
-    """
     if d5 <= -flat_pts:
         return "5D decline"
     if d5 >= flat_pts:
@@ -196,6 +192,82 @@ def _gomtang_state_5bins(d3: float, d5: float, flat_pts: float) -> str:
     if d3 >= flat_pts:
         return "3D rise"
     return "Flat"
+
+
+# ---------------------------
+# Opinion / confidence / position guide
+# ---------------------------
+def _opinion_from_prob(prob: float):
+    if prob is None or (isinstance(prob, float) and np.isnan(prob)):
+        return None
+    if prob >= 0.6:
+        return "BUY"
+    if prob < 0.4:
+        return "SELL"
+    return "HOLD"
+
+
+def _opinion_from_trend(delta3: float, delta5: float):
+    if (delta3 is None or np.isnan(delta3)) or (delta5 is None or np.isnan(delta5)):
+        return "HOLD"
+    if delta3 >= 0 and delta5 >= 0:
+        return "BUY"
+    if delta3 <= 0 and delta5 <= 0:
+        return "SELL"
+    return "HOLD"
+
+
+def _apply_trend_filter(opinion: str, delta3: float, delta5: float):
+    if opinion not in ("BUY", "HOLD", "SELL"):
+        return opinion
+    if (delta3 is None or np.isnan(delta3)) or (delta5 is None or np.isnan(delta5)):
+        return opinion
+
+    if delta3 <= 0 and delta5 <= 0:
+        if opinion == "BUY":
+            return "HOLD"
+        if opinion == "HOLD":
+            return "SELL"
+        return "SELL"
+
+    if delta3 >= 0 and delta5 >= 0:
+        if opinion == "SELL":
+            return "HOLD"
+        if opinion == "HOLD":
+            return "BUY"
+        return "BUY"
+
+    return opinion
+
+
+def _confidence_level(has_ml: bool, cell_n: int) -> str:
+    if has_ml and cell_n >= 30:
+        return "High"
+    if has_ml or cell_n >= 15:
+        return "Medium"
+    return "Low"
+
+
+def _position_guide(opinion: str, confidence: str) -> str:
+    # Option2 standard: BUY +10~+20, HOLD 0, SELL -10~-30
+    base = {
+        "BUY": (10, 20),
+        "HOLD": (0, 0),
+        "SELL": (-30, -10),
+    }
+    if opinion not in base:
+        return "-"
+
+    lo, hi = base[opinion]
+
+    # Low confidence -> half-size
+    if confidence == "Low":
+        lo = int(round(lo / 2))
+        hi = int(round(hi / 2))
+
+    if lo == 0 and hi == 0:
+        return "0% (유지)"
+    return f"{lo}% ~ {hi}%"
 
 
 # ---------------------------
@@ -217,7 +289,7 @@ def _line_fig(df: pd.DataFrame, xcol: str, ycol: str, title: str):
     ))
     fig.update_layout(
         title=title,
-        height=320,
+        height=300,
         margin=dict(l=30, r=20, t=40, b=30),
         template="plotly_white",
         xaxis_title="",
@@ -253,7 +325,6 @@ def _heatmap_fig(
     z = pivot_val.values.astype(float)
     n = pivot_n.reindex(index=y_labels, columns=x_labels).values
 
-    # More readable text (bold main value + small n)
     text = np.empty_like(z, dtype=object)
     for i in range(z.shape[0]):
         for j in range(z.shape[1]):
@@ -299,7 +370,7 @@ def _heatmap_fig(
 
     fig.update_layout(
         title=title,
-        height=620,
+        height=560,
         margin=dict(l=45, r=20, t=55, b=40),
         template="plotly_white",
         xaxis_title="Gomtang trend state (Δ3/Δ5)",
@@ -307,7 +378,6 @@ def _heatmap_fig(
     )
     fig.update_xaxes(side="top")
 
-    # Highlight today's cell with border
     if highlight_xy and highlight_xy[0] in x_labels and highlight_xy[1] in y_labels:
         x0 = x_labels.index(highlight_xy[0]) - 0.5
         x1 = x_labels.index(highlight_xy[0]) + 0.5
@@ -326,10 +396,6 @@ def _heatmap_fig(
 
 
 def _barline_bucket_fig(tbl: pd.DataFrame, title: str):
-    """
-    tbl index: bucket label; columns: n, win, avg
-    Plot: avg as bars, win as line (secondary y)
-    """
     if tbl is None or len(tbl) == 0:
         return None
 
@@ -338,7 +404,6 @@ def _barline_bucket_fig(tbl: pd.DataFrame, title: str):
     win = tbl["win"].values.astype(float)
     n = tbl["n"].values.astype(float)
 
-    # Show sample counts in hover
     fig = go.Figure()
     fig.add_trace(go.Bar(
         x=x, y=avg,
@@ -360,7 +425,7 @@ def _barline_bucket_fig(tbl: pd.DataFrame, title: str):
 
     fig.update_layout(
         title=title,
-        height=380,
+        height=360,
         template="plotly_white",
         margin=dict(l=40, r=40, t=50, b=80),
         xaxis=dict(tickangle=-45),
@@ -371,9 +436,6 @@ def _barline_bucket_fig(tbl: pd.DataFrame, title: str):
     return fig
 
 
-# ---------------------------
-# Stats helpers
-# ---------------------------
 def _group_cell_stats(df: pd.DataFrame, state_col: str, bucket_col: str, fwd_col: str, state: str, bucket: str):
     d = df[(df[state_col] == state) & (df[bucket_col] == bucket)][fwd_col].dropna()
     if len(d) == 0:
@@ -404,53 +466,7 @@ def _regime_forward_stats(df: pd.DataFrame, score_col: str, close_col: str, hori
 
 
 # ---------------------------
-# Opinion logic
-# ---------------------------
-def _opinion_from_prob(prob: float):
-    if prob is None or (isinstance(prob, float) and np.isnan(prob)):
-        return None
-    if prob >= 0.6:
-        return "BUY"
-    if prob < 0.4:
-        return "SELL"
-    return "HOLD"
-
-
-def _opinion_from_trend(delta3: float, delta5: float):
-    if (delta3 is None or np.isnan(delta3)) or (delta5 is None or np.isnan(delta5)):
-        return "HOLD"
-    if delta3 >= 0 and delta5 >= 0:
-        return "BUY"
-    if delta3 <= 0 and delta5 <= 0:
-        return "SELL"
-    return "HOLD"
-
-
-def _apply_trend_filter(opinion: str, delta3: float, delta5: float):
-    if opinion not in ("BUY", "HOLD", "SELL"):
-        return opinion
-    if (delta3 is None or np.isnan(delta3)) or (delta5 is None or np.isnan(delta5)):
-        return opinion
-
-    if delta3 <= 0 and delta5 <= 0:
-        if opinion == "BUY":
-            return "HOLD"
-        if opinion == "HOLD":
-            return "SELL"
-        return "SELL"
-
-    if delta3 >= 0 and delta5 >= 0:
-        if opinion == "SELL":
-            return "HOLD"
-        if opinion == "HOLD":
-            return "BUY"
-        return "BUY"
-
-    return opinion
-
-
-# ---------------------------
-# HTML Template
+# HTML Template (v3 sections)
 # ---------------------------
 HTML_TMPL = r"""
 <!doctype html>
@@ -463,111 +479,169 @@ HTML_TMPL = r"""
     body { font-family: -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,"Apple SD Gothic Neo","Noto Sans KR","Malgun Gothic",sans-serif;
            margin: 18px; color: #111; background: #fff; }
     h1 { font-size: 20px; margin: 0 0 10px 0; }
-    .sub { color:#666; font-size: 12px; margin-bottom: 14px; }
+    .sub { color:#666; font-size: 12px; margin-bottom: 14px; line-height: 1.4; }
     .grid { display: grid; grid-template-columns: repeat(4, minmax(220px, 1fr)); gap: 10px; }
     .card { border: 1px solid #e6e6e6; border-radius: 12px; padding: 12px 12px; background: #fff; }
     .k { color:#666; font-size: 12px; margin-bottom: 4px; }
-    .v { font-size: 20px; font-weight: 800; }
+    .v { font-size: 20px; font-weight: 900; }
     .v2 { font-size: 14px; font-weight: 650; margin-top: 4px; }
-    .warn { margin-top: 6px; color: #b00020; font-size: 12px; font-weight: 800; }
+    .warn { margin-top: 6px; color: #b00020; font-size: 12px; font-weight: 900; }
     .muted { color:#666; font-size: 12px; margin-top: 6px; line-height: 1.4; }
-    .row { margin-top: 14px; display:grid; grid-template-columns: 1fr; gap: 12px; }
+    .row { margin-top: 12px; display:grid; grid-template-columns: 1fr; gap: 12px; }
     .plot { border: 1px solid #eee; border-radius: 12px; padding: 8px; background:#fff; }
     .section { margin-top: 18px; }
-    .sec-title { font-size: 16px; font-weight: 900; margin: 6px 0 8px; }
+    .sec-title { font-size: 16px; font-weight: 950; margin: 6px 0 10px; }
     .small { font-size: 12px; color:#444; }
-    table { border-collapse: collapse; width: 100%; font-size: 12px; }
+    .pill { display:inline-block; padding:2px 8px; border:1px solid #eee; border-radius:999px; font-size:12px; margin-right:6px; background:#fafafa; }
+    table { border-collapse: collapse; width: 100%; font-size: 12px; margin-top: 8px; }
     th, td { border: 1px solid #eee; padding: 6px 8px; text-align: right; }
-    th { background: #fafafa; text-align: right; }
+    th { background: #fafafa; }
     th:first-child, td:first-child { text-align: left; }
+    a { color:#0b57d0; text-decoration:none; }
+    a:hover { text-decoration:underline; }
   </style>
 </head>
 <body>
   <h1>{{ title }}</h1>
   <div class="sub">
-    기준일: <b>{{ asof_date }}</b> · Lookback: {{ lookback_days }} days · SCORE_FLAT_PTS={{ score_flat_pts }}
+    기준일: <b>{{ asof_date }}</b> · Lookback: {{ lookback_days }} days<br>
+    <span class="pill">Trend: Δ3/Δ5 (Flat=1.0pt)</span>
+    <span class="pill">Bands: 20/40/60/80 percentile</span>
+    <span class="pill">Top/Bottom: 20%</span>
+    · Guide: <a href="{{ guide_url }}" target="_blank">{{ guide_label }}</a>
   </div>
 
-  <div class="grid">
-    <div class="card">
-      <div class="k">오늘의 곰탕지수</div>
-      <div class="v">{{ gomtang_score }}</div>
-      <div class="v2">Bucket: {{ gomtang_bucket }} · Regime: {{ regime }}</div>
-      <div class="muted">Δ3: {{ gomtang_d3 }} · Δ5: {{ gomtang_d5 }} · Δ10: {{ gomtang_d10 }}</div>
-      <div class="muted">Trend state: <b>{{ gomtang_state_label }}</b></div>
-    </div>
-
-    <div class="card">
-      <div class="k">KOSPI (raw)</div>
-      <div class="v">{{ kospi_close }}</div>
-      <div class="muted">3D: {{ kospi_r3 }} · 5D: {{ kospi_r5 }} · 10D: {{ kospi_r10 }}</div>
-    </div>
-
-    <div class="card">
-      <div class="k">XGBoost: prob_up_10d</div>
-      <div class="v">{{ prob_up_10d }}</div>
-      <div class="muted">as of: {{ prob_asof }}</div>
-      <div class="muted">Rule: BUY≥0.60 / SELL&lt;0.40 (else HOLD)</div>
-    </div>
-
-    <div class="card">
-      <div class="k">오늘의 의견 (ML+추세)</div>
-      <div class="v">{{ opinion }}</div>
-      <div class="muted">{{ opinion_reason }}</div>
-    </div>
-  </div>
-
-  <div class="row section">
-    <div class="plot">{{ fig_gomtang|safe }}</div>
-    <div class="plot">{{ fig_kospi|safe }}</div>
-    <div class="plot">{{ fig_kosdaq|safe }}</div>
-    <div class="plot">{{ fig_k200|safe }}</div>
-    <div class="plot">{{ fig_prob|safe }}</div>
-  </div>
-
-  <div class="row section">
-    <div class="plot">{{ fig_hm_mean|safe }}</div>
-    <div class="plot">{{ fig_hm_win|safe }}</div>
-  </div>
-
-  <div class="grid section">
-    <div class="card">
-      <div class="k">현재 셀 통계 ({{ cell_bucket }} × {{ cell_state_label }})</div>
-      <div class="v2">n={{ cell_n }} · win={{ cell_win }} · avg={{ cell_avg }}</div>
-      <div class="muted">median={{ cell_med }} · Q1/Q3={{ cell_q1 }}/{{ cell_q3 }}</div>
-      {% if cell_warn %}
-        <div class="warn">{{ cell_warn }}</div>
-      {% endif %}
-    </div>
-
-    <div class="card">
-      <div class="k">Regime 통계 ({{ regime }})</div>
-      <div class="v2">20D: win={{ reg20_win }} (n={{ reg20_n }}), avg={{ reg20_avg }}</div>
-      <div class="v2">60D: win={{ reg60_win }} (n={{ reg60_n }}), avg={{ reg60_avg }}</div>
-      <div class="muted">* 각 리포트 기간(1Y/8Y) 데이터만 사용</div>
-    </div>
-
-    <div class="card">
-      <div class="k">백테스트 요약 (10D fwd, score 상/하위 20%)</div>
-      <div class="v2">Top20: win={{ bt_top_win }} (n={{ bt_top_n }}), avg={{ bt_top_avg }}</div>
-      <div class="v2">Bot20: win={{ bt_bot_win }} (n={{ bt_bot_n }}), avg={{ bt_bot_avg }}</div>
-      <div class="muted small">{{ bt_note }}</div>
-    </div>
-  </div>
-
+  <!-- A. OVERVIEW -->
   <div class="section">
-    <div class="sec-title">Backtesting: Score bucket × 10D forward KOSPI</div>
-    <div class="plot">{{ fig_bt_bucket|safe }}</div>
-    <div class="small">표(버킷별): n / win-rate / mean / median</div>
-    {{ bt_table_html|safe }}
+    <div class="sec-title">A. 개요(Overview) — 오늘 무엇을 의미하나</div>
+    <div class="grid">
+      <div class="card">
+        <div class="k">오늘의 곰탕지수</div>
+        <div class="v">{{ gomtang_score }}</div>
+        <div class="v2">Bucket: {{ gomtang_bucket }} · Regime: {{ regime }}</div>
+        <div class="muted">Δ3: {{ gomtang_d3 }} · Δ5: {{ gomtang_d5 }} · Δ10: {{ gomtang_d10 }}</div>
+        <div class="muted">Trend state: <b>{{ gomtang_state_label }}</b></div>
+      </div>
+
+      <div class="card">
+        <div class="k">KOSPI (raw)</div>
+        <div class="v">{{ kospi_close }}</div>
+        <div class="muted">3D: {{ kospi_r3 }} · 5D: {{ kospi_r5 }} · 10D: {{ kospi_r10 }}</div>
+      </div>
+
+      <div class="card">
+        <div class="k">ML: prob_up_10d</div>
+        <div class="v">{{ prob_up_10d }}</div>
+        <div class="muted">as of: {{ prob_asof }}</div>
+        <div class="muted">Rule: BUY≥0.60 / SELL&lt;0.40 (else HOLD)</div>
+      </div>
+
+      <div class="card">
+        <div class="k">오늘의 Action (BUY/HOLD/SELL + 비중 가이드)</div>
+        <div class="v">{{ action }}</div>
+        <div class="v2">Position guide: {{ position_guide }}</div>
+        <div class="muted">Confidence: <b>{{ confidence }}</b> (ML={{ has_ml }}, cell_n={{ cell_n_plain }})</div>
+        <div class="muted">{{ action_reason_1 }}</div>
+        <div class="muted">{{ action_reason_2 }}</div>
+        <div class="muted">{{ action_reason_3 }}</div>
+        {% if confidence_note %}
+          <div class="warn">{{ confidence_note }}</div>
+        {% endif %}
+      </div>
+    </div>
+
+    <div class="row">
+      <div class="plot">{{ fig_gomtang|safe }}</div>
+      <div class="plot">{{ fig_kospi|safe }}</div>
+      <div class="plot">{{ fig_prob|safe }}</div>
+    </div>
   </div>
 
+  <!-- B. FACTORS -->
   <div class="section">
-    <div class="sec-title">팩터 차트 (RAW 우선, 없으면 SCORE) + 밴드/스펙(P20/40/60/80)</div>
+    <div class="sec-title">B. 팩터(Factors) — 왜 이런 점수가 나왔나</div>
+    <div class="card">
+      <div class="k">팩터 요약(오늘 밴드 기준)</div>
+      <div class="muted">Extreme Greed: {{ factors_extreme_greed }}</div>
+      <div class="muted">Extreme Fear: {{ factors_extreme_fear }}</div>
+      <div class="muted small">* 밴드: 20/40/60/80 퍼센타일. 일부 팩터는 “낮을수록 탐욕”으로 표시 밴드가 반전됩니다.</div>
+    </div>
     {% for fc in factor_cards %}
       <div class="plot">{{ fc|safe }}</div>
     {% endfor %}
   </div>
+
+  <!-- C. HEATMAPS -->
+  <div class="section">
+    <div class="sec-title">C. 히트맵(Heatmaps) — 현재 조건에서 과거 평균적으로 어땠나</div>
+    <div class="row">
+      <div class="plot">{{ fig_hm_mean|safe }}</div>
+      <div class="plot">{{ fig_hm_win|safe }}</div>
+    </div>
+
+    <div class="grid">
+      <div class="card">
+        <div class="k">현재 셀 통계 ({{ cell_bucket }} × {{ cell_state_label }})</div>
+        <div class="v2">n={{ cell_n }} · win={{ cell_win }} · avg={{ cell_avg }}</div>
+        <div class="muted">median={{ cell_med }} · Q1/Q3={{ cell_q1 }}/{{ cell_q3 }}</div>
+        {% if cell_warn %}
+          <div class="warn">{{ cell_warn }}</div>
+        {% endif %}
+      </div>
+      <div class="card">
+        <div class="k">Regime 통계 ({{ regime }})</div>
+        <div class="v2">20D: win={{ reg20_win }} (n={{ reg20_n }}), avg={{ reg20_avg }}</div>
+        <div class="v2">60D: win={{ reg60_win }} (n={{ reg60_n }}), avg={{ reg60_avg }}</div>
+        <div class="muted small">* 각 리포트 기간(1Y/8Y) 데이터만 사용</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- D. BACKTESTING -->
+  <div class="section">
+    <div class="sec-title">D. 백테스트(Backtesting) — 지표가 실제로 성과를 분리했나</div>
+    <div class="grid">
+      <div class="card">
+        <div class="k">Top20/Bot20 요약 (10D fwd KOSPI)</div>
+        <div class="v2">Top20: win={{ bt_top_win }} (n={{ bt_top_n }}), avg={{ bt_top_avg }}</div>
+        <div class="v2">Bot20: win={{ bt_bot_win }} (n={{ bt_bot_n }}), avg={{ bt_bot_avg }}</div>
+        <div class="muted small">{{ bt_note }}</div>
+      </div>
+      <div class="card">
+        <div class="k">해석 가이드</div>
+        <div class="muted">1) bucket/Top20가 Bot20보다 유의미하게 좋으면 분리력↑</div>
+        <div class="muted">2) 최근(1Y)과 장기(8Y)가 다르면 레짐 변화 가능</div>
+        <div class="muted">3) n이 작으면 과신 금지</div>
+      </div>
+    </div>
+
+    <div class="row">
+      <div class="plot">{{ fig_bt_bucket|safe }}</div>
+    </div>
+    <div class="small">표(버킷별): n / win-rate / mean / median</div>
+    {{ bt_table_html|safe }}
+  </div>
+
+  <!-- E. CONCLUSION -->
+  <div class="section">
+    <div class="sec-title">E. 결론(Conclusion) — 오늘 실행안 + 리스크</div>
+    <div class="card">
+      <div class="k">오늘의 실행안</div>
+      <div class="v">{{ action }}</div>
+      <div class="v2">Position guide: {{ position_guide }}</div>
+      <div class="muted">Confidence: <b>{{ confidence }}</b> (Low면 비중가이드 절반 적용)</div>
+      <div class="muted">Why(3줄):</div>
+      <div class="muted">- {{ action_reason_1 }}</div>
+      <div class="muted">- {{ action_reason_2 }}</div>
+      <div class="muted">- {{ action_reason_3 }}</div>
+      <div class="muted">Risks:</div>
+      <div class="muted">- 표본 부족/레짐 변화/ML 결측(마지막 non-null 사용) 가능</div>
+      <div class="muted">Tomorrow checklist:</div>
+      <div class="muted">- Trend state 변화(Δ3/Δ5)와 ML(prob) 변화를 함께 확인</div>
+      <div class="muted">- Top20/Bot20 분리력이 최근에도 유지되는지 점검</div>
+    </div>
+  </div>
+
 </body>
 </html>
 """
@@ -581,13 +655,17 @@ def main():
     factors_dir = _env("FACTORS_DIR", "data/factors")
     index_levels_path = _env("INDEX_LEVELS_PATH", "data/cache/index_levels.parquet")
 
+    # Guide link
+    guide_url = _env("GUIDE_URL", "gomtang_index_report_guide.html")
+    guide_label = _env("GUIDE_LABEL", "Report Guide (Full)")
+
     date_col = _env("DATE_COL", "date")
     score_col = _env("SCORE_COL", "index_score_total")
     kospi_col = _env("KOSPI_COL", "kospi_close")
     kosdaq_col = _env("KOSDAQ_COL", "kosdaq_close")
     k200_col = _env("K200_COL", "kospi200_close")
 
-    # User confirmed
+    # Confirmed: flat threshold 1.0
     score_flat_pts = float(_env("SCORE_FLAT_PTS", "1.0"))
 
     hm_font_size = int(_env("HEATMAP_FONT_SIZE", "16"))
@@ -618,7 +696,7 @@ def main():
 
     asof_date = base[date_col].iloc[-1].date().isoformat()
 
-    # Gomtang KPIs
+    # --- Overview KPIs ---
     g_score = float(base[score_col].iloc[-1]) if pd.notna(base[score_col].iloc[-1]) else np.nan
     g_bucket = _bucket_5pt(g_score)
     regime = _regime_label(g_score)
@@ -626,10 +704,10 @@ def main():
     g_d3 = _delta_over_n(base[score_col], 3)
     g_d5 = _delta_over_n(base[score_col], 5)
     g_d10 = _delta_over_n(base[score_col], 10)
+
     g_state_internal = _gomtang_state_5bins(g_d3, g_d5, score_flat_pts)
     g_state_label = STATE_LABEL.get(g_state_internal, g_state_internal)
 
-    # KOSPI KPIs
     kospi_close = float(base[kospi_col].iloc[-1])
     kospi_r3 = _ret_over_n(base[kospi_col], 3)
     kospi_r5 = _ret_over_n(base[kospi_col], 5)
@@ -647,24 +725,54 @@ def main():
             prob_asof = pd.to_datetime(idx).date().isoformat()
     prob_disp = "-" if (prob_last is None or (isinstance(prob_last, float) and np.isnan(prob_last))) else f"{prob_last:.3f}"
 
-    # Opinion
+    # Work DF for heatmaps/backtests
+    work = base[[date_col, score_col, kospi_col]].dropna().copy()
+    work["bucket_5pt"] = work[score_col].apply(_bucket_5pt)
+    work["g_d3"] = work[score_col].diff(3)
+    work["g_d5"] = work[score_col].diff(5)
+    work["state_internal"] = [
+        _gomtang_state_5bins(d3, d5, score_flat_pts)
+        for d3, d5 in zip(work["g_d3"].fillna(0), work["g_d5"].fillna(0))
+    ]
+    work["market_state"] = work["state_internal"]
+    work["fwd10"] = _forward_return(work[kospi_col], 10)
+
+    today_bucket = g_bucket
+    today_state_internal = g_state_internal
+    today_state_label = STATE_LABEL.get(today_state_internal, today_state_internal)
+
+    # Current cell stats (unclipped)
+    cell_stats = _group_cell_stats(
+        df=work,
+        state_col="market_state",
+        bucket_col="bucket_5pt",
+        fwd_col="fwd10",
+        state=today_state_internal,
+        bucket=today_bucket,
+    )
+    cell_warn = "표본 부족 (n<10) — 해석 주의" if cell_stats["n"] < 10 else ""
+
+    # Confidence and Action
+    has_ml = not (prob_last is None or (isinstance(prob_last, float) and np.isnan(prob_last)))
+    confidence = _confidence_level(has_ml, int(cell_stats["n"]))
+    confidence_note = "Confidence Low → 비중 가이드를 절반으로 축소" if confidence == "Low" else ""
+
     op0 = _opinion_from_prob(prob_last)
+    reason_ml = f"ML(prob={prob_last:.3f}, as of {prob_asof})" if has_ml else "ML(prob 없음 → trend로 대체)"
     if op0 is None:
         op0 = _opinion_from_trend(g_d3, g_d5)
-        reason0 = "ML(prob)이 공란 → 곰탕지수 추세(Δ3/Δ5)로 대체 산출"
-    else:
-        reason0 = f"ML(prob={prob_last:.3f}) 기반"
-    op1 = _apply_trend_filter(op0, g_d3, g_d5)
-    if op1 != op0:
-        reason = reason0 + f" + 추세 필터(Δ3={_fmt_float(g_d3,1)}, Δ5={_fmt_float(g_d5,1)})로 보정 → {op1}"
-    else:
-        reason = reason0 + f" (Δ3={_fmt_float(g_d3,1)}, Δ5={_fmt_float(g_d5,1)})"
 
-    # Line charts
+    action = _apply_trend_filter(op0, g_d3, g_d5)
+    position_guide = _position_guide(action, confidence)
+
+    # 3 fixed reasons
+    action_reason_1 = f"ML: {reason_ml}"
+    action_reason_2 = f"Trend: Δ3={_fmt_float(g_d3,1)}, Δ5={_fmt_float(g_d5,1)} → {g_state_label}"
+    action_reason_3 = f"Heatmap cell: n={cell_stats['n']}, win={_fmt_pct(cell_stats['win'],1, signed=False)}, avg={_fmt_pct(cell_stats['avg'],2, signed=True)}"
+
+    # --- Charts (overview) ---
     fig_g = _line_fig(base, date_col, score_col, "GOMTANG INDEX (score 0–100)")
     fig_k = _line_fig(base, date_col, kospi_col, "KOSPI (raw)")
-    fig_kq = _line_fig(base, date_col, kosdaq_col, "KOSDAQ (raw)")
-    fig_k200 = _line_fig(base, date_col, k200_col, "KOSPI 200 (raw)")
 
     # prob chart (dropna)
     fig_p = None
@@ -680,43 +788,20 @@ def main():
             ))
             fig_p.update_layout(
                 title="XGBoost: prob_up_10d (series, non-null)",
-                height=280,
+                height=260,
                 margin=dict(l=30, r=20, t=40, b=30),
                 template="plotly_white",
                 yaxis=dict(range=[0, 1]),
             )
 
-    # Work DF for heatmaps & backtests:
-    # - X-axis state: gomtang Δ3/Δ5
-    # - Cell values: 10D forward KOSPI
-    work = base[[date_col, score_col, kospi_col]].dropna().copy()
-    work["bucket_5pt"] = work[score_col].apply(_bucket_5pt)
-    work["g_d3"] = work[score_col].diff(3)
-    work["g_d5"] = work[score_col].diff(5)
-    work["state_internal"] = [
-        _gomtang_state_5bins(d3, d5, score_flat_pts)
-        for d3, d5 in zip(work["g_d3"].fillna(0), work["g_d5"].fillna(0))
-    ]
-    work["market_state"] = work["state_internal"]  # keep internal for grouping
-    work["fwd10"] = _forward_return(work[kospi_col], 10)
-
-    today_bucket = g_bucket
-    today_state_internal = g_state_internal
-    today_state_label = STATE_LABEL.get(today_state_internal, today_state_internal)
-
-    # Heatmap pivots
+    # --- Heatmaps ---
     grp = work.dropna(subset=["fwd10"]).groupby(["bucket_5pt", "market_state"])["fwd10"]
-    pivot_mean = grp.mean().unstack("market_state")
-    pivot_n = grp.count().unstack("market_state")
+    pivot_mean = grp.mean().unstack("market_state").reindex(columns=STATE_ORDER_INTERNAL)
+    pivot_n = grp.count().unstack("market_state").reindex(columns=STATE_ORDER_INTERNAL)
 
-    # ensure order, then relabel columns for display
-    pivot_mean = pivot_mean.reindex(columns=STATE_ORDER_INTERNAL)
-    pivot_n = pivot_n.reindex(columns=STATE_ORDER_INTERNAL)
-
-    # clip ±3% for display
     pivot_mean_clip = pivot_mean.clip(lower=-0.03, upper=0.03)
 
-    # display labels
+    # relabel for display
     pivot_mean_clip.columns = [STATE_LABEL.get(c, c) for c in pivot_mean_clip.columns]
     pivot_n.columns = [STATE_LABEL.get(c, c) for c in pivot_n.columns]
 
@@ -751,25 +836,11 @@ def main():
         cell_font_size=hm_font_size,
     )
 
-    # Current cell stats (unclipped)
-    cell_stats = _group_cell_stats(
-        df=work,
-        state_col="market_state",
-        bucket_col="bucket_5pt",
-        fwd_col="fwd10",
-        state=today_state_internal,
-        bucket=today_bucket,
-    )
-    cell_warn = "표본 부족 (n<10) — 해석 주의" if cell_stats["n"] < 10 else ""
-
-    # Regime stats 20D/60D (within report window)
+    # Regime stats 20D/60D
     reg20 = _regime_forward_stats(work, score_col, kospi_col, 20, regime)
     reg60 = _regime_forward_stats(work, score_col, kospi_col, 60, regime)
 
-    # ---------------------------
-    # Backtesting section
-    # (1) bucket table & plot
-    # ---------------------------
+    # --- Backtesting ---
     bt = work.dropna(subset=["fwd10"]).copy()
     bt_tbl = bt.groupby("bucket_5pt").agg(
         n=("fwd10", "count"),
@@ -780,20 +851,18 @@ def main():
 
     fig_bt_bucket = _barline_bucket_fig(bt_tbl, "Backtest: bucket별 10D forward KOSPI (mean + win-rate)")
 
-    # HTML table
     if len(bt_tbl) > 0:
         bt_tbl_disp = bt_tbl.copy()
         bt_tbl_disp["win"] = bt_tbl_disp["win"].map(lambda x: _fmt_pct(x, 1, signed=False))
         bt_tbl_disp["avg"] = bt_tbl_disp["avg"].map(lambda x: _fmt_pct(x, 2, signed=True))
         bt_tbl_disp["med"] = bt_tbl_disp["med"].map(lambda x: _fmt_pct(x, 2, signed=True))
         bt_table_html = bt_tbl_disp.reset_index().rename(columns={"bucket_5pt": "bucket"}).to_html(
-            index=False, escape=False, classes=""
+            index=False, escape=False
         )
     else:
         bt_table_html = "<div class='small'>데이터 없음</div>"
 
-    # (2) top/bottom 20% summary (fixed 20%)
-    bt_note = "score(곰탕지수) 상/하위 20%를 기준으로 10D forward KOSPI 요약 (리포트 기간 내)"
+    bt_note = "score(곰탕지수) 상/하위 20% 기준의 10D forward KOSPI 요약 (리포트 기간 내)"
     bt_top_n = bt_bot_n = 0
     bt_top_win = bt_bot_win = np.nan
     bt_top_avg = bt_bot_avg = np.nan
@@ -814,15 +883,17 @@ def main():
     else:
         bt_note += " (표본 부족으로 신뢰 낮음)"
 
-    # ---------------------------
-    # Factor cards: meta + percentile band + SPEC lines
-    # ---------------------------
+    # --- Factors (summary + cards) ---
+    factors_extreme_greed = []
+    factors_extreme_fear = []
     factor_cards = []
+
     for i in range(1, 11):
         tag = f"f{i:02d}"
         p = Path(factors_dir) / f"{tag}.parquet"
         if not p.exists():
             continue
+
         try:
             f = pd.read_parquet(p)
         except Exception:
@@ -852,30 +923,30 @@ def main():
 
         name, desc = FACTOR_META.get(tag, (tag.upper(), ""))
 
-        # Percentile band based on RAW (preferred). If only SCORE exists, use SCORE distribution.
         series = f[ycol].dropna()
+        today_val = np.nan
+        pct = np.nan
+        band_disp = "-"
+        q20 = q40 = q60 = q80 = None
+
         if len(series) >= 5:
             today_val = float(series.iloc[-1])
-            pct = float(series.rank(pct=True).iloc[-1])  # 0..1
+            pct = float(series.rank(pct=True).iloc[-1])
             band = pct_to_band(pct)
-
-            # Flip display band if "lower is greed"
             greed_is_high = FACTOR_GREED_IS_HIGH.get(tag, True)
             band_disp = band if greed_is_high else flip_band(band)
-
-            # SPEC lines at P20/P40/P60/P80 on the plotted series distribution
             q20, q40, q60, q80 = series.quantile([0.2, 0.4, 0.6, 0.8]).tolist()
-        else:
-            today_val = np.nan
-            pct = np.nan
-            band_disp = "-"
-            q20 = q40 = q60 = q80 = None
+
+            # summary lists
+            if band_disp == "EXTREME GREED":
+                factors_extreme_greed.append(tag.upper())
+            if band_disp == "EXTREME FEAR":
+                factors_extreme_fear.append(tag.upper())
 
         fig = _line_fig(f, date_col, ycol, f"{tag.upper()} · {name} ({mode})")
         if fig is None:
             continue
 
-        # Add SPEC lines
         if q20 is not None and pd.notna(q20):
             for q, lab in [(q20, "P20"), (q40, "P40"), (q60, "P60"), (q80, "P80")]:
                 fig.add_hline(
@@ -887,7 +958,6 @@ def main():
                     annotation_position="top left",
                 )
 
-        # Add latest-point marker
         if pd.notna(today_val):
             fig.add_trace(go.Scatter(
                 x=[f[date_col].iloc[-1]], y=[today_val],
@@ -897,7 +967,6 @@ def main():
                 hovertemplate="Today=%{y}<extra></extra>",
             ))
 
-        # Header
         pct_disp = "-" if np.isnan(pct) else f"{pct*100:,.1f}%"
         today_disp = "-" if (isinstance(today_val, float) and np.isnan(today_val)) else _fmt_float(today_val, 4)
         direction_note = "높을수록 탐욕" if FACTOR_GREED_IS_HIGH.get(tag, True) else "낮을수록 탐욕(표시 밴드 반전)"
@@ -907,14 +976,17 @@ def main():
             f"  <div class='k'>{tag.upper()} · {name}</div>"
             f"  <div class='muted'>{desc}</div>"
             f"  <div class='muted'>Today: <b>{today_disp}</b> · Percentile: <b>{pct_disp}</b> · Band: <b>{band_disp}</b></div>"
-            f"  <div class='muted small'>Direction: {direction_note} · Bands: 20/40/60/80 percentile · SPEC lines: P20/P40/P60/P80</div>"
+            f"  <div class='muted small'>Direction: {direction_note} · Bands: 20/40/60/80 · SPEC: P20/P40/P60/P80</div>"
             f"</div>"
         )
 
         # Safe-mode: embed plotly.js inside each block
         factor_cards.append(header_html + fig.to_html(include_plotlyjs=True, full_html=False))
 
-    # Safe embed for all other figs too
+    factors_extreme_greed_str = ", ".join(factors_extreme_greed) if factors_extreme_greed else "-"
+    factors_extreme_fear_str = ", ".join(factors_extreme_fear) if factors_extreme_fear else "-"
+
+    # Safe embed for all figs
     def _fig_html(fig):
         if fig is None:
             return "<div style='color:#666;font-size:12px'>데이터 없음</div>"
@@ -924,7 +996,8 @@ def main():
         title=title,
         asof_date=asof_date,
         lookback_days=lookback_days,
-        score_flat_pts=_fmt_float(score_flat_pts, 1),
+        guide_url=guide_url,
+        guide_label=guide_label,
 
         gomtang_score=_fmt_float(g_score, 1),
         gomtang_bucket=g_bucket,
@@ -942,14 +1015,23 @@ def main():
         prob_up_10d=prob_disp,
         prob_asof=prob_asof,
 
-        opinion=op1,
-        opinion_reason=reason,
+        action=action,
+        position_guide=position_guide,
+        confidence=confidence,
+        confidence_note=confidence_note,
+        has_ml=("Y" if has_ml else "N"),
+        cell_n_plain=int(cell_stats["n"]),
+        action_reason_1=action_reason_1,
+        action_reason_2=action_reason_2,
+        action_reason_3=action_reason_3,
 
         fig_gomtang=_fig_html(fig_g),
         fig_kospi=_fig_html(fig_k),
-        fig_kosdaq=_fig_html(fig_kq),
-        fig_k200=_fig_html(fig_k200),
         fig_prob=_fig_html(fig_p),
+
+        factor_cards=factor_cards,
+        factors_extreme_greed=factors_extreme_greed_str,
+        factors_extreme_fear=factors_extreme_fear_str,
 
         fig_hm_mean=_fig_html(fig_hm_mean),
         fig_hm_win=_fig_html(fig_hm_win),
@@ -983,8 +1065,6 @@ def main():
         bt_note=bt_note,
         fig_bt_bucket=_fig_html(fig_bt_bucket),
         bt_table_html=bt_table_html,
-
-        factor_cards=factor_cards,
     )
 
     with open(report_path, "w", encoding="utf-8") as f:
