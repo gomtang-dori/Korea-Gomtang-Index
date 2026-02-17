@@ -179,6 +179,20 @@ jobs:
           CAP: "0.25"
           IN_WEIGHTS_CSV: "data/analysis/predict_h5_10_20_1Y_kospi_weights.csv"
           OUT_CSV: "data/analysis/final_weights_1Y_kospi.csv"
+          
+      - name: Render diagnostics page (1Y, last 180 days)
+        shell: bash
+        run: |
+          set -euo pipefail
+          python src/report/render_diagnostics.py
+        env:
+          PYTHONPATH: src
+          TAG: "1Y"
+          DAYS: "180"
+          INDEX_PATH: "data/index_daily_1Y.parquet"
+          ML_METRICS_PATH: "data/analysis/ml_prob_up10_1Y_metrics.csv"
+          FINAL_WEIGHTS_PATH: "data/analysis/final_weights_1Y_kospi.csv"
+          OUT_HTML: "docs/diagnostics_1Y.html"
 
           
 
@@ -200,8 +214,7 @@ jobs:
           # git add data/analysis/predict_10d_metrics_*.csv || true
           git add data/analysis/final_weights_*.csv || true
           git add data/analysis/prob_up_10d_1Y.parquet data/analysis/ml_prob_up10_1Y_metrics.csv || true
-          
-
+          git add docs/diagnostics_1Y.html || true       
           
           
           if git diff --staged --quiet; then
