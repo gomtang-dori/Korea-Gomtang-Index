@@ -94,6 +94,7 @@ jobs:
           TAG: "8Y"
           OUT_PRED_PARQUET: data/analysis/prob_up_10d_8Y.parquet
           OUT_METRICS_CSV: data/analysis/ml_prob_up10_8Y_metrics.csv
+          VKOSPI_LEVELS_PATH: data/cache/vkospi_level.parquet
 
       - name: Merge prob_up_10d into index parquet/csv (8Y)
         shell: bash
