@@ -18,6 +18,11 @@ jobs:
       INDEX_PATH: "data/index_daily_1Y.parquet"
       CSV_PATH: "data/index_daily_1Y.csv"
       REPORT_PATH: "docs/Korea-Gomtang-Index_1Y.html"
+      LOOKBACK_DAYS: "252"
+      INDEX_LEVELS_PATH: data/cache/index_levels.parquet
+      FACTORS_DIR: data/factors
+      EPS_FLAT: "0.002"
+      REPORT_TITLE: "한국곰탕지수(1Y) 일일 리포트"
 
     steps:
       - name: Checkout
