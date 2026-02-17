@@ -32,7 +32,7 @@ jobs:
 
       - name: Install
         run: |
-          python -m pip install --upgrade pip
+          python -m pip install --upgrade pip유
           pip install -r requirements.txt
 
       - name: Calc factors
@@ -87,7 +87,8 @@ jobs:
           OUT_METRICS_CSV: data/analysis/ml_prob_up10_1Y_metrics.csv
           F08_FLOW_PATH: data/cache/f08_foreigner_flow.parquet
           VKOSPI_LEVELS_PATH: data/cache/vkospi_level.parquet
-          USDKRW_PATH: data/usdkrw_level.parquet          
+          USDKRW_PATH: data/usdkrw_level.parquet        
+          ADD_USDKRW_RET20: "0"
 
       - name: Merge prob_up_10d into index parquet/csv (1Y)
         shell: bash
