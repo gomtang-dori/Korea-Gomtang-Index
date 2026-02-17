@@ -1,0 +1,135 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Gomtang Index Report Guide (Full Guide)</title>
+  <style>
+    body { font-family: -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,"Apple SD Gothic Neo","Noto Sans KR","Malgun Gothic",sans-serif;
+           margin: 22px; color:#111; line-height:1.55; }
+    h1 { font-size: 22px; margin: 0 0 10px; }
+    h2 { font-size: 16px; margin-top: 22px; border-top: 1px solid #eee; padding-top: 16px; }
+    h3 { font-size: 14px; margin-top: 14px; }
+    .muted { color:#666; font-size: 12px; }
+    code, pre { background:#fafafa; border:1px solid #eee; border-radius:10px; padding: 2px 6px; }
+    pre { padding: 10px 12px; overflow:auto; }
+    ul { margin: 8px 0 8px 20px; }
+    .box { border:1px solid #eee; border-radius:12px; padding: 12px 14px; background:#fff; }
+    table { border-collapse: collapse; width:100%; font-size: 12px; margin-top: 8px;}
+    th, td { border:1px solid #eee; padding:6px 8px; text-align:left;}
+    th { background:#fafafa;}
+  </style>
+</head>
+<body>
+  <h1>Gomtang Index Report Guide (Full Guide)</h1>
+  <div class="muted">
+    목적: 리포트 해석 + 운영/정책 + 장애대응까지 포함한 내부 매뉴얼<br>
+    대상: 일일 리포트 사용자/운영자/개발자
+  </div>
+
+  <h2>1) 리포트 한 장 요약: 어떻게 읽나</h2>
+  <div class="box">
+    <ol>
+      <li><b>개요(Overview)</b>에서 오늘의 Action(BUY/HOLD/SELL)과 근거 3줄을 먼저 확인</li>
+      <li><b>팩터(Factors)</b>에서 오늘 점수가 나온 원인(극단 밴드 팩터) 확인</li>
+      <li><b>히트맵(Heatmaps)</b>에서 현재 조건의 과거 평균 성과 확인(표본 n 필수)</li>
+      <li><b>백테스트(Backtesting)</b>에서 지표가 실제로 성과를 분리했는지 검증</li>
+      <li><b>결론(Conclusion)</b>에서 비중(%) 가이드와 리스크/내일 체크리스트로 마무리</li>
+    </ol>
+  </div>
+
+  <h2>2) 핵심 용어 정의(정의는 여기 1회만)</h2>
+  <div class="box">
+    <h3>2-1. GOMTANG score</h3>
+    <ul>
+      <li>곰탕지수 점수(0~100). 높을수록 “탐욕(리스크온)”으로 해석하는 기본 프레임</li>
+      <li><b>Bucket(5pt)</b>: 예) 70–75 = 70점 이상 75점 미만 구간</li>
+    </ul>
+
+    <h3>2-2. Trend state (Δ3/Δ5)</h3>
+    <ul>
+      <li>최근 3/5 거래일의 점수 변화로 상태를 5개로 분류</li>
+      <li>Flat 기준: <b>1.0pt</b> (|Δ| &lt; 1.0이면 보합)</li>
+      <li>표시 라벨: GOMTANG 5D↓, 3D↓, Flat, 3D↑, 5D↑</li>
+    </ul>
+
+    <h3>2-3. Factor band (Percentile band)</h3>
+    <ul>
+      <li>각 팩터의 RAW(또는 SCORE)의 과거 분포 대비 <b>퍼센타일</b> 위치로 밴드 표시</li>
+      <li>구간: 0–20 / 20–40 / 40–60 / 60–80 / 80–100</li>
+      <li>라벨: EXTREME FEAR → FEAR → NEUTRAL → GREED → EXTREME GREED</li>
+      <li>단, 팩터별로 “탐욕 방향”이 다를 수 있어 표시를 반전할 수 있음</li>
+    </ul>
+  </div>
+
+  <h2>3) 팩터(F01~F10) 정의</h2>
+  <table>
+    <tr><th>Factor</th><th>Name</th><th>Description</th><th>Greed direction</th></tr>
+    <tr><td>F01</td><td>Market Momentum</td><td>KOSPI 200 / 125거래일 이동평균 - 1</td><td>높을수록 탐욕</td></tr>
+    <tr><td>F02</td><td>Stock Price Strength</td><td>상승 종목 수 vs 하락 종목수</td><td>높을수록 탐욕</td></tr>
+    <tr><td>F03</td><td>BREATH</td><td>ADR (20거래일 상승 종목수 / 20거래일 하락 종목수)</td><td>높을수록 탐욕</td></tr>
+    <tr><td>F04</td><td>Put/Call Options</td><td>Put_Vol / Call_Vol</td><td>낮을수록 탐욕</td></tr>
+    <tr><td>F05</td><td>Junk Bond Demand</td><td>회사채 BBB- 수익률 − AA- 수익률</td><td>낮을수록 탐욕</td></tr>
+    <tr><td>F06</td><td>Market Volatility</td><td>VKOSPI (KOSPI200 변동성)</td><td>낮을수록 탐욕</td></tr>
+    <tr><td>F07</td><td>Safe Haven Demand</td><td>국고채 3년 수익률 변화 vs KOSPI 수익률 상대강도</td><td>높을수록 탐욕</td></tr>
+    <tr><td>F08</td><td>외국인 순매수 강도</td><td>외국인 순매수 강도</td><td>높을수록 탐욕</td></tr>
+    <tr><td>F09</td><td>신용융자/예탁금</td><td>신용융자 잔고 / 투자자예탁금</td><td>높을수록 탐욕</td></tr>
+    <tr><td>F10</td><td>원/달러 환율 변동성</td><td>StdDev20(USD_KRW_Ret)</td><td>낮을수록 탐욕</td></tr>
+  </table>
+
+  <h2>4) 히트맵(Heatmaps) 해석 가이드</h2>
+  <div class="box">
+    <ul>
+      <li>Y축: 곰탕지수 5pt 버킷(예: 70–75)</li>
+      <li>X축: 곰탕지수 Trend state(예: GOMTANG 5D↑)</li>
+      <li>셀 값:
+        <ul>
+          <li>Mean heatmap: 해당 조건에서의 <b>10D forward KOSPI 평균 수익률</b></li>
+          <li>Win-rate heatmap: 해당 조건에서의 <b>10D forward KOSPI 상승 확률</b></li>
+        </ul>
+      </li>
+      <li><b>표본수 n</b>이 작으면(예: n&lt;10) 통계는 참고용으로만 해석</li>
+    </ul>
+  </div>
+
+  <h2>5) 백테스트(Backtesting) 해석 가이드</h2>
+  <div class="box">
+    <ul>
+      <li>버킷별 성과: 점수 레벨이 미래성과를 분리했는지 확인</li>
+      <li>Top20/Bot20: score 상위 20%와 하위 20%의 10D forward 성과 차이를 확인</li>
+      <li>1Y vs 8Y 비교가 가능하면 레짐 변화(최근만 특이한지) 진단 가능</li>
+    </ul>
+  </div>
+
+  <h2>6) ML(prob_up_10d) 운영/해석</h2>
+  <div class="box">
+    <ul>
+      <li>prob_up_10d는 날짜 결측이 있을 수 있으므로 리포트는 <b>마지막 non-null</b> 값을 사용</li>
+      <li>의견 기준(보수적): BUY ≥ 0.60 / SELL &lt; 0.40 / 그 외 HOLD</li>
+      <li>ML이 공란이면 Trend 기반으로 임시 의견을 산출하되, 확신도는 낮게 표시 권장</li>
+    </ul>
+  </div>
+
+  <h2>7) 운영 정책(Workflow / 장애 대응)</h2>
+  <div class="box">
+    <h3>7-1. 운영 원칙</h3>
+    <ul>
+      <li>리포트는 “데이터→팩터→지수→ML→머지→리포트” 순서가 어긋나면 품질이 급락</li>
+      <li>결측(특히 prob_up_10d, 일부 팩터)은 발생 가능하므로 안전한 fallback 필요</li>
+    </ul>
+
+    <h3>7-2. 장애 체크리스트</h3>
+    <ul>
+      <li>차트가 깨짐: Plotly 로딩 문제 가능 → include_plotlyjs 내장 여부 확인</li>
+      <li>prob_up_10d 안 보임: merge 후 NaN 가능 → 마지막 non-null 표시 여부 확인</li>
+      <li>팩터(F02/F03) 결측: adv/dec cache/workflow 확인</li>
+    </ul>
+  </div>
+
+  <h2>8) 변경 이력(Changelog)</h2>
+  <div class="box">
+    <div class="muted">여기에 날짜별 주요 변경(팩터 추가/정의 변경/임계값 변경/ML 업데이트)을 기록하세요.</div>
+  </div>
+
+</body>
+</html>
