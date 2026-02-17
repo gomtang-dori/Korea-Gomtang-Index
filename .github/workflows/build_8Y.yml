@@ -145,6 +145,8 @@ jobs:
           REPORT_TITLE: "한국곰탕지수(8Y) 일일 리포트"
           SCORE_FLAT_PTS: "1.0"
           HEATMAP_FONT_SIZE: "16"
+          GUIDE_URL: "gomtang_index_report_guide.html"
+          GUIDE_LABEL: "Report Guide (Full)"
 
       - name: Convert parquet to CSV (8Y)
         shell: bash
