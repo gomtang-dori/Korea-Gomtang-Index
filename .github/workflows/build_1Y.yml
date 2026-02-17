@@ -219,6 +219,7 @@ jobs:
           git add data/analysis/final_weights_*.csv || true
           git add data/analysis/prob_up_10d_1Y.parquet data/analysis/ml_prob_up10_1Y_metrics.csv || true
           git add docs/diagnostics_1Y.html || true       
+          git add docs/weights_used_*.json || true
           
           
           if git diff --staged --quiet; then
