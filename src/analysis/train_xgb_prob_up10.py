@@ -4,43 +4,34 @@
 """
 XGBoost로 prob_up_10d = P(KOSPI 10영업일 후 수익률 > 0) 예측 확률 컬럼 생성.
 
-[1차 Feature 확장(A,B,C)]
+[Feature]
+기본: f01_score~f10_score (+contrarian fxx_c = 100 - fxx_score)
 A) KOSPI 20D realized volatility: kospi_rv20
 B) KOSPI 125MA momentum: kospi_mom125 = kospi_close / MA125 - 1
 C) VKOSPI 20D change: vkospi_chg20 = vkospi.diff(20)
-
-핵심:
-- 기존 Korea-Gomtang Index(선형 가중치 지수)는 그대로 유지
-- 별도 확률 시계열(prob_up_10d)을 생성해 index parquet에 merge할 수 있게 저장
-- walk-forward(확장 윈도우) 검증 지표(AUC/Brier)도 CSV로 저장
-
-입력:
-- 팩터 스코어: data/factors/f01.parquet ... f10.parquet (컬럼: date, f01_score 등)
-- 지수 레벨: data/cache/index_levels.parquet (컬럼: date, kospi_close)
-- VKOSPI 레벨: data/cache/vkospi_level.parquet 또는 data/vkospi_level.parquet
+E) Foreigner flow 20D sum z-score: f08_flow20_z
+   - reads data/cache/f08_foreigner_flow.parquet and uses f08_foreigner_net_buy
 
 출력:
 - 확률 시계열 parquet: data/analysis/prob_up_10d_{TAG}.parquet
 - fold metrics CSV: data/analysis/ml_prob_up10_{TAG}_metrics.csv
 
-환경변수(Workflow에서 env로 주입 권장):
-  PYTHONPATH           : src
+환경변수:
   FACTORS_DIR          : data/factors
   INDEX_LEVELS_PATH    : data/cache/index_levels.parquet
   VKOSPI_LEVELS_PATH   : data/cache/vkospi_level.parquet (없으면 data/vkospi_level.parquet fallback)
+  F08_FLOW_PATH        : data/cache/f08_foreigner_flow.parquet
   TARGET_COL           : kospi_close
   HORIZON_DAYS         : 10
-  ADD_CONTRARIAN       : 1  (f06_c = 100 - f06_score 등 파생피처 생성)
+  ADD_CONTRARIAN       : 1
   CONTRARIAN_SUFFIX    : _c
-  EXCLUDE_FACTORS      : "f09" 같은 형태, 콤마구분 가능
+  EXCLUDE_FACTORS      : "f09" 같은 형태
   TAG                  : "1Y" / "8Y"
-  OUT_PRED_PARQUET     : data/analysis/prob_up_10d_1Y.parquet 등
-  OUT_METRICS_CSV      : data/analysis/ml_prob_up10_1Y_metrics.csv 등
+  OUT_PRED_PARQUET
+  OUT_METRICS_CSV
 
-Walk-forward 설정(운영 안정):
-  - min_train_rows=600
-  - step=60
-  - test_size=60
+Walk-forward(운영 안정):
+  min_train_rows=600, step=60, test_size=60
 """
 
 from __future__ import annotations
@@ -48,10 +39,10 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 from typing import Dict, List, Tuple
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
-from pathlib import Path
 
 try:
     import xgboost as xgb
@@ -128,13 +119,11 @@ def _add_contrarian_features(df: pd.DataFrame, suffix: str) -> Tuple[pd.DataFram
     score_cols = [c for c in df.columns if c.endswith("_score")]
     out = df.copy()
     added: List[str] = []
-
     for c in score_cols:
         base = c.replace("_score", "")   # f06
         c_name = f"{base}{suffix}"       # f06_c
         out[c_name] = 100.0 - pd.to_numeric(out[c], errors="coerce")
         added.append(c_name)
-
     return out, added
 
 
@@ -219,18 +208,15 @@ def _walk_forward_oos_prob(
 
 def _add_feature_kospi_rv20(df: pd.DataFrame, price_col: str) -> pd.Series:
     ret1 = np.log(df[price_col]).diff()
-    rv20 = ret1.rolling(20, min_periods=10).std()
-    return rv20
+    return ret1.rolling(20, min_periods=10).std()
 
 
 def _add_feature_kospi_mom125(df: pd.DataFrame, price_col: str) -> pd.Series:
     ma = df[price_col].rolling(125, min_periods=125).mean()
-    mom = df[price_col] / ma - 1.0
-    return mom
+    return df[price_col] / ma - 1.0
 
 
 def _read_vkospi_series(vkospi_path_env: str) -> pd.DataFrame:
-    # 기본: data/cache/vkospi_level.parquet, 없으면 data/vkospi_level.parquet
     p1 = Path(vkospi_path_env)
     p2 = Path("data/vkospi_level.parquet")
 
@@ -243,9 +229,7 @@ def _read_vkospi_series(vkospi_path_env: str) -> pd.DataFrame:
     v = pd.read_parquet(src)
     v = _ensure_date(v)
 
-    # 컬럼명은 프로젝트에서 vkospi로 사용 중 [Source](https://raw.githubusercontent.com/gomtang-dori/Korea-Gomtang-Index/main/src/factors/f06_vkospi.py)
     if "vkospi" not in v.columns:
-        # 혹시 다른 이름이면 첫 숫자 컬럼을 사용(안전장치)
         cand = [c for c in v.columns if c != "date"]
         if not cand:
             raise RuntimeError(f"VKOSPI 파일에 값 컬럼이 없습니다. cols={list(v.columns)}")
@@ -256,10 +240,41 @@ def _read_vkospi_series(vkospi_path_env: str) -> pd.DataFrame:
     return v[["date", "vkospi"]].copy()
 
 
+def _read_f08_flow_series(f08_path: str) -> pd.DataFrame:
+    p = Path(f08_path)
+    if not p.exists():
+        raise FileNotFoundError(f"F08 flow cache missing: {p}")
+
+    df = pd.read_parquet(p)
+    df = _ensure_date(df)
+
+    if "f08_foreigner_net_buy" not in df.columns:
+        raise RuntimeError(f"F08 flow cache missing col f08_foreigner_net_buy. cols={list(df.columns)}")
+
+    df["f08_foreigner_net_buy"] = pd.to_numeric(df["f08_foreigner_net_buy"], errors="coerce")
+    df = df.dropna(subset=["f08_foreigner_net_buy"]).reset_index(drop=True)
+    return df[["date", "f08_foreigner_net_buy"]].copy()
+
+
+def _flow20_z(net_buy: pd.Series, sum_win: int = 20, z_win: int = 252, clip: float = 5.0) -> pd.Series:
+    """
+    20D 누적합을 만든 뒤, 과거 z_win(기본 252) 기준으로 z-score
+    z-score = (x - mean) / std
+    """
+    flow20 = net_buy.rolling(sum_win, min_periods=max(5, sum_win // 2)).sum()
+    mu = flow20.rolling(z_win, min_periods=max(60, z_win // 4)).mean()
+    sd = flow20.rolling(z_win, min_periods=max(60, z_win // 4)).std().replace(0, np.nan)
+    z = (flow20 - mu) / sd
+    if clip is not None and clip > 0:
+        z = z.clip(-clip, clip)
+    return z
+
+
 def main() -> None:
     factors_dir = _env("FACTORS_DIR", "data/factors")
     index_levels_path = _env("INDEX_LEVELS_PATH", "data/cache/index_levels.parquet")
     vkospi_levels_path = _env("VKOSPI_LEVELS_PATH", "data/cache/vkospi_level.parquet")
+    f08_flow_path = _env("F08_FLOW_PATH", "data/cache/f08_foreigner_flow.parquet")
 
     target_col = _env("TARGET_COL", "kospi_close")
     horizon = int(_env("HORIZON_DAYS", "10"))
@@ -291,16 +306,13 @@ def main() -> None:
     idx = _ensure_date(idx)
     if target_col not in idx.columns:
         raise ValueError(f"{index_levels_path} 에 '{target_col}' 컬럼이 없습니다. cols={list(idx.columns)}")
-
     idx[target_col] = pd.to_numeric(idx[target_col], errors="coerce")
     idx = idx.dropna(subset=[target_col]).reset_index(drop=True)
 
-    y_df = idx[["date", target_col]].copy()
+    # 3) Merge base frame
+    df = X_df.merge(idx[["date", target_col]], on="date", how="inner").sort_values("date").reset_index(drop=True)
 
-    # 3) Merge base frame (date-aligned)
-    df = X_df.merge(y_df, on="date", how="inner").sort_values("date").reset_index(drop=True)
-
-    # 4) Add engineered features (A,B,C)
+    # 4) A,B,C
     df["kospi_rv20"] = _add_feature_kospi_rv20(df, target_col)
     df["kospi_mom125"] = _add_feature_kospi_mom125(df, target_col)
 
@@ -308,39 +320,39 @@ def main() -> None:
     df = df.merge(vkospi, on="date", how="left")
     df["vkospi_chg20"] = pd.to_numeric(df["vkospi"], errors="coerce").diff(20)
 
-    # 5) Features (+ contrarian)
+    # 5) E (f08 flow 20D sum z-score)
+    f08 = _read_f08_flow_series(f08_flow_path)
+    df = df.merge(f08, on="date", how="left")
+    df["f08_flow20_z"] = _flow20_z(df["f08_foreigner_net_buy"])
+
+    # 6) Features (+ contrarian)
     feature_cols = [c for c in df.columns if c.endswith("_score")]
     if add_contrarian:
         df, added = _add_contrarian_features(df, contrarian_suffix)
         feature_cols = feature_cols + added
 
-    # add engineered features
-    engineered = ["kospi_rv20", "kospi_mom125", "vkospi_chg20"]
+    engineered = ["kospi_rv20", "kospi_mom125", "vkospi_chg20", "f08_flow20_z"]
     feature_cols = feature_cols + engineered
 
-    # 6) Label
+    # 7) Label
     df["ret10_log"] = _fwd_log_return(df[target_col].astype(float), horizon)
     df["y_up10"] = (df["ret10_log"] > 0).astype(int)
 
-    # Drop tail without forward return, and rows with missing features
     df = df.dropna(subset=["ret10_log"]).reset_index(drop=True)
 
-    # feature 결측 처리: 우선 dropna(운영 단순화)
     before = len(df)
     df = df.dropna(subset=feature_cols).reset_index(drop=True)
     after = len(df)
 
     print(f"[ml] rows before dropna(features)={before} after={after} dropped={before-after}")
     print(f"[ml] feature_cols={len(feature_cols)} (scores+contrarian+engineered)")
-
-    if len(df) < 800:
-        print(f"[ml] WARNING: usable rows is small: {len(df)}")
+    print(f"[ml] engineered={engineered}")
 
     X = df[feature_cols].astype(float)
     y = df["y_up10"].astype(int)
     dates = df["date"]
 
-    # 7) Conservative XGBoost params
+    # 8) XGBoost params
     params = {
         "objective": "binary:logistic",
         "eval_metric": "logloss",
@@ -355,12 +367,12 @@ def main() -> None:
         "nthread": 0,
     }
 
-    # 8) Walk-forward OOS metrics
-    oos_prob, metrics = _walk_forward_oos_prob(
+    # 9) Walk-forward OOS metrics
+    _, metrics = _walk_forward_oos_prob(
         X=X, y=y, dates=dates, model_params=params, cfg=WalkForwardConfig()
     )
+
     if len(metrics) > 0:
-        # 메타 정보 추가(운영 점검용)
         metrics["tag"] = tag
         metrics["horizon_days"] = horizon
         metrics["target_col"] = target_col
@@ -372,7 +384,7 @@ def main() -> None:
     else:
         print("[ml] metrics skipped (not enough rows for walk-forward config)")
 
-    # 9) Train final model on full data and predict prob for all rows
+    # 10) Train final model & predict prob
     dtr_full = xgb.DMatrix(X, label=y)
     booster = xgb.train(
         params=params,
