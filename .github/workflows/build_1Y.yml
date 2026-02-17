@@ -168,6 +168,8 @@ jobs:
           git add data/analysis/predict_h5_10_20_*_best_h*.csv || true
           git add docs/predict_h5_10_20_*.html || true
           # git add data/analysis/predict_10d_metrics_*.csv || true
+          git add data/analysis/final_weights_*.csv || true
+
           
           
           if git diff --staged --quiet; then
