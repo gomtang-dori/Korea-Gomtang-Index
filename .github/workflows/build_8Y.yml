@@ -197,6 +197,19 @@ jobs:
           IN_WEIGHTS_CSV: "data/analysis/predict_h5_10_20_8Y_kospi_weights.csv"
           OUT_CSV: "data/analysis/final_weights_8Y_kospi.csv"
 
+      - name: Render diagnostics page (8Y, last 180 days)
+        shell: bash
+        run: |
+          set -euo pipefail
+          python src/report/render_diagnostics.py
+        env:
+          PYTHONPATH: src
+          TAG: "8Y"
+          DAYS: "180"
+          INDEX_PATH: "data/index_daily_8Y.parquet"
+          ML_METRICS_PATH: "data/analysis/ml_prob_up10_8Y_metrics.csv"
+          FINAL_WEIGHTS_PATH: "data/analysis/final_weights_8Y_kospi.csv"
+          OUT_HTML: "docs/diagnostics_8Y.html"
           
 
       - name: Commit & push (if changed)
