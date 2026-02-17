@@ -4,14 +4,20 @@
 """
 XGBoost로 prob_up_10d = P(KOSPI 10영업일 후 수익률 > 0) 예측 확률 컬럼 생성.
 
+[1차 Feature 확장(A,B,C)]
+A) KOSPI 20D realized volatility: kospi_rv20
+B) KOSPI 125MA momentum: kospi_mom125 = kospi_close / MA125 - 1
+C) VKOSPI 20D change: vkospi_chg20 = vkospi.diff(20)
+
 핵심:
 - 기존 Korea-Gomtang Index(선형 가중치 지수)는 그대로 유지
 - 별도 확률 시계열(prob_up_10d)을 생성해 index parquet에 merge할 수 있게 저장
-- 간단한 walk-forward(확장 윈도우) 검증 지표(AUC/Brier)도 CSV로 저장
+- walk-forward(확장 윈도우) 검증 지표(AUC/Brier)도 CSV로 저장
 
 입력:
 - 팩터 스코어: data/factors/f01.parquet ... f10.parquet (컬럼: date, f01_score 등)
 - 지수 레벨: data/cache/index_levels.parquet (컬럼: date, kospi_close)
+- VKOSPI 레벨: data/cache/vkospi_level.parquet 또는 data/vkospi_level.parquet
 
 출력:
 - 확률 시계열 parquet: data/analysis/prob_up_10d_{TAG}.parquet
@@ -21,6 +27,7 @@ XGBoost로 prob_up_10d = P(KOSPI 10영업일 후 수익률 > 0) 예측 확률 �
   PYTHONPATH           : src
   FACTORS_DIR          : data/factors
   INDEX_LEVELS_PATH    : data/cache/index_levels.parquet
+  VKOSPI_LEVELS_PATH   : data/cache/vkospi_level.parquet (없으면 data/vkospi_level.parquet fallback)
   TARGET_COL           : kospi_close
   HORIZON_DAYS         : 10
   ADD_CONTRARIAN       : 1  (f06_c = 100 - f06_score 등 파생피처 생성)
@@ -28,7 +35,12 @@ XGBoost로 prob_up_10d = P(KOSPI 10영업일 후 수익률 > 0) 예측 확률 �
   EXCLUDE_FACTORS      : "f09" 같은 형태, 콤마구분 가능
   TAG                  : "1Y" / "8Y"
   OUT_PRED_PARQUET     : data/analysis/prob_up_10d_1Y.parquet 등
-  OUT_METRICS_CSV       : data/analysis/ml_prob_up10_1Y_metrics.csv 등
+  OUT_METRICS_CSV      : data/analysis/ml_prob_up10_1Y_metrics.csv 등
+
+Walk-forward 설정(운영 안정):
+  - min_train_rows=600
+  - step=60
+  - test_size=60
 """
 
 from __future__ import annotations
@@ -67,13 +79,12 @@ def _ensure_date(df: pd.DataFrame) -> pd.DataFrame:
     if "date" not in df.columns:
         raise ValueError("입력 데이터에 'date' 컬럼이 필요합니다.")
     out = df.copy()
-    out["date"] = pd.to_datetime(out["date"])
-    out = out.sort_values("date").reset_index(drop=True)
+    out["date"] = pd.to_datetime(out["date"], errors="coerce")
+    out = out.dropna(subset=["date"]).sort_values("date").reset_index(drop=True)
     return out
 
 
 def _fwd_log_return(px: pd.Series, horizon: int) -> pd.Series:
-    # log(P[t+h]/P[t])
     return np.log(px.shift(-horizon) / px)
 
 
@@ -87,7 +98,6 @@ def _load_factor_scores(factors_dir: str, exclude_factors: List[str]) -> pd.Data
 
         path = os.path.join(factors_dir, f"{f}.parquet")
         if not os.path.exists(path):
-            # optional factor는 없을 수 있으므로 skip
             continue
 
         df = pd.read_parquet(path)
@@ -114,26 +124,20 @@ def _load_factor_scores(factors_dir: str, exclude_factors: List[str]) -> pd.Data
 
 
 def _add_contrarian_features(df: pd.DataFrame, suffix: str) -> Tuple[pd.DataFrame, List[str]]:
-    """
-    f06_score -> f06_c 형태로 파생 feature 생성 (값은 100 - score)
-    """
     score_cols = [c for c in df.columns if c.endswith("_score")]
     out = df.copy()
     added: List[str] = []
 
     for c in score_cols:
-        base = c.replace("_score", "")  # f06
-        c_name = f"{base}{suffix}"      # f06_c
-        out[c_name] = 100.0 - out[c]
+        base = c.replace("_score", "")   # f06
+        c_name = f"{base}{suffix}"       # f06_c
+        out[c_name] = 100.0 - pd.to_numeric(out[c], errors="coerce")
         added.append(c_name)
 
     return out, added
 
 
 def _auc_fast(y_true: np.ndarray, y_score: np.ndarray) -> float:
-    """
-    sklearn 없이 AUC 계산(랭크 기반)
-    """
     y_true = y_true.astype(int)
     pos = y_true == 1
     neg = y_true == 0
@@ -146,16 +150,15 @@ def _auc_fast(y_true: np.ndarray, y_score: np.ndarray) -> float:
     ranks = np.empty_like(order)
     ranks[order] = np.arange(len(y_score))
     sum_ranks_pos = ranks[pos].sum()
-
     auc = (sum_ranks_pos - n_pos * (n_pos - 1) / 2) / (n_pos * n_neg)
     return float(auc)
 
 
 @dataclass(frozen=True)
 class WalkForwardConfig:
-    min_train_rows: int = 600  # 최소 학습 길이(운영 안정)
-    step: int = 20             # 20영업일 단위로 앞으로 전진
-    test_size: int = 20        # 각 fold 테스트 20일
+    min_train_rows: int = 600
+    step: int = 60
+    test_size: int = 60
 
 
 def _walk_forward_oos_prob(
@@ -165,11 +168,6 @@ def _walk_forward_oos_prob(
     model_params: Dict,
     cfg: WalkForwardConfig
 ) -> Tuple[pd.Series, pd.DataFrame]:
-    """
-    확장 윈도우 walk-forward:
-      train[0:train_end] -> predict next test_size
-      train_end += step
-    """
     n = len(X)
     oos = pd.Series(index=X.index, dtype=float)
     rows = []
@@ -190,10 +188,10 @@ def _walk_forward_oos_prob(
         booster = xgb.train(
             params=model_params,
             dtrain=dtr,
-            num_boost_round=2000,
+            num_boost_round=3000,
             evals=[(dtr, "train"), (dte, "test")],
             verbose_eval=False,
-            early_stopping_rounds=50,
+            early_stopping_rounds=80,
         )
 
         prob = booster.predict(dte)
@@ -201,6 +199,7 @@ def _walk_forward_oos_prob(
 
         auc = _auc_fast(y_te.to_numpy(), prob)
         brier = float(np.mean((prob - y_te.to_numpy()) ** 2))
+
         rows.append({
             "fold_train_end": int(train_end),
             "test_start_date": str(dates.iloc[test_start].date()),
@@ -208,6 +207,8 @@ def _walk_forward_oos_prob(
             "auc": auc,
             "brier": brier,
             "best_iteration": int(getattr(booster, "best_iteration", -1)),
+            "train_rows": int(len(X_tr)),
+            "test_rows": int(len(X_te)),
         })
 
         train_end += cfg.step
@@ -215,9 +216,50 @@ def _walk_forward_oos_prob(
     return oos, pd.DataFrame(rows)
 
 
+def _add_feature_kospi_rv20(df: pd.DataFrame, price_col: str) -> pd.Series:
+    ret1 = np.log(df[price_col]).diff()
+    rv20 = ret1.rolling(20, min_periods=10).std()
+    return rv20
+
+
+def _add_feature_kospi_mom125(df: pd.DataFrame, price_col: str) -> pd.Series:
+    ma = df[price_col].rolling(125, min_periods=125).mean()
+    mom = df[price_col] / ma - 1.0
+    return mom
+
+
+def _read_vkospi_series(vkospi_path_env: str) -> pd.DataFrame:
+    # 기본: data/cache/vkospi_level.parquet, 없으면 data/vkospi_level.parquet
+    p1 = Path(vkospi_path_env)
+    p2 = Path("data/vkospi_level.parquet")
+
+    src = p1 if p1.exists() else p2
+    if not src.exists():
+        raise FileNotFoundError(
+            f"VKOSPI 레벨 파일이 없습니다. VKOSPI_LEVELS_PATH={p1} / fallback={p2}"
+        )
+
+    v = pd.read_parquet(src)
+    v = _ensure_date(v)
+
+    # 컬럼명은 프로젝트에서 vkospi로 사용 중 [Source](https://raw.githubusercontent.com/gomtang-dori/Korea-Gomtang-Index/main/src/factors/f06_vkospi.py)
+    if "vkospi" not in v.columns:
+        # 혹시 다른 이름이면 첫 숫자 컬럼을 사용(안전장치)
+        cand = [c for c in v.columns if c != "date"]
+        if not cand:
+            raise RuntimeError(f"VKOSPI 파일에 값 컬럼이 없습니다. cols={list(v.columns)}")
+        v = v.rename(columns={cand[0]: "vkospi"})
+
+    v["vkospi"] = pd.to_numeric(v["vkospi"], errors="coerce")
+    v = v.dropna(subset=["vkospi"]).reset_index(drop=True)
+    return v[["date", "vkospi"]].copy()
+
+
 def main() -> None:
     factors_dir = _env("FACTORS_DIR", "data/factors")
     index_levels_path = _env("INDEX_LEVELS_PATH", "data/cache/index_levels.parquet")
+    vkospi_levels_path = _env("VKOSPI_LEVELS_PATH", "data/cache/vkospi_level.parquet")
+
     target_col = _env("TARGET_COL", "kospi_close")
     horizon = int(_env("HORIZON_DAYS", "10"))
 
@@ -249,24 +291,46 @@ def main() -> None:
     if target_col not in idx.columns:
         raise ValueError(f"{index_levels_path} 에 '{target_col}' 컬럼이 없습니다. cols={list(idx.columns)}")
 
+    idx[target_col] = pd.to_numeric(idx[target_col], errors="coerce")
+    idx = idx.dropna(subset=[target_col]).reset_index(drop=True)
+
     y_df = idx[["date", target_col]].copy()
 
-    # 3) Merge
+    # 3) Merge base frame (date-aligned)
     df = X_df.merge(y_df, on="date", how="inner").sort_values("date").reset_index(drop=True)
 
-    # 4) Features (+ contrarian)
+    # 4) Add engineered features (A,B,C)
+    df["kospi_rv20"] = _add_feature_kospi_rv20(df, target_col)
+    df["kospi_mom125"] = _add_feature_kospi_mom125(df, target_col)
+
+    vkospi = _read_vkospi_series(vkospi_levels_path)
+    df = df.merge(vkospi, on="date", how="left")
+    df["vkospi_chg20"] = pd.to_numeric(df["vkospi"], errors="coerce").diff(20)
+
+    # 5) Features (+ contrarian)
     feature_cols = [c for c in df.columns if c.endswith("_score")]
     if add_contrarian:
         df, added = _add_contrarian_features(df, contrarian_suffix)
         feature_cols = feature_cols + added
 
-    # 5) Label
+    # add engineered features
+    engineered = ["kospi_rv20", "kospi_mom125", "vkospi_chg20"]
+    feature_cols = feature_cols + engineered
+
+    # 6) Label
     df["ret10_log"] = _fwd_log_return(df[target_col].astype(float), horizon)
     df["y_up10"] = (df["ret10_log"] > 0).astype(int)
 
     # Drop tail without forward return, and rows with missing features
     df = df.dropna(subset=["ret10_log"]).reset_index(drop=True)
+
+    # feature 결측 처리: 우선 dropna(운영 단순화)
+    before = len(df)
     df = df.dropna(subset=feature_cols).reset_index(drop=True)
+    after = len(df)
+
+    print(f"[ml] rows before dropna(features)={before} after={after} dropped={before-after}")
+    print(f"[ml] feature_cols={len(feature_cols)} (scores+contrarian+engineered)")
 
     if len(df) < 800:
         print(f"[ml] WARNING: usable rows is small: {len(df)}")
@@ -275,7 +339,7 @@ def main() -> None:
     y = df["y_up10"].astype(int)
     dates = df["date"]
 
-    # 6) Conservative XGBoost params
+    # 7) Conservative XGBoost params
     params = {
         "objective": "binary:logistic",
         "eval_metric": "logloss",
@@ -290,23 +354,29 @@ def main() -> None:
         "nthread": 0,
     }
 
-    # 7) Walk-forward OOS metrics (진짜 운영 성능 감시용)
+    # 8) Walk-forward OOS metrics
     oos_prob, metrics = _walk_forward_oos_prob(
         X=X, y=y, dates=dates, model_params=params, cfg=WalkForwardConfig()
     )
     if len(metrics) > 0:
+        # 메타 정보 추가(운영 점검용)
+        metrics["tag"] = tag
+        metrics["horizon_days"] = horizon
+        metrics["target_col"] = target_col
+        metrics["n_rows_used"] = len(df)
+        metrics["n_features"] = X.shape[1]
         metrics.to_csv(out_metrics_csv, index=False, encoding="utf-8-sig")
         print(f"[ml] metrics OK -> {out_metrics_csv} folds={len(metrics)}")
         print(metrics.tail(3).to_string(index=False))
     else:
         print("[ml] metrics skipped (not enough rows for walk-forward config)")
 
-    # 8) Train final model on full data and predict prob for all rows
+    # 9) Train final model on full data and predict prob for all rows
     dtr_full = xgb.DMatrix(X, label=y)
     booster = xgb.train(
         params=params,
         dtrain=dtr_full,
-        num_boost_round=500,
+        num_boost_round=700,
         verbose_eval=False,
     )
     prob_all = booster.predict(xgb.DMatrix(X))
