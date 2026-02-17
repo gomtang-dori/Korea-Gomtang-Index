@@ -54,7 +54,19 @@ jobs:
           python src/factors/f07_safehaven.py
           python src/factors/f08_foreigner_flow.py
           python src/factors/f10_fxvol.py
-
+          
+      - name: Make final weights (8Y, KOSPI, group-sum + cap=0.25)
+        shell: bash
+        run: |
+          set -euo pipefail
+          python src/analysis/make_final_weights.py
+        env:
+          PYTHONPATH: src
+          POLICY: "8Y"
+          CAP: "0.25"
+          IN_WEIGHTS_CSV: "data/analysis/predict_h5_10_20_8Y_kospi_weights.csv"
+          OUT_CSV: "data/analysis/final_weights_8Y_kospi.csv"
+          
       - name: Assemble index (EMA10 + EMA5, exclude f09)
         shell: bash
         run: |
@@ -187,19 +199,7 @@ jobs:
           INDEX_LEVELS_PATH: data/cache/index_levels.parquet
           OUT_PREFIX: "predict_h5_10_20_8Y_kospi"
           OUT_DIR: "data/analysis"
-          OUT_HTML: "docs/predict_h5_10_20_8Y_kospi.html"
-          
-      - name: Make final weights (8Y, KOSPI, group-sum + cap=0.25)
-        shell: bash
-        run: |
-          set -euo pipefail
-          python src/analysis/make_final_weights.py
-        env:
-          PYTHONPATH: src
-          POLICY: "8Y"
-          CAP: "0.25"
-          IN_WEIGHTS_CSV: "data/analysis/predict_h5_10_20_8Y_kospi_weights.csv"
-          OUT_CSV: "data/analysis/final_weights_8Y_kospi.csv"
+          OUT_HTML: "docs/predict_h5_10_20_8Y_kospi.html"          
 
       - name: Render diagnostics page (8Y, last 180 days)
         shell: bash
