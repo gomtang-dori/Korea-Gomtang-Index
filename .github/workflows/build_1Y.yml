@@ -134,6 +134,9 @@ jobs:
           FACTORS_DIR: data/factors
           EPS_FLAT: "0.002"
           REPORT_TITLE: "한국곰탕지수(1Y) 일일 리포트"
+          SCORE_FLAT_PTS: "1.0"
+          HEATMAP_FONT_SIZE: "16"
+
           
       - name: To CSV
         run: |
