@@ -51,6 +51,36 @@ jobs:
       - name: Assemble
         run: |
           python src/assemble/assemble_index.py
+          
+      - name: ML prob_up_10d (XGBoost, KOSPI, horizon=10)
+        shell: bash
+        run: |
+          set -euo pipefail
+          python src/analysis/train_xgb_prob_up10.py
+        env:
+          PYTHONPATH: src
+          FACTORS_DIR: data/factors
+          INDEX_LEVELS_PATH: data/cache/index_levels.parquet
+          TARGET_COL: kospi_close
+          HORIZON_DAYS: "10"
+          ADD_CONTRARIAN: "1"
+          CONTRARIAN_SUFFIX: "_c"
+          EXCLUDE_FACTORS: ""
+          TAG: "1Y"
+          OUT_PRED_PARQUET: data/analysis/prob_up_10d_1Y.parquet
+          OUT_METRICS_CSV: data/analysis/ml_prob_up10_1Y_metrics.csv
+
+      - name: Merge prob_up_10d into index parquet/csv (1Y)
+        shell: bash
+        run: |
+          set -euo pipefail
+          python src/analysis/merge_prob_into_index.py
+        env:
+          PYTHONPATH: src
+          INDEX_PATH: data/index_daily_1Y.parquet
+          CSV_PATH: data/index_daily_1Y.csv
+          PROB_PATH: data/analysis/prob_up_10d_1Y.parquet
+          
 
       - name: To CSV
         run: |
@@ -169,6 +199,8 @@ jobs:
           git add docs/predict_h5_10_20_*.html || true
           # git add data/analysis/predict_10d_metrics_*.csv || true
           git add data/analysis/final_weights_*.csv || true
+          git add data/analysis/prob_up_10d_1Y.parquet data/analysis/ml_prob_up10_1Y_metrics.csv || true
+          
 
           
           
