@@ -10,7 +10,14 @@ A) KOSPI 20D realized volatility: kospi_rv20
 B) KOSPI 125MA momentum: kospi_mom125 = kospi_close / MA125 - 1
 C) VKOSPI 20D change: vkospi_chg20 = vkospi.diff(20)
 E) Foreigner flow 20D sum z-score: f08_flow20_z
-   - reads data/cache/f08_foreigner_flow.parquet and uses f08_foreigner_net_buy
+D) USDKRW 20D log return: usdkrw_ret20   (옵션1: 방향성만)
+
+입력:
+- 팩터 스코어: data/factors/f01.parquet ... f10.parquet (date, f01_score 등)
+- 지수 레벨: data/cache/index_levels.parquet (date, kospi_close)
+- VKOSPI 레벨: data/cache/vkospi_level.parquet 또는 data/vkospi_level.parquet
+- 외국인 flow: data/cache/f08_foreigner_flow.parquet
+- USDKRW 레벨: data/usdkrw_level.parquet (기본), 또는 env USDKRW_PATH
 
 출력:
 - 확률 시계열 parquet: data/analysis/prob_up_10d_{TAG}.parquet
@@ -19,8 +26,9 @@ E) Foreigner flow 20D sum z-score: f08_flow20_z
 환경변수:
   FACTORS_DIR          : data/factors
   INDEX_LEVELS_PATH    : data/cache/index_levels.parquet
-  VKOSPI_LEVELS_PATH   : data/cache/vkospi_level.parquet (없으면 data/vkospi_level.parquet fallback)
+  VKOSPI_LEVELS_PATH   : data/cache/vkospi_level.parquet
   F08_FLOW_PATH        : data/cache/f08_foreigner_flow.parquet
+  USDKRW_PATH          : data/usdkrw_level.parquet
   TARGET_COL           : kospi_close
   HORIZON_DAYS         : 10
   ADD_CONTRARIAN       : 1
@@ -257,10 +265,6 @@ def _read_f08_flow_series(f08_path: str) -> pd.DataFrame:
 
 
 def _flow20_z(net_buy: pd.Series, sum_win: int = 20, z_win: int = 252, clip: float = 5.0) -> pd.Series:
-    """
-    20D 누적합을 만든 뒤, 과거 z_win(기본 252) 기준으로 z-score
-    z-score = (x - mean) / std
-    """
     flow20 = net_buy.rolling(sum_win, min_periods=max(5, sum_win // 2)).sum()
     mu = flow20.rolling(z_win, min_periods=max(60, z_win // 4)).mean()
     sd = flow20.rolling(z_win, min_periods=max(60, z_win // 4)).std().replace(0, np.nan)
@@ -270,11 +274,44 @@ def _flow20_z(net_buy: pd.Series, sum_win: int = 20, z_win: int = 252, clip: flo
     return z
 
 
+def _read_usdkrw_levels(usdk_path: str) -> pd.DataFrame:
+    """
+    data/usdkrw_level.parquet을 읽어서 (date, usdkrw) 형태로 정규화.
+    f10_fxvol.py가 같은 파일을 사용하므로 이 경로/컬럼 후보를 최대한 안전하게 처리.
+    [Source](https://raw.githubusercontent.com/gomtang-dori/Korea-Gomtang-Index/main/src/factors/f10_fxvol.py)
+    """
+    p = Path(usdk_path)
+    if not p.exists():
+        raise FileNotFoundError(f"USDKRW level missing: {p}")
+
+    df = pd.read_parquet(p)
+    df = _ensure_date(df)
+
+    # 컬럼 후보: usdkrw / Close / close / value
+    price_col = None
+    for c in ["usdkrw", "Close", "close", "value", "USDKRW"]:
+        if c in df.columns:
+            price_col = c
+            break
+    if price_col is None:
+        cand = [c for c in df.columns if c != "date"]
+        if not cand:
+            raise RuntimeError(f"USDKRW 파일에 값 컬럼이 없습니다. cols={list(df.columns)}")
+        price_col = cand[0]
+
+    df["usdkrw"] = pd.to_numeric(df[price_col], errors="coerce")
+    df = df.dropna(subset=["usdkrw"]).reset_index(drop=True)
+    return df[["date", "usdkrw"]].copy()
+
+
 def main() -> None:
     factors_dir = _env("FACTORS_DIR", "data/factors")
     index_levels_path = _env("INDEX_LEVELS_PATH", "data/cache/index_levels.parquet")
     vkospi_levels_path = _env("VKOSPI_LEVELS_PATH", "data/cache/vkospi_level.parquet")
     f08_flow_path = _env("F08_FLOW_PATH", "data/cache/f08_foreigner_flow.parquet")
+
+    # D: USDKRW 20D return
+    usdkrw_path = _env("USDKRW_PATH", "data/usdkrw_level.parquet")
 
     target_col = _env("TARGET_COL", "kospi_close")
     horizon = int(_env("HORIZON_DAYS", "10"))
@@ -325,16 +362,21 @@ def main() -> None:
     df = df.merge(f08, on="date", how="left")
     df["f08_flow20_z"] = _flow20_z(df["f08_foreigner_net_buy"])
 
-    # 6) Features (+ contrarian)
+    # 6) D (USDKRW 20D log return)
+    usd = _read_usdkrw_levels(usdkrw_path)
+    df = df.merge(usd, on="date", how="left")
+    df["usdkrw_ret20"] = np.log(pd.to_numeric(df["usdkrw"], errors="coerce")).diff(20)
+
+    # 7) Features (+ contrarian)
     feature_cols = [c for c in df.columns if c.endswith("_score")]
     if add_contrarian:
         df, added = _add_contrarian_features(df, contrarian_suffix)
         feature_cols = feature_cols + added
 
-    engineered = ["kospi_rv20", "kospi_mom125", "vkospi_chg20", "f08_flow20_z"]
+    engineered = ["kospi_rv20", "kospi_mom125", "vkospi_chg20", "f08_flow20_z", "usdkrw_ret20"]
     feature_cols = feature_cols + engineered
 
-    # 7) Label
+    # 8) Label
     df["ret10_log"] = _fwd_log_return(df[target_col].astype(float), horizon)
     df["y_up10"] = (df["ret10_log"] > 0).astype(int)
 
@@ -352,7 +394,7 @@ def main() -> None:
     y = df["y_up10"].astype(int)
     dates = df["date"]
 
-    # 8) XGBoost params
+    # 9) XGBoost params
     params = {
         "objective": "binary:logistic",
         "eval_metric": "logloss",
@@ -367,7 +409,7 @@ def main() -> None:
         "nthread": 0,
     }
 
-    # 9) Walk-forward OOS metrics
+    # 10) Walk-forward OOS metrics
     _, metrics = _walk_forward_oos_prob(
         X=X, y=y, dates=dates, model_params=params, cfg=WalkForwardConfig()
     )
@@ -384,7 +426,7 @@ def main() -> None:
     else:
         print("[ml] metrics skipped (not enough rows for walk-forward config)")
 
-    # 10) Train final model & predict prob
+    # 11) Train final model & predict prob
     dtr_full = xgb.DMatrix(X, label=y)
     booster = xgb.train(
         params=params,
