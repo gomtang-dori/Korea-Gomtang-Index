@@ -87,7 +87,7 @@ jobs:
           OUT_METRICS_CSV: data/analysis/ml_prob_up10_1Y_metrics.csv
           F08_FLOW_PATH: data/cache/f08_foreigner_flow.parquet
           VKOSPI_LEVELS_PATH: data/cache/vkospi_level.parquet
-          
+          USDKRW_PATH: data/usdkrw_level.parquet          
 
       - name: Merge prob_up_10d into index parquet/csv (1Y)
         shell: bash
