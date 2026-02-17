@@ -1,0 +1,33 @@
+{
+  "weights_mode": "CSV:data/analysis/final_weights_1Y_kospi.csv",
+  "feature_cols_used": [
+    "f01_score",
+    "f02_score",
+    "f03_score",
+    "f04_score",
+    "f05_score",
+    "f06_score",
+    "f07_score",
+    "f08_score",
+    "f09_score",
+    "f10_score",
+    "f09_c",
+    "f06_c",
+    "f05_c",
+    "f03_c",
+    "f10_c"
+  ],
+  "weights": {
+    "f09_c": 0.20692100331074614,
+    "f06_c": 0.17417237836262026,
+    "f04_score": 0.15000655414363206,
+    "f08_score": 0.12554944378064456,
+    "f05_c": 0.08825317533192303,
+    "f03_c": 0.08620199806300173,
+    "f07_score": 0.07036133548396033,
+    "f01_score": 0.06379800193699833,
+    "f02_score": 0.024444002075723406,
+    "f10_c": 0.010292107510750303
+  },
+  "note": "weights are static. per-date dynamic adjustment is applied only to f08 when f08_score>=90 (multiplier=0.5) then renormalized."
+}
