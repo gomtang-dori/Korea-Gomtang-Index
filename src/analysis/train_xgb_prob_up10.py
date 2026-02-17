@@ -10,7 +10,7 @@ A) KOSPI 20D realized volatility: kospi_rv20
 B) KOSPI 125MA momentum: kospi_mom125 = kospi_close / MA125 - 1
 C) VKOSPI 20D change: vkospi_chg20 = vkospi.diff(20)
 E) Foreigner flow 20D sum z-score: f08_flow20_z
-D) USDKRW 20D log return: usdkrw_ret20   (옵션1: 방향성만)
+D) USDKRW 20D log return: usdkrw_ret20   (옵션: 방향성만)
 
 입력:
 - 팩터 스코어: data/factors/f01.parquet ... f10.parquet (date, f01_score 등)
@@ -37,6 +37,7 @@ D) USDKRW 20D log return: usdkrw_ret20   (옵션1: 방향성만)
   TAG                  : "1Y" / "8Y"
   OUT_PRED_PARQUET
   OUT_METRICS_CSV
+  ADD_USDKRW_RET20     : "1"이면 D 포함, "0"이면 D 제외
 
 Walk-forward(운영 안정):
   min_train_rows=600, step=60, test_size=60
@@ -108,7 +109,9 @@ def _load_factor_scores(factors_dir: str, exclude_factors: List[str]) -> pd.Data
             if "score" in df.columns:
                 df = df.rename(columns={"score": score_col})
             else:
-                raise ValueError(f"{path} 에서 예상 컬럼({score_col})을 찾지 못했습니다. cols={list(df.columns)}")
+                raise ValueError(
+                    f"{path} 에서 예상 컬럼({score_col})을 찾지 못했습니다. cols={list(df.columns)}"
+                )
 
         frames.append(df[["date", score_col]].copy())
 
@@ -257,7 +260,9 @@ def _read_f08_flow_series(f08_path: str) -> pd.DataFrame:
     df = _ensure_date(df)
 
     if "f08_foreigner_net_buy" not in df.columns:
-        raise RuntimeError(f"F08 flow cache missing col f08_foreigner_net_buy. cols={list(df.columns)}")
+        raise RuntimeError(
+            f"F08 flow cache missing col f08_foreigner_net_buy. cols={list(df.columns)}"
+        )
 
     df["f08_foreigner_net_buy"] = pd.to_numeric(df["f08_foreigner_net_buy"], errors="coerce")
     df = df.dropna(subset=["f08_foreigner_net_buy"]).reset_index(drop=True)
@@ -278,7 +283,6 @@ def _read_usdkrw_levels(usdk_path: str) -> pd.DataFrame:
     """
     data/usdkrw_level.parquet을 읽어서 (date, usdkrw) 형태로 정규화.
     f10_fxvol.py가 같은 파일을 사용하므로 이 경로/컬럼 후보를 최대한 안전하게 처리.
-    [Source](https://raw.githubusercontent.com/gomtang-dori/Korea-Gomtang-Index/main/src/factors/f10_fxvol.py)
     """
     p = Path(usdk_path)
     if not p.exists():
@@ -310,14 +314,15 @@ def main() -> None:
     vkospi_levels_path = _env("VKOSPI_LEVELS_PATH", "data/cache/vkospi_level.parquet")
     f08_flow_path = _env("F08_FLOW_PATH", "data/cache/f08_foreigner_flow.parquet")
 
-    # D: USDKRW 20D return
-    usdkrw_path = _env("USDKRW_PATH", "data/usdkrw_level.parquet")
-
     target_col = _env("TARGET_COL", "kospi_close")
     horizon = int(_env("HORIZON_DAYS", "10"))
 
     add_contrarian = _env("ADD_CONTRARIAN", "1") == "1"
     contrarian_suffix = _env("CONTRARIAN_SUFFIX", "_c")
+
+    # ✅ D 토글 (최소 변경)
+    add_usdkrw_ret20 = _env("ADD_USDKRW_RET20", "0") == "1"
+    usdkrw_path = _env("USDKRW_PATH", "data/usdkrw_level.parquet")
 
     exclude = _parse_list(_env("EXCLUDE_FACTORS", ""))
     tag = _env("TAG", "").strip()
@@ -362,10 +367,15 @@ def main() -> None:
     df = df.merge(f08, on="date", how="left")
     df["f08_flow20_z"] = _flow20_z(df["f08_foreigner_net_buy"])
 
-    # 6) D (USDKRW 20D log return)
-    usd = _read_usdkrw_levels(usdkrw_path)
-    df = df.merge(usd, on="date", how="left")
-    df["usdkrw_ret20"] = np.log(pd.to_numeric(df["usdkrw"], errors="coerce")).diff(20)
+    # ✅ engineered 기본 (ABCE)
+    engineered = ["kospi_rv20", "kospi_mom125", "vkospi_chg20", "f08_flow20_z"]
+
+    # ✅ 6) D (USDKRW 20D log return) - flag=1일 때만 포함
+    if add_usdkrw_ret20:
+        usd = _read_usdkrw_levels(usdkrw_path)
+        df = df.merge(usd, on="date", how="left")
+        df["usdkrw_ret20"] = np.log(pd.to_numeric(df["usdkrw"], errors="coerce")).diff(20)
+        engineered.append("usdkrw_ret20")
 
     # 7) Features (+ contrarian)
     feature_cols = [c for c in df.columns if c.endswith("_score")]
@@ -373,19 +383,18 @@ def main() -> None:
         df, added = _add_contrarian_features(df, contrarian_suffix)
         feature_cols = feature_cols + added
 
-    engineered = ["kospi_rv20", "kospi_mom125", "vkospi_chg20", "f08_flow20_z", "usdkrw_ret20"]
     feature_cols = feature_cols + engineered
 
     # 8) Label
     df["ret10_log"] = _fwd_log_return(df[target_col].astype(float), horizon)
     df["y_up10"] = (df["ret10_log"] > 0).astype(int)
-
     df = df.dropna(subset=["ret10_log"]).reset_index(drop=True)
 
     before = len(df)
     df = df.dropna(subset=feature_cols).reset_index(drop=True)
     after = len(df)
 
+    print(f"[ml] ADD_USDKRW_RET20={int(add_usdkrw_ret20)}")
     print(f"[ml] rows before dropna(features)={before} after={after} dropped={before-after}")
     print(f"[ml] feature_cols={len(feature_cols)} (scores+contrarian+engineered)")
     print(f"[ml] engineered={engineered}")
@@ -420,6 +429,7 @@ def main() -> None:
         metrics["target_col"] = target_col
         metrics["n_rows_used"] = len(df)
         metrics["n_features"] = X.shape[1]
+        metrics["add_usdkrw_ret20"] = int(add_usdkrw_ret20)  # ✅ 비교 편의
         metrics.to_csv(out_metrics_csv, index=False, encoding="utf-8-sig")
         print(f"[ml] metrics OK -> {out_metrics_csv} folds={len(metrics)}")
         print(metrics.tail(3).to_string(index=False))
