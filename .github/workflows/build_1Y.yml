@@ -137,6 +137,18 @@ jobs:
           OUT_PREFIX: "predict_h5_10_20_1Y_kospi"
           OUT_DIR: "data/analysis"
           OUT_HTML: "docs/predict_h5_10_20_1Y_kospi.html"
+          
+      - name: Make final weights (1Y, KOSPI, group-sum + cap=0.25)
+        shell: bash
+        run: |
+          set -euo pipefail
+          python src/analysis/make_final_weights.py
+        env:
+          PYTHONPATH: src
+          POLICY: "1Y"
+          CAP: "0.25"
+          IN_WEIGHTS_CSV: "data/analysis/predict_h5_10_20_1Y_kospi_weights.csv"
+          OUT_CSV: "data/analysis/final_weights_1Y_kospi.csv"
 
           
 
