@@ -51,6 +51,10 @@ jobs:
       - name: Assemble
         run: |
           python src/assemble/assemble_index.py
+        env:
+          WEIGHTS_CSV_PATH: "data/analysis/final_weights_1Y_kospi.csv"
+          WEIGHTS_USED_OUT: "docs/weights_used_1Y.json"
+          CONTRARIAN_SUFFIX: "_c"
           
       - name: ML prob_up_10d (XGBoost, KOSPI, horizon=10)
         shell: bash
