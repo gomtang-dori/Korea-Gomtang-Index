@@ -171,10 +171,11 @@ jobs:
         run: |
           set -e
           export PYTHONPATH=src
+          python src/assemble/assemble_index.py          
           python src/report/render_report.py
           python src/factors/f05_credit_spread.py
           python src/factors/f07_safehaven.py
-          python src/assemble/assemble_index.py
+
 
       - name: Convert parquet to CSV (index_daily)
         run: |
