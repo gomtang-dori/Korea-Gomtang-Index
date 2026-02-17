@@ -26,7 +26,7 @@ jobs:
       INDEX_LEVELS_PATH: data/cache/index_levels.parquet
       FACTORS_DIR: data/factors
       EPS_FLAT: "0.002"
-      REPORT_TITLE: "한국곰탕지수(1Y) 일일 리포트"
+      REPORT_TITLE: "한국곰탕지수(8Y) 일일 리포트"
 
     steps:
       - name: Checkout
