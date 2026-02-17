@@ -90,9 +90,9 @@ jobs:
           TAG: "1Y"
           OUT_PRED_PARQUET: data/analysis/prob_up_10d_1Y.parquet
           OUT_METRICS_CSV: data/analysis/ml_prob_up10_1Y_metrics.csv
-          F08_FLOW_PATH: data/cache/f08_foreigner_flow.parquet
           VKOSPI_LEVELS_PATH: data/cache/vkospi_level.parquet
-          USDKRW_PATH: data/usdkrw_level.parquet        
+          F08_FLOW_PATH: data/cache/f08_foreigner_flow.parquet
+          USDKRW_PATH: data/usdkrw_level.parquet
           ADD_USDKRW_RET20: "0"
 
       - name: Merge prob_up_10d into index parquet/csv (1Y)
@@ -105,8 +105,36 @@ jobs:
           INDEX_PATH: data/index_daily_1Y.parquet
           CSV_PATH: data/index_daily_1Y.csv
           PROB_PATH: data/analysis/prob_up_10d_1Y.parquet
-          
 
+      - name: Sanity check prob_up_10d merged (1Y)
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import pandas as pd
+          df = pd.read_parquet("data/index_daily_1Y.parquet")
+          print("prob_up_10d in cols:", "prob_up_10d" in df.columns)
+          if "prob_up_10d" in df.columns:
+            s = df["prob_up_10d"]
+            print("non-null:", int(s.notna().sum()), "min:", float(s.min()), "max:", float(s.max()))
+            print("last_non_null_date:", df.loc[s.notna(),"date"].iloc[-1])
+          PY
+          
+      - name: Report (1Y)
+        shell: bash
+        run: |
+          set -euo pipefail
+          python src/report/render_report.py
+        env:
+          PYTHONPATH: src
+          INDEX_PATH: data/index_daily_1Y.parquet
+          REPORT_PATH: docs/Korea-Gomtang-Index_1Y.html
+          LOOKBACK_DAYS: "252"
+          INDEX_LEVELS_PATH: data/cache/index_levels.parquet
+          FACTORS_DIR: data/factors
+          EPS_FLAT: "0.002"
+          REPORT_TITLE: "한국곰탕지수(1Y) 일일 리포트"
+          
       - name: To CSV
         run: |
           python src/parquet_to_csv.py
