@@ -1,0 +1,930 @@
+
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <title>Gomtang Diagnostics</title>
+  <style>
+    body { font-family: -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Noto Sans KR",Arial,sans-serif; background:#0b1220; color:#e6edf3; margin:0; }
+    a { color:#9ecbff; text-decoration:none; }
+    .wrap { max-width:1200px; margin:0 auto; padding:22px; }
+    .h1 { font-size:22px; font-weight:800; margin:0 0 10px; }
+    .sub { color:#9fb0c0; margin:0 0 20px; }
+    .grid { display:grid; grid-template-columns: 1fr 1fr; gap:14px; }
+    .card { background:#0f1a2c; border:1px solid #22314a; border-radius:14px; padding:14px; }
+    .card h2 { font-size:15px; margin:0 0 10px; }
+    .kpi { display:flex; gap:12px; flex-wrap:wrap; }
+    .kpi .box { background:#0b1425; border:1px solid #22314a; border-radius:12px; padding:10px 12px; min-width:180px; }
+    .kpi .label { color:#9fb0c0; font-size:12px; }
+    .kpi .value { font-size:18px; font-weight:800; margin-top:4px; }
+    table { width:100%; border-collapse:collapse; }
+    th,td { border-bottom:1px solid #22314a; padding:8px 8px; font-size:13px; text-align:left; }
+    th { color:#bcd0e5; font-weight:700; }
+    .muted { color:#9fb0c0; font-size:12px; line-height:1.5; }
+    .mono { font-family: ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,"Liberation Mono","Courier New",monospace; }
+    .full { grid-column: 1 / -1; }
+  </style>
+</head>
+<body>
+<div class="wrap">
+  <div class="h1">Gomtang Diagnostics (최근 180일)</div>
+  <div class="sub">
+    대상: <b>1Y</b> /
+    Index: <span class="mono">data/index_daily_1Y.parquet</span> /
+    ML metrics: <span class="mono">data/analysis/ml_prob_up10_1Y_metrics.csv</span>
+  </div>
+
+  <div class="grid">
+
+    <div class="card full">
+      <h2>1) 지수 + ML 확률(prob_up_10d) 추이</h2>
+      <div>                        <script type="text/javascript">window.PlotlyConfig = {MathJaxConfig: 'local'};</script>
+        <script charset="utf-8" src="https://cdn.plot.ly/plotly-3.3.1.min.js" integrity="sha256-4rD3fugVb/nVJYUv5Ky3v+fYXoouHaBSP20WIJuEiWg=" crossorigin="anonymous"></script>                <div id="cef76b83-b232-4b70-81a4-b95c69bf13fd" class="plotly-graph-div" style="height:520px; width:100%;"></div>            <script type="text/javascript">                window.PLOTLYENV=window.PLOTLYENV || {};                                if (document.getElementById("cef76b83-b232-4b70-81a4-b95c69bf13fd")) {                    Plotly.newPlot(                        "cef76b83-b232-4b70-81a4-b95c69bf13fd",                        [{"mode":"lines","name":"index_score_total","x":["2025-08-18T00:00:00","2025-08-19T00:00:00","2025-08-20T00:00:00","2025-08-21T00:00:00","2025-08-22T00:00:00","2025-08-25T00:00:00","2025-08-26T00:00:00","2025-08-27T00:00:00","2025-08-28T00:00:00","2025-08-29T00:00:00","2025-09-01T00:00:00","2025-09-02T00:00:00","2025-09-03T00:00:00","2025-09-04T00:00:00","2025-09-05T00:00:00","2025-09-08T00:00:00","2025-09-09T00:00:00","2025-09-10T00:00:00","2025-09-11T00:00:00","2025-09-12T00:00:00","2025-09-15T00:00:00","2025-09-16T00:00:00","2025-09-17T00:00:00","2025-09-18T00:00:00","2025-09-19T00:00:00","2025-09-22T00:00:00","2025-09-23T00:00:00","2025-09-24T00:00:00","2025-09-25T00:00:00","2025-09-26T00:00:00","2025-09-29T00:00:00","2025-09-30T00:00:00","2025-10-01T00:00:00","2025-10-02T00:00:00","2025-10-10T00:00:00","2025-10-13T00:00:00","2025-10-14T00:00:00","2025-10-15T00:00:00","2025-10-16T00:00:00","2025-10-17T00:00:00","2025-10-20T00:00:00","2025-10-21T00:00:00","2025-10-22T00:00:00","2025-10-23T00:00:00","2025-10-24T00:00:00","2025-10-27T00:00:00","2025-10-28T00:00:00","2025-10-29T00:00:00","2025-10-30T00:00:00","2025-10-31T00:00:00","2025-11-03T00:00:00","2025-11-04T00:00:00","2025-11-05T00:00:00","2025-11-06T00:00:00","2025-11-07T00:00:00","2025-11-10T00:00:00","2025-11-11T00:00:00","2025-11-12T00:00:00","2025-11-13T00:00:00","2025-11-14T00:00:00","2025-11-17T00:00:00","2025-11-18T00:00:00","2025-11-19T00:00:00","2025-11-20T00:00:00","2025-11-21T00:00:00","2025-11-24T00:00:00","2025-11-25T00:00:00","2025-11-26T00:00:00","2025-11-27T00:00:00","2025-11-28T00:00:00","2025-12-01T00:00:00","2025-12-02T00:00:00","2025-12-03T00:00:00","2025-12-04T00:00:00","2025-12-05T00:00:00","2025-12-08T00:00:00","2025-12-09T00:00:00","2025-12-10T00:00:00","2025-12-11T00:00:00","2025-12-12T00:00:00","2025-12-15T00:00:00","2025-12-16T00:00:00","2025-12-17T00:00:00","2025-12-18T00:00:00","2025-12-19T00:00:00","2025-12-22T00:00:00","2025-12-23T00:00:00","2025-12-24T00:00:00","2025-12-26T00:00:00","2025-12-29T00:00:00","2025-12-30T00:00:00","2025-12-31T00:00:00","2026-01-02T00:00:00","2026-01-05T00:00:00","2026-01-06T00:00:00","2026-01-07T00:00:00","2026-01-08T00:00:00","2026-01-09T00:00:00","2026-01-12T00:00:00","2026-01-13T00:00:00","2026-01-14T00:00:00","2026-01-15T00:00:00","2026-01-16T00:00:00","2026-01-19T00:00:00","2026-01-20T00:00:00","2026-01-21T00:00:00","2026-01-22T00:00:00","2026-01-23T00:00:00","2026-01-26T00:00:00","2026-01-27T00:00:00","2026-01-28T00:00:00","2026-01-29T00:00:00","2026-01-30T00:00:00","2026-02-02T00:00:00","2026-02-03T00:00:00","2026-02-04T00:00:00","2026-02-05T00:00:00","2026-02-06T00:00:00","2026-02-09T00:00:00","2026-02-10T00:00:00","2026-02-11T00:00:00","2026-02-12T00:00:00","2026-02-13T00:00:00"],"y":{"dtype":"f8","bdata":"1pmRG5ODSkAH6Bf3fQtKQJTV6Bg7eklAlayY7AEcSUAg78xp0vBIQKKlGJxpB0lA6\u002fBwR3vxSEAYMhjV9uRIQFv2ZPuS8EhArLE\u002fq9PvSECmRWyyot9IQHgioyUeCklAkLBKaaJTSUChEQ7v+btJQCHjC02+FUpAf52CqGF0SkCVDqsZHOZKQFr4gwnIZEtAAcPE4KvSS0DwX1ORjTxMQG6p\u002fkDKikxARnSshZjhTEDg2O522Q5NQERWqcmeXk1AMC1GLbeNTUB0Llo3hs5NQDdTUcFA7U1AWv8L\u002fxLJTUDYd4bQH5dNQApUTReNG01ApqjFNSvfTEDoZ6+ICpdMQOX5adSybUxAj+xI9+V4TEAMLeZUv2pMQJzm7BO4+0tAXumLialuS0BV8iMTaQRLQBg2HNeAqUpAWjohSe47SkC1WUqQU85JQI+rTN4UVElAWf8uwjbWSEAjrvvckENIQHfxohZl5UdAVMcofoKwR0CczrfWZT1HQAZQ9Cfl1UZAjBShN0ZlRkAPSGDYJzVGQJAvgKaJA0ZAnPtoMQK4RUC6eZ6nCDJFQNgzl4gUukRAvjwe990wREAGsmvAoQBEQJafYhY59ENAVgRoJXEQREAoW2RtoVBEQJANdrGPV0RAgblwOUNwREDU0DeEi21EQM4JHOnPVERAehVXmHaURECWhOtOTI5EQJZU\u002fytobURAOHaRFgBsREBEkWTNirZEQPRjzv\u002fdCUVArirNHN5ERUCujtLCDXxFQFVv\u002fzVl9UVAMotDlCqWRkCGFCE6XgJHQOVulpwEoEdAWAdAA305SEC3T1aegbZIQL\u002fYb3LwKUlAyQSE3QeVSUCY+VqtkgxKQN3QOIx+PEpAibubMXQ6SkAecX07V0FKQDXuaBqTH0pArqc4LesbSkBX48XIX15KQE2F0WlxsEpAQbaDEVT4SkBdHF9ioj5LQFhYJgtehktABk2dseiPS0A2NQw8CH1LQPhFaAf4hktARtgulyOiS0CUY6WHbqBLQIwKNcYKnUtAH9rn79dyS0AAjo+mGEJLQIiWq5UoJktAwOjk\u002flEZS0DKmBwtbP5KQGCVAsGN80pArPy3WvvsSkBrDY6offBKQBNvklJl3EpARf3cl0CwSkCQCgA1+IJKQHxgEQxcakpASHxycoRaSkCp8\u002fyjoWJKQDEgq6osbUpAzEwK4JFISkAQjZtrR+NJQMLSpnLuLklAcjseqb3BSEAyUgVHmG9IQORdPCDn6kdA0SxCtfpcR0B7ZKJDljlHQPQc0oVQQUdAZEU469ltR0DeUOPUhcNHQF7iRdc+5UdA"},"yaxis":"y","type":"scatter"},{"mode":"lines","name":"prob_up_10d","x":["2025-08-18T00:00:00","2025-08-19T00:00:00","2025-08-20T00:00:00","2025-08-21T00:00:00","2025-08-22T00:00:00","2025-08-25T00:00:00","2025-08-26T00:00:00","2025-08-27T00:00:00","2025-08-28T00:00:00","2025-08-29T00:00:00","2025-09-01T00:00:00","2025-09-02T00:00:00","2025-09-03T00:00:00","2025-09-04T00:00:00","2025-09-05T00:00:00","2025-09-08T00:00:00","2025-09-09T00:00:00","2025-09-10T00:00:00","2025-09-11T00:00:00","2025-09-12T00:00:00","2025-09-15T00:00:00","2025-09-16T00:00:00","2025-09-17T00:00:00","2025-09-18T00:00:00","2025-09-19T00:00:00","2025-09-22T00:00:00","2025-09-23T00:00:00","2025-09-24T00:00:00","2025-09-25T00:00:00","2025-09-26T00:00:00","2025-09-29T00:00:00","2025-09-30T00:00:00","2025-10-01T00:00:00","2025-10-02T00:00:00","2025-10-10T00:00:00","2025-10-13T00:00:00","2025-10-14T00:00:00","2025-10-15T00:00:00","2025-10-16T00:00:00","2025-10-17T00:00:00","2025-10-20T00:00:00","2025-10-21T00:00:00","2025-10-22T00:00:00","2025-10-23T00:00:00","2025-10-24T00:00:00","2025-10-27T00:00:00","2025-10-28T00:00:00","2025-10-29T00:00:00","2025-10-30T00:00:00","2025-10-31T00:00:00","2025-11-03T00:00:00","2025-11-04T00:00:00","2025-11-05T00:00:00","2025-11-06T00:00:00","2025-11-07T00:00:00","2025-11-10T00:00:00","2025-11-11T00:00:00","2025-11-12T00:00:00","2025-11-13T00:00:00","2025-11-14T00:00:00","2025-11-17T00:00:00","2025-11-18T00:00:00","2025-11-19T00:00:00","2025-11-20T00:00:00","2025-11-21T00:00:00","2025-11-24T00:00:00","2025-11-25T00:00:00","2025-11-26T00:00:00","2025-11-27T00:00:00","2025-11-28T00:00:00","2025-12-01T00:00:00","2025-12-02T00:00:00","2025-12-03T00:00:00","2025-12-04T00:00:00","2025-12-05T00:00:00","2025-12-08T00:00:00","2025-12-09T00:00:00","2025-12-10T00:00:00","2025-12-11T00:00:00","2025-12-12T00:00:00","2025-12-15T00:00:00","2025-12-16T00:00:00","2025-12-17T00:00:00","2025-12-18T00:00:00","2025-12-19T00:00:00","2025-12-22T00:00:00","2025-12-23T00:00:00","2025-12-24T00:00:00","2025-12-26T00:00:00","2025-12-29T00:00:00","2025-12-30T00:00:00","2025-12-31T00:00:00","2026-01-02T00:00:00","2026-01-05T00:00:00","2026-01-06T00:00:00","2026-01-07T00:00:00","2026-01-08T00:00:00","2026-01-09T00:00:00","2026-01-12T00:00:00","2026-01-13T00:00:00","2026-01-14T00:00:00","2026-01-15T00:00:00","2026-01-16T00:00:00","2026-01-19T00:00:00","2026-01-20T00:00:00","2026-01-21T00:00:00","2026-01-22T00:00:00","2026-01-23T00:00:00","2026-01-26T00:00:00","2026-01-27T00:00:00","2026-01-28T00:00:00","2026-01-29T00:00:00","2026-01-30T00:00:00","2026-02-02T00:00:00","2026-02-03T00:00:00","2026-02-04T00:00:00","2026-02-05T00:00:00","2026-02-06T00:00:00","2026-02-09T00:00:00","2026-02-10T00:00:00","2026-02-11T00:00:00","2026-02-12T00:00:00","2026-02-13T00:00:00"],"y":{"dtype":"f4","bdata":"z\u002ffnPgWrVD85gFE\u002fjJRKPwHDQT9QfFw\u002fwaZUP9h2WD\u002fcNzg\u002foc1FPwwiSD+xd3Q\u002fRsFsP1i5Zj\u002fVAW0\u002fDz93P+D8cT\u002fUeUw\u002flXRqP6mJyj4NfTs\u002fDzlsPsqCPD8SjGA\u002fyOUkP1FLND9D1E8\u002fjso8P74hYD+j4m0\u002fB99aP165cz+BD2Q\u002fBj9fPyJ5ZT+ZqXE\u002fA05gP8EcTj+L4Hk\u002fngNtP+zicj9zTnA\u002fibFPPzy0Tj9t32U\u002fAyhlP6whSz8M30k\u002fuCBlPw73Xz7Kgq8+cFu1Pnzw6T6Zxds+MGHgPV7erT6xU5I+us+MPuWTGT7OeGE+cxf+PZf1RT+UOVI\u002fLTERP8v6cj8YcUg\u002f2BtyPxlXXz\u002fSe0w\u002fK2FLP6e6bD9f50o\u002fKek7P7IxzD55VOs+3xFbPvrrMD4YBQQ\u002fWPVzP9sicD\u002f2a2k\u002fIZ1rP1dOXz92UGk\u002fIw1mP9wqej8xF2Y\u002f0Z5rPxhxZj\u002fJyHw\u002fmv19PwAAwH+M4ns\u002fF+hjP95aVT8NlHM\u002fmc51P8KbfD+5inY\u002f5H14P19QfD\u002fWf3k\u002fVyR3P91gcD\u002f0QXk\u002fy1BvP9f9bz\u002fPrHk\u002f4WN2P50GXz9eb1A\u002fujtmP5nufD8AAMB\u002fAADAfwAAwH8AAMB\u002fAADAfwAAwH8AAMB\u002fAADAfwAAwH8AAMB\u002f"},"yaxis":"y2","type":"scatter"}],                        {"template":{"data":{"histogram2dcontour":[{"type":"histogram2dcontour","colorbar":{"outlinewidth":0,"ticks":""},"colorscale":[[0.0,"#0d0887"],[0.1111111111111111,"#46039f"],[0.2222222222222222,"#7201a8"],[0.3333333333333333,"#9c179e"],[0.4444444444444444,"#bd3786"],[0.5555555555555556,"#d8576b"],[0.6666666666666666,"#ed7953"],[0.7777777777777778,"#fb9f3a"],[0.8888888888888888,"#fdca26"],[1.0,"#f0f921"]]}],"choropleth":[{"type":"choropleth","colorbar":{"outlinewidth":0,"ticks":""}}],"histogram2d":[{"type":"histogram2d","colorbar":{"outlinewidth":0,"ticks":""},"colorscale":[[0.0,"#0d0887"],[0.1111111111111111,"#46039f"],[0.2222222222222222,"#7201a8"],[0.3333333333333333,"#9c179e"],[0.4444444444444444,"#bd3786"],[0.5555555555555556,"#d8576b"],[0.6666666666666666,"#ed7953"],[0.7777777777777778,"#fb9f3a"],[0.8888888888888888,"#fdca26"],[1.0,"#f0f921"]]}],"heatmap":[{"type":"heatmap","colorbar":{"outlinewidth":0,"ticks":""},"colorscale":[[0.0,"#0d0887"],[0.1111111111111111,"#46039f"],[0.2222222222222222,"#7201a8"],[0.3333333333333333,"#9c179e"],[0.4444444444444444,"#bd3786"],[0.5555555555555556,"#d8576b"],[0.6666666666666666,"#ed7953"],[0.7777777777777778,"#fb9f3a"],[0.8888888888888888,"#fdca26"],[1.0,"#f0f921"]]}],"contourcarpet":[{"type":"contourcarpet","colorbar":{"outlinewidth":0,"ticks":""}}],"contour":[{"type":"contour","colorbar":{"outlinewidth":0,"ticks":""},"colorscale":[[0.0,"#0d0887"],[0.1111111111111111,"#46039f"],[0.2222222222222222,"#7201a8"],[0.3333333333333333,"#9c179e"],[0.4444444444444444,"#bd3786"],[0.5555555555555556,"#d8576b"],[0.6666666666666666,"#ed7953"],[0.7777777777777778,"#fb9f3a"],[0.8888888888888888,"#fdca26"],[1.0,"#f0f921"]]}],"surface":[{"type":"surface","colorbar":{"outlinewidth":0,"ticks":""},"colorscale":[[0.0,"#0d0887"],[0.1111111111111111,"#46039f"],[0.2222222222222222,"#7201a8"],[0.3333333333333333,"#9c179e"],[0.4444444444444444,"#bd3786"],[0.5555555555555556,"#d8576b"],[0.6666666666666666,"#ed7953"],[0.7777777777777778,"#fb9f3a"],[0.8888888888888888,"#fdca26"],[1.0,"#f0f921"]]}],"mesh3d":[{"type":"mesh3d","colorbar":{"outlinewidth":0,"ticks":""}}],"scatter":[{"fillpattern":{"fillmode":"overlay","size":10,"solidity":0.2},"type":"scatter"}],"parcoords":[{"type":"parcoords","line":{"colorbar":{"outlinewidth":0,"ticks":""}}}],"scatterpolargl":[{"type":"scatterpolargl","marker":{"colorbar":{"outlinewidth":0,"ticks":""}}}],"bar":[{"error_x":{"color":"#2a3f5f"},"error_y":{"color":"#2a3f5f"},"marker":{"line":{"color":"#E5ECF6","width":0.5},"pattern":{"fillmode":"overlay","size":10,"solidity":0.2}},"type":"bar"}],"scattergeo":[{"type":"scattergeo","marker":{"colorbar":{"outlinewidth":0,"ticks":""}}}],"scatterpolar":[{"type":"scatterpolar","marker":{"colorbar":{"outlinewidth":0,"ticks":""}}}],"histogram":[{"marker":{"pattern":{"fillmode":"overlay","size":10,"solidity":0.2}},"type":"histogram"}],"scattergl":[{"type":"scattergl","marker":{"colorbar":{"outlinewidth":0,"ticks":""}}}],"scatter3d":[{"type":"scatter3d","line":{"colorbar":{"outlinewidth":0,"ticks":""}},"marker":{"colorbar":{"outlinewidth":0,"ticks":""}}}],"scattermap":[{"type":"scattermap","marker":{"colorbar":{"outlinewidth":0,"ticks":""}}}],"scattermapbox":[{"type":"scattermapbox","marker":{"colorbar":{"outlinewidth":0,"ticks":""}}}],"scatterternary":[{"type":"scatterternary","marker":{"colorbar":{"outlinewidth":0,"ticks":""}}}],"scattercarpet":[{"type":"scattercarpet","marker":{"colorbar":{"outlinewidth":0,"ticks":""}}}],"carpet":[{"aaxis":{"endlinecolor":"#2a3f5f","gridcolor":"white","linecolor":"white","minorgridcolor":"white","startlinecolor":"#2a3f5f"},"baxis":{"endlinecolor":"#2a3f5f","gridcolor":"white","linecolor":"white","minorgridcolor":"white","startlinecolor":"#2a3f5f"},"type":"carpet"}],"table":[{"cells":{"fill":{"color":"#EBF0F8"},"line":{"color":"white"}},"header":{"fill":{"color":"#C8D4E3"},"line":{"color":"white"}},"type":"table"}],"barpolar":[{"marker":{"line":{"color":"#E5ECF6","width":0.5},"pattern":{"fillmode":"overlay","size":10,"solidity":0.2}},"type":"barpolar"}],"pie":[{"automargin":true,"type":"pie"}]},"layout":{"autotypenumbers":"strict","colorway":["#636efa","#EF553B","#00cc96","#ab63fa","#FFA15A","#19d3f3","#FF6692","#B6E880","#FF97FF","#FECB52"],"font":{"color":"#2a3f5f"},"hovermode":"closest","hoverlabel":{"align":"left"},"paper_bgcolor":"white","plot_bgcolor":"#E5ECF6","polar":{"bgcolor":"#E5ECF6","angularaxis":{"gridcolor":"white","linecolor":"white","ticks":""},"radialaxis":{"gridcolor":"white","linecolor":"white","ticks":""}},"ternary":{"bgcolor":"#E5ECF6","aaxis":{"gridcolor":"white","linecolor":"white","ticks":""},"baxis":{"gridcolor":"white","linecolor":"white","ticks":""},"caxis":{"gridcolor":"white","linecolor":"white","ticks":""}},"coloraxis":{"colorbar":{"outlinewidth":0,"ticks":""}},"colorscale":{"sequential":[[0.0,"#0d0887"],[0.1111111111111111,"#46039f"],[0.2222222222222222,"#7201a8"],[0.3333333333333333,"#9c179e"],[0.4444444444444444,"#bd3786"],[0.5555555555555556,"#d8576b"],[0.6666666666666666,"#ed7953"],[0.7777777777777778,"#fb9f3a"],[0.8888888888888888,"#fdca26"],[1.0,"#f0f921"]],"sequentialminus":[[0.0,"#0d0887"],[0.1111111111111111,"#46039f"],[0.2222222222222222,"#7201a8"],[0.3333333333333333,"#9c179e"],[0.4444444444444444,"#bd3786"],[0.5555555555555556,"#d8576b"],[0.6666666666666666,"#ed7953"],[0.7777777777777778,"#fb9f3a"],[0.8888888888888888,"#fdca26"],[1.0,"#f0f921"]],"diverging":[[0,"#8e0152"],[0.1,"#c51b7d"],[0.2,"#de77ae"],[0.3,"#f1b6da"],[0.4,"#fde0ef"],[0.5,"#f7f7f7"],[0.6,"#e6f5d0"],[0.7,"#b8e186"],[0.8,"#7fbc41"],[0.9,"#4d9221"],[1,"#276419"]]},"xaxis":{"gridcolor":"white","linecolor":"white","ticks":"","title":{"standoff":15},"zerolinecolor":"white","automargin":true,"zerolinewidth":2},"yaxis":{"gridcolor":"white","linecolor":"white","ticks":"","title":{"standoff":15},"zerolinecolor":"white","automargin":true,"zerolinewidth":2},"scene":{"xaxis":{"backgroundcolor":"#E5ECF6","gridcolor":"white","linecolor":"white","showbackground":true,"ticks":"","zerolinecolor":"white","gridwidth":2},"yaxis":{"backgroundcolor":"#E5ECF6","gridcolor":"white","linecolor":"white","showbackground":true,"ticks":"","zerolinecolor":"white","gridwidth":2},"zaxis":{"backgroundcolor":"#E5ECF6","gridcolor":"white","linecolor":"white","showbackground":true,"ticks":"","zerolinecolor":"white","gridwidth":2}},"shapedefaults":{"line":{"color":"#2a3f5f"}},"annotationdefaults":{"arrowcolor":"#2a3f5f","arrowhead":0,"arrowwidth":1},"geo":{"bgcolor":"white","landcolor":"#E5ECF6","subunitcolor":"white","showland":true,"showlakes":true,"lakecolor":"white"},"title":{"x":0.05},"mapbox":{"style":"light"}}},"margin":{"l":20,"r":20,"t":30,"b":20},"legend":{"orientation":"h"},"yaxis":{"title":{"text":"Index (0~100)"},"range":[0,100]},"yaxis2":{"title":{"text":"prob_up_10d (0~1)"},"overlaying":"y","side":"right","range":[0,1]},"height":520},                        {"responsive": true}                    )                };            </script>        </div>
+      <div class="muted">
+        prob_up_10d는 <span class="mono">train_xgb_prob_up10.py</span>에서 생성 후
+        <span class="mono">merge_prob_into_index.py</span>로 index parquet에 merge됩니다. [Source](https://raw.githubusercontent.com/gomtang-dori/Korea-Gomtang-Index/main/src/analysis/train_xgb_prob_up10.py)
+        [Source](https://raw.githubusercontent.com/gomtang-dori/Korea-Gomtang-Index/main/src/analysis/merge_prob_into_index.py)
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>2) ML 출력 검증(KPI)</h2>
+      <div class="kpi">
+        <div class="box">
+          <div class="label">prob_up_10d NaN 비율(최근 180일)</div>
+          <div class="value">8.9%</div>
+        </div>
+        <div class="box">
+          <div class="label">prob_up_10d 최소/최대</div>
+          <div class="value">0.1096 ~ 0.9922</div>
+        </div>
+        <div class="box">
+          <div class="label">index_score_total 최소/최대</div>
+          <div class="value">39.91 ~ 59.85</div>
+        </div>
+      </div>
+      <div class="muted" style="margin-top:10px;">
+        기대값: prob_up_10d는 0~1 범위, NaN 비율이 과도하게 높으면 date merge 불일치/파일 누락 가능성이 큽니다.
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>3) Walk-forward 성능 요약 (AUC/Brier)</h2>
+      <div class="kpi">
+        <div class="box">
+          <div class="label">AUC 평균/중앙값</div>
+          <div class="value">0.7163 / 0.7576</div>
+        </div>
+        <div class="box">
+          <div class="label">Brier 평균/중앙값</div>
+          <div class="value">0.2723 / 0.2694</div>
+        </div>
+      </div>
+      <div class="muted" style="margin-top:10px;">
+        fold별 AUC가 비어있는 행은 테스트 구간에서 클래스가 한쪽으로만 존재하는 등으로 AUC 계산 불가인 경우가 흔합니다.
+        (현재 AUC 계산 함수는 단일 클래스면 NaN 반환) [Source](https://raw.githubusercontent.com/gomtang-dori/Korea-Gomtang-Index/main/src/analysis/train_xgb_prob_up10.py)
+      </div>
+    </div>
+
+    <div class="card full">
+      <h2>4) Walk-forward fold 테이블(최근 일부)</h2>
+      <table border="1" class="dataframe">
+  <thead>
+    <tr style="text-align: right;">
+      <th>fold_train_end</th>
+      <th>test_start_date</th>
+      <th>test_end_date</th>
+      <th>auc</th>
+      <th>brier</th>
+      <th>best_iteration</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td>600</td>
+      <td>2024-07-22</td>
+      <td>2024-08-19</td>
+      <td>0.696970</td>
+      <td>0.298029</td>
+      <td>0</td>
+    </tr>
+    <tr>
+      <td>620</td>
+      <td>2024-08-20</td>
+      <td>2024-09-19</td>
+      <td>0.901099</td>
+      <td>0.257813</td>
+      <td>44</td>
+    </tr>
+    <tr>
+      <td>640</td>
+      <td>2024-09-20</td>
+      <td>2024-10-22</td>
+      <td>0.791209</td>
+      <td>0.187022</td>
+      <td>71</td>
+    </tr>
+    <tr>
+      <td>660</td>
+      <td>2024-10-23</td>
+      <td>2024-11-19</td>
+      <td>0.607143</td>
+      <td>0.213097</td>
+      <td>235</td>
+    </tr>
+    <tr>
+      <td>680</td>
+      <td>2024-11-20</td>
+      <td>2024-12-17</td>
+      <td>0.893333</td>
+      <td>0.359038</td>
+      <td>0</td>
+    </tr>
+    <tr>
+      <td>700</td>
+      <td>2024-12-18</td>
+      <td>2025-01-17</td>
+      <td>0.687500</td>
+      <td>0.352002</td>
+      <td>4</td>
+    </tr>
+    <tr>
+      <td>720</td>
+      <td>2025-01-20</td>
+      <td>2025-02-20</td>
+      <td>0.690476</td>
+      <td>0.264305</td>
+      <td>13</td>
+    </tr>
+    <tr>
+      <td>740</td>
+      <td>2025-02-21</td>
+      <td>2025-03-21</td>
+      <td>0.757576</td>
+      <td>0.205891</td>
+      <td>157</td>
+    </tr>
+    <tr>
+      <td>760</td>
+      <td>2025-03-24</td>
+      <td>2025-04-18</td>
+      <td>0.818182</td>
+      <td>0.214853</td>
+      <td>64</td>
+    </tr>
+    <tr>
+      <td>780</td>
+      <td>2025-04-21</td>
+      <td>2025-05-21</td>
+      <td>NaN</td>
+      <td>0.351642</td>
+      <td>1</td>
+    </tr>
+    <tr>
+      <td>800</td>
+      <td>2025-05-22</td>
+      <td>2025-06-20</td>
+      <td>NaN</td>
+      <td>0.438907</td>
+      <td>0</td>
+    </tr>
+    <tr>
+      <td>820</td>
+      <td>2025-06-23</td>
+      <td>2025-07-18</td>
+      <td>0.947368</td>
+      <td>0.250984</td>
+      <td>42</td>
+    </tr>
+    <tr>
+      <td>840</td>
+      <td>2025-07-21</td>
+      <td>2025-08-18</td>
+      <td>0.369048</td>
+      <td>0.320667</td>
+      <td>0</td>
+    </tr>
+    <tr>
+      <td>860</td>
+      <td>2025-08-19</td>
+      <td>2025-09-15</td>
+      <td>0.157895</td>
+      <td>0.306965</td>
+      <td>0</td>
+    </tr>
+    <tr>
+      <td>880</td>
+      <td>2025-09-16</td>
+      <td>2025-10-20</td>
+      <td>0.947368</td>
+      <td>0.141713</td>
+      <td>172</td>
+    </tr>
+    <tr>
+      <td>900</td>
+      <td>2025-10-21</td>
+      <td>2025-11-17</td>
+      <td>0.718750</td>
+      <td>0.274501</td>
+      <td>0</td>
+    </tr>
+    <tr>
+      <td>920</td>
+      <td>2025-11-18</td>
+      <td>2025-12-15</td>
+      <td>0.760000</td>
+      <td>0.335463</td>
+      <td>0</td>
+    </tr>
+    <tr>
+      <td>940</td>
+      <td>2025-12-16</td>
+      <td>2026-01-15</td>
+      <td>NaN</td>
+      <td>0.127989</td>
+      <td>200</td>
+    </tr>
+  </tbody>
+</table>
+    </div>
+
+    <div class="card full">
+      <h2>5) 가중치 크로스체크</h2>
+      <div class="muted">
+        <b>중요:</b> 현재 <span class="mono">assemble_index.py</span>는 코드 상단의 고정 딕셔너리 <span class="mono">W</span>만 사용합니다.
+        <span class="mono">make_final_weights.py</span>가 생성하는 final weights CSV를 읽는 로직은 없습니다. [Source](https://raw.githubusercontent.com/gomtang-dori/Korea-Gomtang-Index/main/src/assemble/assemble_index.py)
+        [Source](https://raw.githubusercontent.com/gomtang-dori/Korea-Gomtang-Index/main/src/analysis/make_final_weights.py)
+      </div>
+
+      <h3 style="margin:12px 0 6px; font-size:14px;">5-1) assemble_index.py의 고정 W (현재 실제 사용)</h3>
+      <table border="1" class="dataframe">
+  <thead>
+    <tr style="text-align: right;">
+      <th>score_col</th>
+      <th>weight</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td>f01_score</td>
+      <td>0.100</td>
+    </tr>
+    <tr>
+      <td>f02_score</td>
+      <td>0.075</td>
+    </tr>
+    <tr>
+      <td>f03_score</td>
+      <td>0.125</td>
+    </tr>
+    <tr>
+      <td>f04_score</td>
+      <td>0.100</td>
+    </tr>
+    <tr>
+      <td>f05_score</td>
+      <td>0.050</td>
+    </tr>
+    <tr>
+      <td>f06_score</td>
+      <td>0.125</td>
+    </tr>
+    <tr>
+      <td>f07_score</td>
+      <td>0.100</td>
+    </tr>
+    <tr>
+      <td>f08_score</td>
+      <td>0.100</td>
+    </tr>
+    <tr>
+      <td>f09_score</td>
+      <td>0.125</td>
+    </tr>
+    <tr>
+      <td>f10_score</td>
+      <td>0.100</td>
+    </tr>
+  </tbody>
+</table>
+
+      <h3 style="margin:12px 0 6px; font-size:14px;">5-2) final_weights CSV (있으면 표시 / assemble 반영 여부는 별도)</h3>
+      <table border="1" class="dataframe">
+  <thead>
+    <tr style="text-align: right;">
+      <th>factor</th>
+      <th>base_factor</th>
+      <th>group</th>
+      <th>w_final</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td>f09_c</td>
+      <td>f09</td>
+      <td>G3</td>
+      <td>0.206921</td>
+    </tr>
+    <tr>
+      <td>f06_c</td>
+      <td>f06</td>
+      <td>G3</td>
+      <td>0.174172</td>
+    </tr>
+    <tr>
+      <td>f04</td>
+      <td>f04</td>
+      <td>G1</td>
+      <td>0.150007</td>
+    </tr>
+    <tr>
+      <td>f08</td>
+      <td>f08</td>
+      <td>G1</td>
+      <td>0.125549</td>
+    </tr>
+    <tr>
+      <td>f05_c</td>
+      <td>f05</td>
+      <td>G3</td>
+      <td>0.088253</td>
+    </tr>
+    <tr>
+      <td>f03_c</td>
+      <td>f03</td>
+      <td>G2</td>
+      <td>0.086202</td>
+    </tr>
+    <tr>
+      <td>f07</td>
+      <td>f07</td>
+      <td>G3</td>
+      <td>0.070361</td>
+    </tr>
+    <tr>
+      <td>f01</td>
+      <td>f01</td>
+      <td>G2</td>
+      <td>0.063798</td>
+    </tr>
+    <tr>
+      <td>f02</td>
+      <td>f02</td>
+      <td>G1</td>
+      <td>0.024444</td>
+    </tr>
+    <tr>
+      <td>f10_c</td>
+      <td>f10</td>
+      <td>G3</td>
+      <td>0.010292</td>
+    </tr>
+  </tbody>
+</table>
+      <div class="muted">
+        final_weights CSV를 실제 지수에 반영하려면, assemble에 <span class="mono">WEIGHTS_CSV_PATH</span> 같은 로딩 로직을 추가해야 합니다.
+      </div>
+    </div>
+
+    <div class="card full">
+      <h2>6) 최근 180일 샘플(지수/확률 컬럼)</h2>
+      <table border="1" class="dataframe">
+  <thead>
+    <tr style="text-align: right;">
+      <th>date</th>
+      <th>index_score_total</th>
+      <th>bucket_5pt</th>
+      <th>prob_up_10d</th>
+      <th>w_f08_applied</th>
+      <th>f01_score</th>
+      <th>f02_score</th>
+      <th>f03_score</th>
+      <th>f04_score</th>
+      <th>f05_score</th>
+      <th>f06_score</th>
+      <th>f07_score</th>
+      <th>f08_score</th>
+      <th>f09_score</th>
+      <th>f10_score</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td>2026-01-05</td>
+      <td>55.266711</td>
+      <td>55.0</td>
+      <td>0.890260</td>
+      <td>0.1</td>
+      <td>78.963208</td>
+      <td>49.408680</td>
+      <td>57.717762</td>
+      <td>62.797489</td>
+      <td>25.675246</td>
+      <td>16.690793</td>
+      <td>46.000368</td>
+      <td>63.536397</td>
+      <td>62.183170</td>
+      <td>84.981198</td>
+    </tr>
+    <tr>
+      <td>2026-01-06</td>
+      <td>55.253373</td>
+      <td>55.0</td>
+      <td>0.833418</td>
+      <td>0.1</td>
+      <td>80.588783</td>
+      <td>48.369002</td>
+      <td>55.773364</td>
+      <td>66.227207</td>
+      <td>23.456742</td>
+      <td>15.819259</td>
+      <td>50.765262</td>
+      <td>58.316755</td>
+      <td>60.267010</td>
+      <td>83.539300</td>
+    </tr>
+    <tr>
+      <td>2026-01-07</td>
+      <td>55.226891</td>
+      <td>55.0</td>
+      <td>0.951478</td>
+      <td>0.1</td>
+      <td>82.097335</td>
+      <td>45.047389</td>
+      <td>52.615810</td>
+      <td>69.330285</td>
+      <td>21.222766</td>
+      <td>14.955142</td>
+      <td>54.962977</td>
+      <td>62.059830</td>
+      <td>57.815277</td>
+      <td>82.159140</td>
+    </tr>
+    <tr>
+      <td>2026-01-08</td>
+      <td>54.897215</td>
+      <td>50.0</td>
+      <td>0.960184</td>
+      <td>0.1</td>
+      <td>83.348836</td>
+      <td>41.762452</td>
+      <td>49.010676</td>
+      <td>72.137831</td>
+      <td>19.201551</td>
+      <td>14.211115</td>
+      <td>59.025460</td>
+      <td>59.323974</td>
+      <td>54.085326</td>
+      <td>80.986009</td>
+    </tr>
+    <tr>
+      <td>2026-01-09</td>
+      <td>54.516377</td>
+      <td>50.0</td>
+      <td>0.986752</td>
+      <td>0.1</td>
+      <td>84.556732</td>
+      <td>44.459301</td>
+      <td>46.429161</td>
+      <td>70.974289</td>
+      <td>17.372831</td>
+      <td>13.689119</td>
+      <td>62.814418</td>
+      <td>54.089793</td>
+      <td>54.376519</td>
+      <td>79.962398</td>
+    </tr>
+    <tr>
+      <td>2026-01-12</td>
+      <td>54.298114</td>
+      <td>50.0</td>
+      <td>0.963054</td>
+      <td>0.1</td>
+      <td>85.725176</td>
+      <td>46.657433</td>
+      <td>44.872037</td>
+      <td>70.866382</td>
+      <td>17.229992</td>
+      <td>13.254630</td>
+      <td>66.091352</td>
+      <td>51.281544</td>
+      <td>55.206874</td>
+      <td>79.376410</td>
+    </tr>
+    <tr>
+      <td>2026-01-13</td>
+      <td>54.197815</td>
+      <td>50.0</td>
+      <td>0.970671</td>
+      <td>0.1</td>
+      <td>86.857926</td>
+      <td>46.431555</td>
+      <td>42.782939</td>
+      <td>72.847362</td>
+      <td>17.629857</td>
+      <td>13.163864</td>
+      <td>69.056197</td>
+      <td>48.287232</td>
+      <td>56.827383</td>
+      <td>78.317130</td>
+    </tr>
+    <tr>
+      <td>2026-01-14</td>
+      <td>53.987676</td>
+      <td>50.0</td>
+      <td>0.985601</td>
+      <td>0.1</td>
+      <td>87.882795</td>
+      <td>47.376093</td>
+      <td>40.439288</td>
+      <td>70.898180</td>
+      <td>17.349160</td>
+      <td>13.157328</td>
+      <td>71.625297</td>
+      <td>45.200164</td>
+      <td>57.235357</td>
+      <td>77.320941</td>
+    </tr>
+    <tr>
+      <td>2026-01-15</td>
+      <td>53.902763</td>
+      <td>50.0</td>
+      <td>0.974607</td>
+      <td>0.1</td>
+      <td>89.036814</td>
+      <td>48.744659</td>
+      <td>38.757240</td>
+      <td>70.495179</td>
+      <td>19.287184</td>
+      <td>13.113622</td>
+      <td>72.513590</td>
+      <td>49.209823</td>
+      <td>54.921181</td>
+      <td>76.381834</td>
+    </tr>
+    <tr>
+      <td>2026-01-16</td>
+      <td>53.851421</td>
+      <td>50.0</td>
+      <td>0.965398</td>
+      <td>0.1</td>
+      <td>90.080927</td>
+      <td>47.201328</td>
+      <td>37.961010</td>
+      <td>69.110150</td>
+      <td>20.965048</td>
+      <td>13.149664</td>
+      <td>74.035350</td>
+      <td>51.288102</td>
+      <td>54.376911</td>
+      <td>75.229823</td>
+    </tr>
+    <tr>
+      <td>2026-01-19</td>
+      <td>53.878835</td>
+      <td>50.0</td>
+      <td>0.938978</td>
+      <td>0.1</td>
+      <td>91.025601</td>
+      <td>47.739977</td>
+      <td>36.983620</td>
+      <td>70.502532</td>
+      <td>22.634288</td>
+      <td>12.955516</td>
+      <td>74.165014</td>
+      <td>55.020301</td>
+      <td>51.881453</td>
+      <td>74.225319</td>
+    </tr>
+    <tr>
+      <td>2026-01-20</td>
+      <td>53.721842</td>
+      <td>50.0</td>
+      <td>0.973663</td>
+      <td>0.1</td>
+      <td>91.766927</td>
+      <td>51.507749</td>
+      <td>37.807553</td>
+      <td>69.192389</td>
+      <td>24.409103</td>
+      <td>12.477515</td>
+      <td>70.276283</td>
+      <td>55.335827</td>
+      <td>48.489871</td>
+      <td>73.203105</td>
+    </tr>
+    <tr>
+      <td>2026-01-21</td>
+      <td>53.376971</td>
+      <td>50.0</td>
+      <td>0.934827</td>
+      <td>0.1</td>
+      <td>92.551029</td>
+      <td>47.645333</td>
+      <td>36.806985</td>
+      <td>69.821081</td>
+      <td>25.599165</td>
+      <td>11.931660</td>
+      <td>71.255261</td>
+      <td>55.696890</td>
+      <td>45.043368</td>
+      <td>71.786936</td>
+    </tr>
+    <tr>
+      <td>2026-01-22</td>
+      <td>53.023200</td>
+      <td>50.0</td>
+      <td>0.937467</td>
+      <td>0.1</td>
+      <td>93.260455</td>
+      <td>50.106926</td>
+      <td>35.727862</td>
+      <td>71.145755</td>
+      <td>26.524717</td>
+      <td>11.324412</td>
+      <td>72.254382</td>
+      <td>53.907163</td>
+      <td>42.000689</td>
+      <td>70.430055</td>
+    </tr>
+    <tr>
+      <td>2026-01-23</td>
+      <td>52.830934</td>
+      <td>50.0</td>
+      <td>0.975293</td>
+      <td>0.1</td>
+      <td>93.902316</td>
+      <td>53.747537</td>
+      <td>36.580688</td>
+      <td>70.114489</td>
+      <td>27.702257</td>
+      <td>11.228512</td>
+      <td>70.966361</td>
+      <td>55.008976</td>
+      <td>40.835091</td>
+      <td>69.504743</td>
+    </tr>
+    <tr>
+      <td>2026-01-26</td>
+      <td>52.707167</td>
+      <td>50.0</td>
+      <td>0.962462</td>
+      <td>0.1</td>
+      <td>94.218498</td>
+      <td>57.026305</td>
+      <td>38.690161</td>
+      <td>68.047651</td>
+      <td>28.238550</td>
+      <td>11.066159</td>
+      <td>70.103351</td>
+      <td>56.345989</td>
+      <td>37.928650</td>
+      <td>69.385622</td>
+    </tr>
+    <tr>
+      <td>2026-01-27</td>
+      <td>52.770558</td>
+      <td>50.0</td>
+      <td>0.871195</td>
+      <td>0.1</td>
+      <td>94.769117</td>
+      <td>57.279280</td>
+      <td>41.263888</td>
+      <td>70.297081</td>
+      <td>27.514395</td>
+      <td>10.805890</td>
+      <td>71.023214</td>
+      <td>59.445313</td>
+      <td>34.429776</td>
+      <td>68.597573</td>
+    </tr>
+    <tr>
+      <td>2026-01-28</td>
+      <td>52.852926</td>
+      <td>50.0</td>
+      <td>0.814199</td>
+      <td>0.1</td>
+      <td>95.267296</td>
+      <td>57.712243</td>
+      <td>43.940192</td>
+      <td>71.311872</td>
+      <td>26.103349</td>
+      <td>10.192479</td>
+      <td>71.817677</td>
+      <td>62.665185</td>
+      <td>31.264128</td>
+      <td>66.032725</td>
+    </tr>
+    <tr>
+      <td>2026-01-29</td>
+      <td>52.566952</td>
+      <td>50.0</td>
+      <td>0.899349</td>
+      <td>0.1</td>
+      <td>95.718030</td>
+      <td>59.456958</td>
+      <td>47.291315</td>
+      <td>69.471134</td>
+      <td>26.413990</td>
+      <td>9.599696</td>
+      <td>71.969584</td>
+      <td>57.301758</td>
+      <td>28.437764</td>
+      <td>61.028852</td>
+    </tr>
+    <tr>
+      <td>2026-01-30</td>
+      <td>51.775617</td>
+      <td>50.0</td>
+      <td>0.988016</td>
+      <td>0.1</td>
+      <td>96.125837</td>
+      <td>55.971261</td>
+      <td>49.098793</td>
+      <td>67.956877</td>
+      <td>28.282348</td>
+      <td>8.949989</td>
+      <td>68.289941</td>
+      <td>52.033413</td>
+      <td>25.842784</td>
+      <td>56.539332</td>
+    </tr>
+    <tr>
+      <td>2026-02-02</td>
+      <td>50.366652</td>
+      <td>50.0</td>
+      <td>NaN</td>
+      <td>0.1</td>
+      <td>95.776740</td>
+      <td>51.154648</td>
+      <td>49.358470</td>
+      <td>62.467408</td>
+      <td>30.123938</td>
+      <td>8.097610</td>
+      <td>62.882131</td>
+      <td>47.304607</td>
+      <td>23.494945</td>
+      <td>52.439592</td>
+    </tr>
+    <tr>
+      <td>2026-02-03</td>
+      <td>49.513600</td>
+      <td>45.0</td>
+      <td>NaN</td>
+      <td>0.1</td>
+      <td>96.178955</td>
+      <td>55.602505</td>
+      <td>51.505736</td>
+      <td>65.852976</td>
+      <td>32.394826</td>
+      <td>7.326409</td>
+      <td>58.253901</td>
+      <td>50.849293</td>
+      <td>21.446296</td>
+      <td>48.692511</td>
+    </tr>
+    <tr>
+      <td>2026-02-04</td>
+      <td>48.871835</td>
+      <td>45.0</td>
+      <td>NaN</td>
+      <td>0.1</td>
+      <td>96.542864</td>
+      <td>58.470293</td>
+      <td>54.763693</td>
+      <td>68.122459</td>
+      <td>34.638402</td>
+      <td>6.628655</td>
+      <td>53.650733</td>
+      <td>47.026911</td>
+      <td>21.860330</td>
+      <td>45.302294</td>
+    </tr>
+    <tr>
+      <td>2026-02-05</td>
+      <td>47.835178</td>
+      <td>45.0</td>
+      <td>NaN</td>
+      <td>0.1</td>
+      <td>96.494186</td>
+      <td>54.814015</td>
+      <td>57.854981</td>
+      <td>62.163706</td>
+      <td>36.668305</td>
+      <td>5.997355</td>
+      <td>49.372583</td>
+      <td>42.661536</td>
+      <td>20.345287</td>
+      <td>42.234956</td>
+    </tr>
+    <tr>
+      <td>2026-02-06</td>
+      <td>46.726401</td>
+      <td>45.0</td>
+      <td>NaN</td>
+      <td>0.1</td>
+      <td>96.147801</td>
+      <td>50.734978</td>
+      <td>59.880886</td>
+      <td>63.083867</td>
+      <td>38.845020</td>
+      <td>5.426178</td>
+      <td>45.426290</td>
+      <td>38.711912</td>
+      <td>18.521019</td>
+      <td>39.459745</td>
+    </tr>
+    <tr>
+      <td>2026-02-09</td>
+      <td>46.449898</td>
+      <td>45.0</td>
+      <td>NaN</td>
+      <td>0.1</td>
+      <td>96.325713</td>
+      <td>54.943135</td>
+      <td>62.242949</td>
+      <td>65.957210</td>
+      <td>40.852221</td>
+      <td>5.098364</td>
+      <td>42.120385</td>
+      <td>43.301707</td>
+      <td>22.803976</td>
+      <td>36.948839</td>
+    </tr>
+    <tr>
+      <td>2026-02-10</td>
+      <td>46.510270</td>
+      <td>45.0</td>
+      <td>NaN</td>
+      <td>0.1</td>
+      <td>96.411094</td>
+      <td>57.412648</td>
+      <td>64.848684</td>
+      <td>64.853198</td>
+      <td>42.554882</td>
+      <td>4.877356</td>
+      <td>39.582842</td>
+      <td>43.788468</td>
+      <td>28.341919</td>
+      <td>34.752653</td>
+    </tr>
+    <tr>
+      <td>2026-02-11</td>
+      <td>46.858213</td>
+      <td>45.0</td>
+      <td>NaN</td>
+      <td>0.1</td>
+      <td>96.526138</td>
+      <td>57.795117</td>
+      <td>67.304516</td>
+      <td>65.857353</td>
+      <td>44.057592</td>
+      <td>5.130911</td>
+      <td>37.400349</td>
+      <td>48.348296</td>
+      <td>31.009280</td>
+      <td>32.727835</td>
+    </tr>
+    <tr>
+      <td>2026-02-12</td>
+      <td>47.527522</td>
+      <td>45.0</td>
+      <td>NaN</td>
+      <td>0.1</td>
+      <td>96.856982</td>
+      <td>59.161568</td>
+      <td>69.670073</td>
+      <td>67.143803</td>
+      <td>45.190429</td>
+      <td>5.057974</td>
+      <td>41.396990</td>
+      <td>53.267506</td>
+      <td>31.009280</td>
+      <td>30.858064</td>
+    </tr>
+    <tr>
+      <td>2026-02-13</td>
+      <td>47.790980</td>
+      <td>45.0</td>
+      <td>NaN</td>
+      <td>0.1</td>
+      <td>97.156317</td>
+      <td>55.454571</td>
+      <td>71.621373</td>
+      <td>64.188308</td>
+      <td>45.610690</td>
+      <td>5.057974</td>
+      <td>44.559484</td>
+      <td>48.988061</td>
+      <td>31.009280</td>
+      <td>29.279745</td>
+    </tr>
+  </tbody>
+</table>
+    </div>
+
+  </div>
+</div>
+</body>
+</html>
