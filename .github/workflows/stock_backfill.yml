@@ -78,6 +78,18 @@ jobs:
           echo "⏱️  예상 소요: 60~90분 (병렬 20 workers)"
           python src/stocks/fetch_krx_flows.py || echo "⚠️ 수급 데이터 일부 오류"
 
+      - name: "[3-1] Retry KRX flows (no data tickers only)"
+        continue-on-error: true
+        env:
+          MAX_WORKERS_FLOWS_RETRY: "3"
+          KRX_THROTTLE_SEC_RETRY2: "0.2"
+          KRX_NO_DATA_RETRY_RETRY2: "3"
+          KRX_NO_DATA_SLEEP_BASE_RETRY2: "5.0"
+          RETRY2_OVERWRITE_IF_EXISTS: "false"
+        run: |
+          python src/stocks/fetch_krx_flows_retry_nodata.py || echo "⚠️ flows retry2 일부 오류"
+      
+
       - name: "[4/10] Fetch DART financials (30~60분)"
         if: ${{ !inputs.skip_dart }}
         continue-on-error: true
