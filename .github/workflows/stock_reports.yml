@@ -2,7 +2,7 @@ name: Stock Reports
 
 on:
   schedule:
-    - cron: "0 17 * * *"  # 매일 한국시간 02:00 (UTC 17:00)
+    - cron: "0 17 * * *"
   workflow_dispatch:
 
 jobs:
@@ -24,19 +24,18 @@ jobs:
       - name: Install dependencies
         run: |
           pip install pandas pyarrow pykrx requests plotly
-          # pip install FinanceDataReader  # 필요 시
       
       - name: Fetch listings
         run: python src/stocks/fetch_listings.py
+      
+      - name: Fetch prices
+        run: python src/stocks/fetch_prices.py
       
       - name: Fetch DART financials
         run: python src/stocks/fetch_dart_financials.py
       
       - name: Fetch KRX flows
         run: python src/stocks/fetch_krx_flows.py
-      
-      - name: Fetch prices
-        run: python src/stocks/fetch_prices.py
       
       - name: Curate financials
         run: python src/stocks/curate_financials.py
@@ -50,8 +49,10 @@ jobs:
       - name: Render reports
         run: python src/stocks/render_stock_report.py
       
-      - name: Deploy to GitHub Pages
-        uses: peaceiris/actions-gh-pages@v3
-        with:
-          github_token: ${{ secrets.GITHUB_TOKEN }}
-          publish_dir: ./docs
+      - name: Commit data (optional, 용량 주의)
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add data/ docs/
+          git diff --quiet && git diff --staged --quiet || git commit -m "Update stock data"
+          git push
