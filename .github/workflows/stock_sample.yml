@@ -43,6 +43,19 @@ jobs:
           python src/stocks/compute_features.py
           python src/stocks/render_stock_report.py
           python src/stocks/export_data_summary.py
+          
+      - name: Export flows recent 60d CSV (Excel/검증용)
+        run: |
+          export RECENT_DAYS=60
+          python src/stocks/export_flows_recent60d_csv.py
+          
+      - name: Upload flows recent 60d CSV
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: flows-recent60d
+          path: docs/stocks/flows_recent60d.csv
+          if-no-files-found: warn
       
       - name: List generated files
         run: |
