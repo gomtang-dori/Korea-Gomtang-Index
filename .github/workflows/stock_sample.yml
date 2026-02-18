@@ -12,7 +12,6 @@ jobs:
       SAMPLE_SIZE: "50"
       MAX_WORKERS: "5"
       INCREMENTAL_MODE: "false"
-      PROJECT_ROOT: ${{ github.workspace }}  # ✅ 추가
 
     steps:
       - uses: actions/checkout@v4
@@ -24,29 +23,32 @@ jobs:
       - name: Install dependencies
         run: pip install pandas pyarrow pykrx requests plotly
       
+      # ✅ 핵심 수정: src/stocks로 cd 하지 않고 루트에서 실행
       - name: Run sample pipeline
         run: |
-          cd src/stocks
-          python fetch_listings.py
-          python fetch_prices.py
-          python fetch_krx_flows.py
-          python fetch_dart_financials.py
-          python curate_financials.py
-          python curate_flows.py
-          python compute_features.py
-          python render_stock_report.py
-          python export_data_summary.py
+          python src/stocks/fetch_listings.py
+          python src/stocks/fetch_prices.py
+          python src/stocks/fetch_krx_flows.py
+          python src/stocks/fetch_dart_financials.py
+          python src/stocks/curate_financials.py
+          python src/stocks/curate_flows.py
+          python src/stocks/compute_features.py
+          python src/stocks/render_stock_report.py
+          python src/stocks/export_data_summary.py
       
-      - name: List generated files (디버깅)
+      - name: List generated files
         run: |
           echo "=== 작업 디렉토리 ==="
           pwd
           
-          echo "=== docs/stocks 파일 목록 ==="
-          ls -lh docs/stocks/ 2>/dev/null || echo "디렉토리 없음"
+          echo "=== docs/stocks 파일 ==="
+          ls -lh docs/stocks/ || echo "없음"
           
-          echo "=== 전체 docs 구조 ==="
-          find docs -type f 2>/dev/null || echo "docs 없음"
+          echo "=== HTML 파일 수 ==="
+          ls docs/stocks/*.html 2>/dev/null | wc -l || echo "0"
+          
+          echo "=== CSV 파일 수 ==="
+          ls docs/stocks/*.csv 2>/dev/null | wc -l || echo "0"
       
       - name: Upload HTML reports
         if: always()
