@@ -1,18 +1,39 @@
 #!/usr/bin/env python3
 """
-전종목 일별 OHLCV + 시가총액 수집
-- PyKRX get_market_ohlcv_by_date() 우선
-- FinanceDataReader 보조 (필요 시)
-- 출력: data/stocks/raw/prices/{ticker}.csv
+가격 데이터 수집 (병렬처리 + 증분 업데이트)
 """
 import os
 from pathlib import Path
-from datetime import datetime
+from datetime import datetime, timedelta
 import pandas as pd
 from pykrx import stock
-# import FinanceDataReader as fdr  # 필요 시
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from config import INCREMENTAL_MODE, INCREMENTAL_DAYS, MAX_WORKERS, START_DATE
 
-START_DATE = "20200101"
+def fetch_one_ticker_price(ticker, start_date, end_date, out_path):
+    """단일 종목 가격 수집"""
+    try:
+        df_ohlcv = stock.get_market_ohlcv_by_date(start_date, end_date, ticker)
+        
+        if df_ohlcv.empty:
+            return f"{ticker}: 데이터 없음"
+        
+        df_ohlcv.reset_index(inplace=True)
+        df_ohlcv.rename(columns={
+            "날짜": "date", "종가": "close", "시가": "open",
+            "고가": "high", "저가": "low", "거래량": "volume"
+        }, inplace=True)
+        
+        # ✅ 증분 모드: 기존 데이터와 병합
+        if INCREMENTAL_MODE and out_path.exists():
+            df_old = pd.read_csv(out_path, encoding="utf-8-sig")
+            df_ohlcv = pd.concat([df_old, df_ohlcv]).drop_duplicates(subset=["date"], keep="last")
+        
+        df_ohlcv.to_csv(out_path, index=False, encoding="utf-8-sig")
+        return f"{ticker}: OK ({len(df_ohlcv)} rows)"
+        
+    except Exception as e:
+        return f"{ticker}: 오류 ({e})"
 
 def fetch_prices():
     print("[fetch_prices] 시작...")
@@ -27,33 +48,30 @@ def fetch_prices():
     out_dir.mkdir(parents=True, exist_ok=True)
     
     end_date = datetime.now().strftime("%Y%m%d")
+    if INCREMENTAL_MODE:
+        start_date = (datetime.now() - timedelta(days=INCREMENTAL_DAYS)).strftime("%Y%m%d")
+        print(f"  [증분 모드] {start_date} ~ {end_date}")
+    else:
+        start_date = START_DATE
+        print(f"  [백필 모드] {start_date} ~ {end_date}")
     
-    for idx, row in df_master.iterrows():
-        ticker = row["ticker"]
-        out_path = out_dir / f"{ticker}.csv"
-        
-        if out_path.exists():
-            print(f"  [{idx+1}/{len(df_master)}] {ticker} 이미 존재, 스킵")
-            continue
-        
-        try:
-            df_ohlcv = stock.get_market_ohlcv_by_date(START_DATE, end_date, ticker)
-            if df_ohlcv.empty:
-                print(f"  [{idx+1}/{len(df_master)}] {ticker} 데이터 없음")
+    # ✅ 병렬처리
+    tasks = []
+    with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
+        for idx, row in df_master.iterrows():
+            ticker = row["ticker"]
+            out_path = out_dir / f"{ticker}.csv"
+            
+            if not INCREMENTAL_MODE and out_path.exists():
+                print(f"  [{idx+1}/{len(df_master)}] {ticker} 이미 존재, 스킵")
                 continue
             
-            df_ohlcv.reset_index(inplace=True)
-            df_ohlcv.rename(columns={"날짜": "date", "종가": "close", "시가": "open",
-                                      "고가": "high", "저가": "low", "거래량": "volume"}, inplace=True)
-            
-            # 시가총액 (별도 조회 필요 시)
-            # df_cap = stock.get_market_cap_by_date(START_DATE, end_date, ticker)
-            # df_ohlcv = df_ohlcv.merge(df_cap[['시가총액']], left_on='date', right_index=True, how='left')
-            
-            df_ohlcv.to_csv(out_path, index=False, encoding="utf-8-sig")
-            print(f"  [{idx+1}/{len(df_master)}] {ticker} OK → {len(df_ohlcv)} rows")
-        except Exception as e:
-            print(f"  [{idx+1}/{len(df_master)}] {ticker} 오류: {e}")
+            future = executor.submit(fetch_one_ticker_price, ticker, start_date, end_date, out_path)
+            tasks.append(future)
+        
+        for i, future in enumerate(as_completed(tasks)):
+            result = future.result()
+            print(f"  [{i+1}/{len(tasks)}] {result}")
     
     print("[fetch_prices] 완료")
 
