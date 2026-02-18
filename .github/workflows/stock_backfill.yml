@@ -15,6 +15,10 @@ on:
         description: 'Skip DART data fetch'
         type: boolean
         default: false
+      clean_derived:
+        description: 'Delete derived outputs (curated/analysis/docs) before curations'
+        type: boolean
+        default: true
 
 jobs:
   backfill:
@@ -33,45 +37,45 @@ jobs:
       FLOW_INCLUDE_VOLUME: "true"
       FLOW_WINDOWS: "3,5,10,20"
       FLOW_RAW_FORMAT: "auto"
-      
+
     steps:
       - uses: actions/checkout@v4
-      
+
       - uses: actions/setup-python@v5
         with:
           python-version: "3.10"
-      
+
       - name: Install dependencies
         run: pip install pandas pyarrow pykrx requests plotly
-      
+
       # ✅ 모든 스크립트를 프로젝트 루트에서 실행 (cd src/stocks 제거)
-      
-      - name: "[1/9] Fetch listings (2771 stocks)"
+
+      - name: "[1/10] Fetch listings (2771 stocks)"
         continue-on-error: true
         run: |
           python src/stocks/fetch_listings.py || echo "⚠️ 마스터 목록 오류"
-      
-      - name: "[2/9] Fetch prices (30~60분)"
+
+      - name: "[2/10] Fetch prices (30~60분)"
         if: ${{ !inputs.skip_prices }}
         continue-on-error: true
         run: |
           echo "⏱️  예상 소요: 30~60분 (병렬 20 workers)"
           python src/stocks/fetch_prices.py || echo "⚠️ 가격 데이터 일부 오류"
-      
-      - name: "[3/9] Fetch KRX flows (60~90분)"
+
+      - name: "[3/10] Fetch KRX flows (60~90분)"
         if: ${{ !inputs.skip_flows }}
         continue-on-error: true
         run: |
           echo "⏱️  예상 소요: 60~90분 (병렬 20 workers)"
           python src/stocks/fetch_krx_flows.py || echo "⚠️ 수급 데이터 일부 오류"
-      
-      - name: "[4/9] Fetch DART financials (30~60분)"
+
+      - name: "[4/10] Fetch DART financials (30~60분)"
         if: ${{ !inputs.skip_dart }}
         continue-on-error: true
         run: |
           echo "⏱️  예상 소요: 30~60분 (병렬 5 workers, DART API rate limit)"
           python src/stocks/fetch_dart_financials.py || echo "⚠️ DART 데이터 일부 오류"
-      
+
       # ✅ 중간 저장 1: Raw 데이터 백업
       - name: "[중간 저장 1] Raw 데이터 백업"
         continue-on-error: true
@@ -79,7 +83,7 @@ jobs:
           echo "=== 중간 저장 $(date) ==="
           du -sh data/stocks/ || true
           tar -czf raw_data_backup.tar.gz data/stocks/raw/ || true
-      
+
       - name: "[중간 저장 1-1] Raw 데이터 업로드"
         if: always()
         uses: actions/upload-artifact@v4
@@ -88,27 +92,67 @@ jobs:
           path: raw_data_backup.tar.gz
           retention-days: 7
           if-no-files-found: warn
-      
-      - name: "[5/9] Curate financials"
+
+      # ============================================================
+      # ✅ (NEW) derived outputs(파생 산출물) 클린 리빌드
+      # - 위치: raw 업로드 직후 / curate 시작 직전 (가장 안전)
+      # - 대상: data/stocks/curated, data/stocks/analysis, docs/stocks
+      # ============================================================
+
+      - name: "[클린업] Backup existing derived outputs (curated/analysis/docs)"
+        if: ${{ inputs.clean_derived }}
+        continue-on-error: true
+        run: |
+          echo "=== Pre-clean backup (derived outputs) ==="
+          tar -czf pre_clean_derived_backup.tar.gz \
+            data/stocks/curated \
+            data/stocks/analysis \
+            docs/stocks \
+            2>/dev/null || true
+          ls -lh pre_clean_derived_backup.tar.gz 2>/dev/null || true
+
+      - name: "[클린업] Upload pre-clean backup artifact"
+        if: ${{ always() && inputs.clean_derived }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: pre-clean-derived-backup
+          path: pre_clean_derived_backup.tar.gz
+          retention-days: 7
+          if-no-files-found: warn
+
+      - name: "[클린업] Remove derived outputs to rebuild cleanly"
+        if: ${{ inputs.clean_derived }}
+        run: |
+          echo "=== Cleaning derived outputs ==="
+          rm -rf data/stocks/curated || true
+          rm -rf data/stocks/analysis || true
+          rm -rf docs/stocks || true
+          mkdir -p data/stocks/curated data/stocks/analysis docs/stocks
+          echo "OK: derived outputs cleaned & directories recreated"
+          ls -al data/stocks || true
+          ls -al docs || true
+
+      - name: "[5/10] Curate financials"
         continue-on-error: true
         run: |
           python src/stocks/curate_financials.py || echo "⚠️ 재무 큐레이션 일부 오류"
-      
-      - name: "[6/9] Curate flows"
+
+      - name: "[6/10] Curate flows"
         continue-on-error: true
         run: |
           python src/stocks/curate_flows.py || echo "⚠️ 수급 큐레이션 일부 오류"
-      
-      - name: "[7/9] Compute features"
+
+      - name: "[7/10] Compute features"
         continue-on-error: true
         run: |
           python src/stocks/compute_features.py || echo "⚠️ Features 계산 일부 오류"
-          
+
       - name: Export flows recent 60d CSV (Excel/검증용)
+        continue-on-error: true
         run: |
           export RECENT_DAYS=60
-          python src/stocks/export_flows_recent60d_csv.py
-          
+          python src/stocks/export_flows_recent60d_csv.py || echo "⚠️ flows_recent60d.csv 생성 일부 오류"
+
       - name: Upload flows recent 60d CSV
         if: always()
         uses: actions/upload-artifact@v4
@@ -116,30 +160,38 @@ jobs:
           name: flows-recent60d
           path: docs/stocks/flows_recent60d.csv
           if-no-files-found: warn
-          
-       
+
       # ✅ 중간 저장 2: Curated 데이터 커밋
       - name: "[중간 저장 2] Curated 데이터 커밋"
         continue-on-error: true
         run: |
+          # --- 안전장치: curated/analysis가 비어있으면 커밋 스킵 ---
+          CURATED_CNT=$(find data/stocks/curated -type f 2>/dev/null | wc -l | tr -d ' ')
+          ANALYSIS_CNT=$(find data/stocks/analysis -type f 2>/dev/null | wc -l | tr -d ' ')
+          echo "curated files: $CURATED_CNT, analysis files: $ANALYSIS_CNT"
+          if [ "$CURATED_CNT" = "0" ] && [ "$ANALYSIS_CNT" = "0" ]; then
+            echo "⚠️ curated/analysis empty -> skip commit"
+            exit 0
+          fi
+
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          
+
           git add data/stocks/master/ || true
           git add data/stocks/curated/ || true
           git add data/stocks/analysis/ || true
-          
+
           git diff --staged --quiet || \
             git commit -m "Backfill WIP: curated data ($(date +%Y%m%d_%H%M))" || true
-          
+
           git push || echo "⚠️ Git push 실패 (계속 진행)"
-      
-      - name: "[8/9] Render reports (2771 stocks)"
+
+      - name: "[8/10] Render reports (2771 stocks)"
         continue-on-error: true
         run: |
           python src/stocks/render_stock_report.py || echo "⚠️ 리포트 생성 일부 오류"
-      
-      - name: "[9/9] Export CSV summaries"
+
+      - name: "[9/10] Export CSV summaries"
         continue-on-error: true
         run: |
           python src/stocks/export_data_summary.py || echo "⚠️ CSV 출력 일부 오류"
@@ -149,8 +201,8 @@ jobs:
         continue-on-error: true
         run: |
           echo "⏱️  예상 소요: 5~10분 (대용량 CSV 생성)"
-          python src/stocks/export_raw_to_csv.py || echo "⚠️ Raw CSV 출력 일부 오류"      
-          
+          python src/stocks/export_raw_to_csv.py || echo "⚠️ Raw CSV 출력 일부 오류"
+
       # ✅ 최종 결과 확인
       - name: "Check results"
         if: always()
@@ -159,12 +211,12 @@ jobs:
           echo "데이터 용량:"
           du -sh data/stocks/ 2>/dev/null || echo "data 없음"
           du -sh docs/stocks/ 2>/dev/null || echo "docs 없음"
-          
+
           echo ""
           echo "생성된 파일:"
           ls -lh docs/stocks/*.html 2>/dev/null | head -5 || echo "HTML 없음"
           ls -lh docs/stocks/*.csv 2>/dev/null || echo "CSV 없음"
-          
+
           echo ""
           echo "종목 수 통계:"
           echo "  가격: $(ls data/stocks/raw/prices/ 2>/dev/null | wc -l)"
@@ -172,7 +224,7 @@ jobs:
           echo "  DART: $(ls data/stocks/raw/dart/ 2>/dev/null | wc -l)"
           echo "  HTML: $(ls docs/stocks/*.html 2>/dev/null | wc -l)"
           echo "  CSV: $(ls docs/stocks/*.csv 2>/dev/null | wc -l)"
-      
+
       # ✅ Artifacts 업로드
       - name: "Upload HTML reports (샘플 100개)"
         if: always()
@@ -180,7 +232,7 @@ jobs:
           mkdir -p upload_html
           ls docs/stocks/*.html 2>/dev/null | head -100 | xargs -I {} cp {} upload_html/ || true
           cp docs/stocks/index.html upload_html/ 2>/dev/null || true
-      
+
       - name: "Upload HTML artifact"
         if: always()
         uses: actions/upload-artifact@v4
@@ -189,7 +241,7 @@ jobs:
           path: upload_html/
           retention-days: 30
           if-no-files-found: warn
-      
+
       - name: "Upload CSV reports"
         if: always()
         uses: actions/upload-artifact@v4
@@ -198,7 +250,7 @@ jobs:
           path: docs/stocks/*.csv
           retention-days: 90
           if-no-files-found: warn
-          
+
       # ✅ Raw CSV Artifacts 업로드 추가
       - name: "Upload raw data CSVs"
         if: always()
@@ -210,8 +262,8 @@ jobs:
             docs/stocks/flows_raw.csv
             docs/stocks/financials_raw.csv
           retention-days: 30
-          if-no-files-found: warn      
-          
+          if-no-files-found: warn
+
       - name: "Upload master summary"
         if: always()
         uses: actions/upload-artifact@v4
@@ -220,27 +272,37 @@ jobs:
           path: docs/stocks/master_summary.csv
           retention-days: 90
           if-no-files-found: warn
-      
+
       # ✅ 최종 커밋
       - name: "Final commit (curated + reports)"
         if: always()
         continue-on-error: true
         run: |
+          # --- 안전장치: derived가 비어있으면 커밋 스킵 ---
+          CURATED_CNT=$(find data/stocks/curated -type f 2>/dev/null | wc -l | tr -d ' ')
+          ANALYSIS_CNT=$(find data/stocks/analysis -type f 2>/dev/null | wc -l | tr -d ' ')
+          DOCS_CNT=$(find docs/stocks -type f 2>/dev/null | wc -l | tr -d ' ')
+          echo "curated files: $CURATED_CNT, analysis files: $ANALYSIS_CNT, docs files: $DOCS_CNT"
+          if [ "$CURATED_CNT" = "0" ] && [ "$ANALYSIS_CNT" = "0" ] && [ "$DOCS_CNT" = "0" ]; then
+            echo "⚠️ derived outputs empty -> skip final commit"
+            exit 0
+          fi
+
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          
+
           # curated + analysis + reports 커밋 (raw 제외)
           git add data/stocks/master/ || true
           git add data/stocks/curated/ || true
           git add data/stocks/analysis/ || true
           git add docs/stocks/*.csv || true
           git add docs/stocks/index.html || true
-          
+
           git diff --staged --quiet || \
             git commit -m "Backfill complete: curated data + reports ($(date +%Y%m%d))" || true
-          
+
           git push || echo "⚠️ Final push 실패"
-      
+
       # ✅ 백필 요약 리포트
       - name: "Generate backfill summary"
         if: always()
@@ -250,7 +312,7 @@ jobs:
           백필 완료 리포트
           ===================================
           완료 시간: $(date)
-          
+
           📊 데이터 통계:
           - 가격 데이터: $(ls data/stocks/raw/prices/ 2>/dev/null | wc -l) 종목
           - 수급 데이터: $(ls data/stocks/raw/krx_flows/ 2>/dev/null | wc -l) 종목
@@ -258,31 +320,30 @@ jobs:
           - Features: $(ls data/stocks/analysis/ 2>/dev/null | wc -l) 종목
           - HTML 리포트: $(ls docs/stocks/*.html 2>/dev/null | wc -l) 개
           - CSV 파일: $(ls docs/stocks/*.csv 2>/dev/null | wc -l) 개
-          
+
           💾 디렉토리 용량:
           $(du -sh data/stocks/raw/ 2>/dev/null || echo "raw: N/A")
           $(du -sh data/stocks/curated/ 2>/dev/null || echo "curated: N/A")
           $(du -sh data/stocks/analysis/ 2>/dev/null || echo "analysis: N/A")
           $(du -sh docs/stocks/ 2>/dev/null || echo "docs: N/A")
-          
+
           📈 완료율:
           $(python3 -c "
           import pandas as pd
-          from pathlib import Path
           try:
               df = pd.read_csv('docs/stocks/master_summary.csv')
               complete = (df['has_features']==True).sum()
               total = len(df)
               print(f'데이터 완료: {complete}/{total} ({complete/total*100:.1f}%)')
-          except:
-              print('완료율 계산 불가')
+          except Exception as e:
+              print('완료율 계산 불가', e)
           " 2>/dev/null || echo "완료율: N/A")
-          
+
           ===================================
           EOF
-          
+
           cat backfill_summary.txt
-      
+
       - name: "Upload backfill summary"
         if: always()
         uses: actions/upload-artifact@v4
