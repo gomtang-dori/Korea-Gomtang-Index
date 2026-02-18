@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-가격 데이터 수집 (병렬처리 + 증분 업데이트)
+가격 데이터 수집 (병렬처리 + 증분)
 """
 import os
 from pathlib import Path
@@ -8,10 +8,14 @@ from datetime import datetime, timedelta
 import pandas as pd
 from pykrx import stock
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from config import INCREMENTAL_MODE, INCREMENTAL_DAYS, MAX_WORKERS, START_DATE
+
+# ✅ 설정
+INCREMENTAL_MODE = os.getenv("INCREMENTAL_MODE", "false").lower() == "true"
+INCREMENTAL_DAYS = int(os.getenv("INCREMENTAL_DAYS", "5"))
+MAX_WORKERS = int(os.getenv("MAX_WORKERS", "10"))
+START_DATE = "20200101"
 
 def fetch_one_ticker_price(ticker, start_date, end_date, out_path):
-    """단일 종목 가격 수집"""
     try:
         df_ohlcv = stock.get_market_ohlcv_by_date(start_date, end_date, ticker)
         
@@ -24,7 +28,6 @@ def fetch_one_ticker_price(ticker, start_date, end_date, out_path):
             "고가": "high", "저가": "low", "거래량": "volume"
         }, inplace=True)
         
-        # ✅ 증분 모드: 기존 데이터와 병합
         if INCREMENTAL_MODE and out_path.exists():
             df_old = pd.read_csv(out_path, encoding="utf-8-sig")
             df_ohlcv = pd.concat([df_old, df_ohlcv]).drop_duplicates(subset=["date"], keep="last")
@@ -37,6 +40,7 @@ def fetch_one_ticker_price(ticker, start_date, end_date, out_path):
 
 def fetch_prices():
     print("[fetch_prices] 시작...")
+    print(f"  INCREMENTAL_MODE={INCREMENTAL_MODE}, MAX_WORKERS={MAX_WORKERS}")
     
     master_path = Path("data/stocks/master/listings.parquet")
     if not master_path.exists():
@@ -55,7 +59,6 @@ def fetch_prices():
         start_date = START_DATE
         print(f"  [백필 모드] {start_date} ~ {end_date}")
     
-    # ✅ 병렬처리
     tasks = []
     with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
         for idx, row in df_master.iterrows():
@@ -63,13 +66,12 @@ def fetch_prices():
             out_path = out_dir / f"{ticker}.csv"
             
             if not INCREMENTAL_MODE and out_path.exists():
-                print(f"  [{idx+1}/{len(df_master)}] {ticker} 이미 존재, 스킵")
                 continue
             
             future = executor.submit(fetch_one_ticker_price, ticker, start_date, end_date, out_path)
-            tasks.append(future)
+            tasks.append((ticker, future))
         
-        for i, future in enumerate(as_completed(tasks)):
+        for i, (ticker, future) in enumerate(tasks):
             result = future.result()
             print(f"  [{i+1}/{len(tasks)}] {result}")
     
