@@ -1,8 +1,7 @@
 #!/usr/bin/env python3
 """
 raw KRX flows CSV → curated parquet
-- PyKRX 컬럼명: 날짜, 기관합계, 기타법인, 개인, 외국인, 기타외국인 등
-- 표준 컬럼: pension_net, fin_invest_net, inst_total_net, foreign_net
+- 컬럼명 표준화: date, inst_total_net, foreign_net 등
 - 5일·20일 rolling sum 추가
 """
 import os
@@ -30,27 +29,36 @@ def curate_flows():
         try:
             df_raw = pd.read_csv(raw_path, encoding="utf-8-sig")
             
-            # ✅ PyKRX 컬럼명 확인 후 매핑 (예시, 실제는 print(df_raw.columns) 확인)
-            # 컬럼: 날짜, 기관합계, 기타법인, 개인, 외국인합계, 등
-            # 순매수 = 매수 - 매도 (이미 계산된 컬럼 사용 또는 직접 계산)
+            # ✅ 1. 날짜 컬럼 표준화
+            if "날짜" in df_raw.columns:
+                df_raw.rename(columns={"날짜": "date"}, inplace=True)
             
-            # 예시 매핑 (실제 컬럼명에 맞게 수정 필요)
-            rename_map = {
-                "날짜": "date",
-                "기관합계": "inst_total_net",
-                "외국인합계": "foreign_net",
-                # "금융투자": "fin_invest_net",  # detail=True 시 존재
-                # "연기금": "pension_net"
-            }
+            # ✅ 2. 투자자별 컬럼 표준화 (PyKRX detail=True 출력 기준)
+            # 실제 컬럼명 예시: '기관합계', '외국인합계', '금융투자', '연기금' 등
+            rename_map = {}
+            
+            for col in df_raw.columns:
+                if "기관" in col and "합계" in col:
+                    rename_map[col] = "inst_total_net"
+                elif "외국인" in col and "합계" in col:
+                    rename_map[col] = "foreign_net"
+                elif "금융투자" in col:
+                    rename_map[col] = "fin_invest_net"
+                elif "연기금" in col:
+                    rename_map[col] = "pension_net"
             
             df_raw.rename(columns=rename_map, inplace=True)
             
-            # 5일·20일 rolling sum
-            for col in ["inst_total_net", "foreign_net"]:
+            # ✅ 3. Rolling sum (5일, 20일)
+            for col in ["inst_total_net", "foreign_net", "fin_invest_net", "pension_net"]:
                 if col in df_raw.columns:
-                    df_raw[f"{col}_5d"] = df_raw[col].rolling(5).sum()
-                    df_raw[f"{col}_20d"] = df_raw[col].rolling(20).sum()
+                    df_raw[f"{col}_5d"] = df_raw[col].rolling(5, min_periods=1).sum()
+                    df_raw[f"{col}_20d"] = df_raw[col].rolling(20, min_periods=1).sum()
             
+            # ✅ 4. 날짜를 datetime으로 변환
+            df_raw["date"] = pd.to_datetime(df_raw["date"])
+            
+            # ✅ 5. 저장
             out_dir = Path(f"data/stocks/curated/{ticker}")
             out_dir.mkdir(parents=True, exist_ok=True)
             out_path = out_dir / "flows_daily.parquet"
