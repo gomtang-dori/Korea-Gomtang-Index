@@ -1,17 +1,18 @@
 #!/usr/bin/env python3
 """
 curated → analysis/features.parquet
-- 펀더멘털 점수 (ROE 기반)
-- 수급 점수 (외국인·기관 순매수)
 """
 import os
 from pathlib import Path
 import pandas as pd
 
+# ✅ 프로젝트 루트 기준 경로
+PROJECT_ROOT = Path(__file__).parent.parent.parent  # src/stocks → src → root
+
 def compute_features():
     print("[compute_features] 시작...")
     
-    master_path = Path("data/stocks/master/listings.parquet")
+    master_path = PROJECT_ROOT / "data/stocks/master/listings.parquet"
     if not master_path.exists():
         print("⚠️  마스터 파일 없음")
         return
@@ -20,34 +21,28 @@ def compute_features():
     for idx, row in df_master.iterrows():
         ticker = row["ticker"]
         
-        # 파일 경로
-        flows_path = Path(f"data/stocks/curated/{ticker}/flows_daily.parquet")
-        prices_path = Path(f"data/stocks/raw/prices/{ticker}.csv")
-        financials_path = Path(f"data/stocks/curated/{ticker}/financials_quarterly.parquet")
+        flows_path = PROJECT_ROOT / f"data/stocks/curated/{ticker}/flows_daily.parquet"
+        prices_path = PROJECT_ROOT / f"data/stocks/raw/prices/{ticker}.csv"
+        financials_path = PROJECT_ROOT / f"data/stocks/curated/{ticker}/financials_quarterly.parquet"
         
         if not flows_path.exists() or not prices_path.exists():
             print(f"  [{idx+1}/{len(df_master)}] {ticker} 필수 파일 없음, 스킵")
             continue
         
         try:
-            # ✅ 데이터 로드
             df_flows = pd.read_parquet(flows_path)
             df_prices = pd.read_csv(prices_path, encoding="utf-8-sig")
             
-            # ✅ 날짜 표준화 및 datetime 변환
             df_prices["date"] = pd.to_datetime(df_prices["date"])
             df_flows["date"] = pd.to_datetime(df_flows["date"])
             
-            # ✅ Merge (date 기준)
             df = df_prices.merge(df_flows, on="date", how="left")
             
-            # ✅ 수익률 계산
             df["ret_1d"] = df["close"].pct_change(1)
             df["ret_5d"] = df["close"].pct_change(5)
             df["ret_20d"] = df["close"].pct_change(20)
             df["ret_60d"] = df["close"].pct_change(60)
             
-            # ✅ 펀더멘털 점수 (ROE 기반)
             signal_fund = 0
             if financials_path.exists():
                 df_fin = pd.read_parquet(financials_path)
@@ -59,28 +54,22 @@ def compute_features():
                         elif latest_roe >= 0.10:
                             signal_fund = 1
             
-            # ✅ 수급 점수 (20일 순매수 기반)
             signal_flow = 0
-            
-            # 외국인 20일 순매수
             if "foreign_net_20d" in df.columns:
                 latest_foreign = df["foreign_net_20d"].iloc[-1]
                 if pd.notna(latest_foreign) and latest_foreign > 0:
                     signal_flow += 1
             
-            # 기관 20일 순매수
             if "inst_total_net_20d" in df.columns:
                 latest_inst = df["inst_total_net_20d"].iloc[-1]
                 if pd.notna(latest_inst) and latest_inst > 0:
                     signal_flow += 1
             
-            # ✅ 종합 Signal
             df["signal_fundamentals"] = signal_fund
             df["signal_flows"] = signal_flow
             df["signal"] = signal_fund + signal_flow
             
-            # ✅ 저장
-            out_dir = Path(f"data/stocks/analysis/{ticker}")
+            out_dir = PROJECT_ROOT / f"data/stocks/analysis/{ticker}"
             out_dir.mkdir(parents=True, exist_ok=True)
             out_path = out_dir / "features.parquet"
             
