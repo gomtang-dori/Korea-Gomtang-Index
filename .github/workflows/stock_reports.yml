@@ -1,0 +1,57 @@
+name: Stock Reports
+
+on:
+  schedule:
+    - cron: "0 17 * * *"  # 매일 한국시간 02:00 (UTC 17:00)
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    env:
+      DART_API_KEY: ${{ secrets.DART_API_KEY }}
+      DATA_GO_KR_SERVICE_KEY: ${{ secrets.DATA_GO_KR_SERVICE_KEY }}
+      KRX_API_KEY: ${{ secrets.KRX_API_KEY }}
+
+    steps:
+      - uses: actions/checkout@v3
+      
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: "3.10"
+      
+      - name: Install dependencies
+        run: |
+          pip install pandas pyarrow pykrx requests plotly
+          # pip install FinanceDataReader  # 필요 시
+      
+      - name: Fetch listings
+        run: python src/stocks/fetch_listings.py
+      
+      - name: Fetch DART financials
+        run: python src/stocks/fetch_dart_financials.py
+      
+      - name: Fetch KRX flows
+        run: python src/stocks/fetch_krx_flows.py
+      
+      - name: Fetch prices
+        run: python src/stocks/fetch_prices.py
+      
+      - name: Curate financials
+        run: python src/stocks/curate_financials.py
+      
+      - name: Curate flows
+        run: python src/stocks/curate_flows.py
+      
+      - name: Compute features
+        run: python src/stocks/compute_features.py
+      
+      - name: Render reports
+        run: python src/stocks/render_stock_report.py
+      
+      - name: Deploy to GitHub Pages
+        uses: peaceiris/actions-gh-pages@v3
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_dir: ./docs
