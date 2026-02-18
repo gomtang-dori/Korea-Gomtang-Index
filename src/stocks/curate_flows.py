@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 """
-raw KRX flows CSV → curated parquet (5일·20일 순매수 합산)
-출력: data/stocks/curated/{ticker}/flows_daily.parquet
+raw KRX flows CSV → curated parquet
+- PyKRX 컬럼명: 날짜, 기관합계, 기타법인, 개인, 외국인, 기타외국인 등
+- 표준 컬럼: pension_net, fin_invest_net, inst_total_net, foreign_net
+- 5일·20일 rolling sum 추가
 """
 import os
 from pathlib import Path
@@ -25,22 +27,39 @@ def curate_flows():
         if not raw_path.exists():
             continue
         
-        df_raw = pd.read_csv(raw_path, encoding="utf-8-sig")
-        
-        # 컬럼명 정리 (PyKRX 출력 기준)
-        # 예: '연기금', '금융투자', '기관합계', '외국인'
-        # 매수·매도·순매수 컬럼 추출 후 표준 명칭 변경
-        
-        # 5일·20일 rolling sum (간단 예시)
-        # df_raw['pension_net_5d'] = df_raw['연기금순매수'].rolling(5).sum()
-        # df_raw['pension_net_20d'] = df_raw['연기금순매수'].rolling(20).sum()
-        
-        out_dir = Path(f"data/stocks/curated/{ticker}")
-        out_dir.mkdir(parents=True, exist_ok=True)
-        out_path = out_dir / "flows_daily.parquet"
-        
-        df_raw.to_parquet(out_path, index=False)
-        print(f"  [{idx+1}/{len(df_master)}] {ticker} flows OK")
+        try:
+            df_raw = pd.read_csv(raw_path, encoding="utf-8-sig")
+            
+            # ✅ PyKRX 컬럼명 확인 후 매핑 (예시, 실제는 print(df_raw.columns) 확인)
+            # 컬럼: 날짜, 기관합계, 기타법인, 개인, 외국인합계, 등
+            # 순매수 = 매수 - 매도 (이미 계산된 컬럼 사용 또는 직접 계산)
+            
+            # 예시 매핑 (실제 컬럼명에 맞게 수정 필요)
+            rename_map = {
+                "날짜": "date",
+                "기관합계": "inst_total_net",
+                "외국인합계": "foreign_net",
+                # "금융투자": "fin_invest_net",  # detail=True 시 존재
+                # "연기금": "pension_net"
+            }
+            
+            df_raw.rename(columns=rename_map, inplace=True)
+            
+            # 5일·20일 rolling sum
+            for col in ["inst_total_net", "foreign_net"]:
+                if col in df_raw.columns:
+                    df_raw[f"{col}_5d"] = df_raw[col].rolling(5).sum()
+                    df_raw[f"{col}_20d"] = df_raw[col].rolling(20).sum()
+            
+            out_dir = Path(f"data/stocks/curated/{ticker}")
+            out_dir.mkdir(parents=True, exist_ok=True)
+            out_path = out_dir / "flows_daily.parquet"
+            
+            df_raw.to_parquet(out_path, index=False)
+            print(f"  [{idx+1}/{len(df_master)}] {ticker} flows OK")
+            
+        except Exception as e:
+            print(f"  [{idx+1}/{len(df_master)}] {ticker} 오류: {e}")
     
     print("[curate_flows] 완료")
 
