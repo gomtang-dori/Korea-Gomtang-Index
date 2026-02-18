@@ -1,55 +1,41 @@
 #!/usr/bin/env python3
 """
-CSV 요약 생성
+CSV 요약
 """
 import os
 from pathlib import Path
 import pandas as pd
 
-if os.getenv("PROJECT_ROOT"):
-    PROJECT_ROOT = Path(os.getenv("PROJECT_ROOT"))
-else:
-    PROJECT_ROOT = Path(__file__).parent.parent.parent
-
+PROJECT_ROOT = Path.cwd()
 print(f"[DEBUG] PROJECT_ROOT: {PROJECT_ROOT}")
 
 def export_master_summary():
-    print("[1/2] master_summary.csv 생성 중...")
+    print("[1/2] master_summary.csv")
     
     master_path = PROJECT_ROOT / "data/stocks/master/listings.parquet"
     if not master_path.exists():
-        print("  ⚠️  마스터 파일 없음")
         return
-    
     df_master = pd.read_parquet(master_path)
     
     status_rows = []
     for _, row in df_master.iterrows():
         ticker = row["ticker"]
-        name = row["name"]
-        market = row["market"]
-        
-        has_price = (PROJECT_ROOT / f"data/stocks/raw/prices/{ticker}.csv").exists()
-        has_flow = (PROJECT_ROOT / f"data/stocks/raw/krx_flows/{ticker}.csv").exists()
         has_features = (PROJECT_ROOT / f"data/stocks/analysis/{ticker}/features.parquet").exists()
         
         status_rows.append({
             "ticker": ticker,
-            "name": name,
-            "market": market,
-            "has_price": has_price,
-            "has_flow": has_flow,
-            "has_features": has_features,
-            "data_complete": all([has_price, has_flow, has_features])
+            "name": row["name"],
+            "market": row["market"],
+            "has_features": has_features
         })
     
     df_status = pd.DataFrame(status_rows)
     out_path = PROJECT_ROOT / "docs/stocks/master_summary.csv"
     df_status.to_csv(out_path, index=False, encoding="utf-8-sig")
-    print(f"  ✅ OK → {out_path}")
+    print(f"  ✅ {out_path}")
 
 def export_signals_summary():
-    print("[2/2] signals_summary.csv 생성 중...")
+    print("[2/2] signals_summary.csv")
     
     master_path = PROJECT_ROOT / "data/stocks/master/listings.parquet"
     if not master_path.exists():
@@ -60,9 +46,6 @@ def export_signals_summary():
     
     for _, row in df_master.iterrows():
         ticker = row["ticker"]
-        name = row["name"]
-        market = row["market"]
-        
         feat_path = PROJECT_ROOT / f"data/stocks/analysis/{ticker}/features.parquet"
         if not feat_path.exists():
             continue
@@ -72,24 +55,14 @@ def export_signals_summary():
             continue
         
         latest = df_feat.iloc[-1]
-        
         total_signal = latest.get("signal", 0)
-        
-        if total_signal >= 3:
-            opinion = "BUY"
-        elif total_signal >= 1:
-            opinion = "HOLD"
-        else:
-            opinion = "SELL"
         
         all_signals.append({
             "ticker": ticker,
-            "name": name,
-            "market": market,
+            "name": row["name"],
             "close": latest.get("close", 0),
-            "ret_1d": latest.get("ret_1d", 0),
             "signal": total_signal,
-            "opinion": opinion
+            "opinion": "BUY" if total_signal >= 3 else "HOLD" if total_signal >= 1 else "SELL"
         })
     
     if all_signals:
@@ -97,17 +70,14 @@ def export_signals_summary():
         df_all.sort_values("signal", ascending=False, inplace=True)
         out_path = PROJECT_ROOT / "docs/stocks/signals_summary.csv"
         df_all.to_csv(out_path, index=False, encoding="utf-8-sig")
-        print(f"  ✅ OK → {out_path}")
+        print(f"  ✅ {out_path}")
 
 def main():
-    print("[export_data_summary] 시작...\n")
-    
+    print("[export_data_summary] 시작\n")
     (PROJECT_ROOT / "docs/stocks").mkdir(parents=True, exist_ok=True)
-    
     export_master_summary()
     export_signals_summary()
-    
-    print("\n[export_data_summary] 완료 ✅")
+    print("\n[export_data_summary] ✅ 완료")
 
 if __name__ == "__main__":
     main()
