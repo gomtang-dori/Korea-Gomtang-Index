@@ -1,0 +1,39 @@
+name: Stock Backfill (Full History)
+
+on:
+  workflow_dispatch:
+
+jobs:
+  backfill:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360  # 6시간
+    env:
+      DART_API_KEY: ${{ secrets.DART_API_KEY }}
+      SAMPLE_MODE: "false"
+      MAX_WORKERS: "20"
+      INCREMENTAL_MODE: "false"
+
+    steps:
+      - uses: actions/checkout@v3
+      - uses: actions/setup-python@v4
+        with:
+          python-version: "3.10"
+      
+      - name: Install dependencies
+        run: pip install pandas pyarrow pykrx requests plotly
+      
+      - name: Fetch all data
+        run: |
+          cd src/stocks
+          python fetch_listings.py
+          python fetch_prices.py
+          python fetch_krx_flows.py
+          python fetch_dart_financials.py
+      
+      - name: Commit data
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add data/stocks/raw/ data/stocks/master/
+          git commit -m "Backfill: raw data $(date +%Y%m%d)" || echo "No changes"
+          git push
