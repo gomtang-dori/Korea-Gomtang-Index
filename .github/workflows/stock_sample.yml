@@ -1,0 +1,41 @@
+name: Stock Sample Test
+
+on:
+  workflow_dispatch:
+
+jobs:
+  sample:
+    runs-on: ubuntu-latest
+    env:
+      DART_API_KEY: ${{ secrets.DART_API_KEY }}
+      SAMPLE_MODE: "true"
+      SAMPLE_SIZE: "50"
+      MAX_WORKERS: "5"
+      INCREMENTAL_MODE: "false"
+
+    steps:
+      - uses: actions/checkout@v3
+      - uses: actions/setup-python@v4
+        with:
+          python-version: "3.10"
+      
+      - name: Install dependencies
+        run: pip install pandas pyarrow pykrx requests plotly
+      
+      - name: Run sample pipeline
+        run: |
+          cd src/stocks
+          python fetch_listings.py
+          python fetch_prices.py
+          python fetch_krx_flows.py
+          python fetch_dart_financials.py
+          python curate_financials.py
+          python curate_flows.py
+          python compute_features.py
+          python render_stock_report.py
+      
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v3
+        with:
+          name: sample-reports
+          path: docs/stocks/
