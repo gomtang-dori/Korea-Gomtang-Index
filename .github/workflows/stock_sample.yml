@@ -34,16 +34,23 @@ jobs:
           python curate_flows.py
           python compute_features.py
           python render_stock_report.py
-          python export_data_summary.py  # ✅ 추가
+          python export_data_summary.py
       
-      - name: Upload CSV reports
-        uses: actions/upload-artifact@v4
-        with:
-          name: csv-reports
-          path: docs/stocks/*.csv  # ✅ CSV 파일만 업로드
+      - name: List generated files
+        run: |
+          echo "=== docs/stocks 디렉토리 ==="
+          ls -lh docs/stocks/ || echo "디렉토리 없음"
       
       - name: Upload HTML reports
         uses: actions/upload-artifact@v4
         with:
           name: html-reports
           path: docs/stocks/*.html
+          if-no-files-found: warn
+      
+      - name: Upload CSV reports
+        uses: actions/upload-artifact@v4
+        with:
+          name: csv-reports
+          path: docs/stocks/*.csv
+          if-no-files-found: warn
