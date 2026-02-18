@@ -6,16 +6,19 @@ import os
 from pathlib import Path
 import pandas as pd
 
+# ✅ 프로젝트 루트 기준 경로
+PROJECT_ROOT = Path(__file__).parent.parent.parent
+
 def render_stock_report():
     print("[render_stock_report] 시작...")
     
-    master_path = Path("data/stocks/master/listings.parquet")
+    master_path = PROJECT_ROOT / "data/stocks/master/listings.parquet"
     if not master_path.exists():
         print("⚠️  마스터 파일 없음")
         return
     df_master = pd.read_parquet(master_path)
     
-    out_dir = Path("docs/stocks")
+    out_dir = PROJECT_ROOT / "docs/stocks"
     out_dir.mkdir(parents=True, exist_ok=True)
     
     summary_rows = []
@@ -25,8 +28,7 @@ def render_stock_report():
         name = row["name"]
         market = row["market"]
         
-        # features 로드
-        feat_path = Path(f"data/stocks/analysis/{ticker}/features.parquet")
+        feat_path = PROJECT_ROOT / f"data/stocks/analysis/{ticker}/features.parquet"
         if not feat_path.exists():
             print(f"  [{idx+1}/{len(df_master)}] {ticker} features 없음, 스킵")
             continue
@@ -35,13 +37,11 @@ def render_stock_report():
         if df_feat.empty:
             continue
         
-        # 최근 데이터
         latest = df_feat.iloc[-1]
         close = latest.get("close", 0)
         ret_1d = latest.get("ret_1d", 0)
         ret_5d = latest.get("ret_5d", 0)
         
-        # 투자 의견
         signal_fund = latest.get("signal_fundamentals", 0)
         signal_flow = latest.get("signal_flows", 0)
         total_signal = latest.get("signal", 0)
@@ -59,7 +59,6 @@ def render_stock_report():
             position = "-10% ~ -30%"
             opinion_color = "#F44336"
         
-        # ✅ HTML 생성 (CSS 중괄호 이스케이프)
         html_content = f"""<!DOCTYPE html>
 <html lang="ko">
 <head>
@@ -123,7 +122,6 @@ th {{ background: #4CAF50; color: white; }}
         
         print(f"  [{idx+1}/{len(df_master)}] {ticker} 리포트 생성")
     
-    # ✅ 대시보드 생성
     if not summary_rows:
         print("⚠️  생성된 리포트 없음")
         return
@@ -131,7 +129,6 @@ th {{ background: #4CAF50; color: white; }}
     df_summary = pd.DataFrame(summary_rows)
     df_summary.sort_values("signal", ascending=False, inplace=True)
     
-    # ✅ 대시보드 HTML (CSS 중괄호 이스케이프)
     dashboard_html = f"""<!DOCTYPE html>
 <html lang="ko">
 <head>
@@ -195,6 +192,7 @@ a:hover {{ text-decoration: underline; }}
         f.write(dashboard_html)
     
     print(f"[render_stock_report] OK → {dashboard_path}")
+    print(f"  생성된 리포트: {len(summary_rows)}개")
 
 if __name__ == "__main__":
     render_stock_report()
