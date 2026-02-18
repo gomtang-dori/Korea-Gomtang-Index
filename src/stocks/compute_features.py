@@ -6,15 +6,20 @@ import os
 from pathlib import Path
 import pandas as pd
 
-# ✅ 프로젝트 루트 기준 경로
-PROJECT_ROOT = Path(__file__).parent.parent.parent  # src/stocks → src → root
+# ✅ 환경변수 우선, 없으면 __file__ 기준 계산
+if os.getenv("PROJECT_ROOT"):
+    PROJECT_ROOT = Path(os.getenv("PROJECT_ROOT"))
+else:
+    PROJECT_ROOT = Path(__file__).parent.parent.parent
+
+print(f"[DEBUG] PROJECT_ROOT: {PROJECT_ROOT}")
 
 def compute_features():
     print("[compute_features] 시작...")
     
     master_path = PROJECT_ROOT / "data/stocks/master/listings.parquet"
     if not master_path.exists():
-        print("⚠️  마스터 파일 없음")
+        print(f"⚠️  마스터 파일 없음: {master_path}")
         return
     df_master = pd.read_parquet(master_path)
     
