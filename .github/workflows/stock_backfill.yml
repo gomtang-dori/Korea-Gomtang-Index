@@ -121,7 +121,14 @@ jobs:
         continue-on-error: true
         run: |
           python src/stocks/export_data_summary.py || echo "⚠️ CSV 출력 일부 오류"
-      
+
+      # ✅ 추가: Raw 데이터 CSV 추출
+      - name: "[10/10] Export raw data to CSV"
+        continue-on-error: true
+        run: |
+          echo "⏱️  예상 소요: 5~10분 (대용량 CSV 생성)"
+          python src/stocks/export_raw_to_csv.py || echo "⚠️ Raw CSV 출력 일부 오류"      
+          
       # ✅ 최종 결과 확인
       - name: "Check results"
         if: always()
@@ -169,7 +176,20 @@ jobs:
           path: docs/stocks/*.csv
           retention-days: 90
           if-no-files-found: warn
-      
+          
+      # ✅ Raw CSV Artifacts 업로드 추가
+      - name: "Upload raw data CSVs"
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: raw-data-csvs
+          path: |
+            docs/stocks/prices_raw.csv
+            docs/stocks/flows_raw.csv
+            docs/stocks/financials_raw.csv
+          retention-days: 30
+          if-no-files-found: warn      
+          
       - name: "Upload master summary"
         if: always()
         uses: actions/upload-artifact@v4
