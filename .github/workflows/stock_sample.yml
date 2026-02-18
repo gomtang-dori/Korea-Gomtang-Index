@@ -12,7 +12,15 @@ jobs:
       SAMPLE_SIZE: "50"
       MAX_WORKERS: "5"
       INCREMENTAL_MODE: "false"
+      START_DATE: "20150101"
+      KRX_FLOWS_SAVE_FORMAT: "parquet"     # raw flows는 parquet 저장
+      KRX_RETRY: "3"
 
+      FLOW_INCLUDE_BUYSELL: "true"         # 대표4개 매수/매도 포함 (요청)
+      FLOW_INCLUDE_VOLUME: "true"          # 수량도 보조로 포함
+      FLOW_WINDOWS: "3,5,10,20"            # rolling windows
+      FLOW_RAW_FORMAT: "auto"              # raw parquet 우선 읽고 없으면 csv
+      
     steps:
       - uses: actions/checkout@v4
       
