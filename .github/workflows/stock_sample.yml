@@ -14,9 +14,9 @@ jobs:
       INCREMENTAL_MODE: "false"
 
     steps:
-      - uses: actions/checkout@v4  # ✅ v4로 업데이트
+      - uses: actions/checkout@v4
       
-      - uses: actions/setup-python@v5  # ✅ v5로 업데이트
+      - uses: actions/setup-python@v5
         with:
           python-version: "3.10"
       
@@ -34,9 +34,16 @@ jobs:
           python curate_flows.py
           python compute_features.py
           python render_stock_report.py
+          python export_data_summary.py  # ✅ 추가
       
-      - name: Upload artifacts
-        uses: actions/upload-artifact@v4  # ✅ v4로 업데이트
+      - name: Upload CSV reports
+        uses: actions/upload-artifact@v4
         with:
-          name: sample-reports
-          path: docs/stocks/
+          name: csv-reports
+          path: docs/stocks/*.csv  # ✅ CSV 파일만 업로드
+      
+      - name: Upload HTML reports
+        uses: actions/upload-artifact@v4
+        with:
+          name: html-reports
+          path: docs/stocks/*.html
