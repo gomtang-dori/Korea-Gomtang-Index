@@ -1,0 +1,41 @@
+name: Stock Daily Update
+
+on:
+  schedule:
+    - cron: "0 17 * * *"  # 매일 한국시간 02:00
+  workflow_dispatch:
+
+jobs:
+  daily:
+    runs-on: ubuntu-latest
+    env:
+      DART_API_KEY: ${{ secrets.DART_API_KEY }}
+      SAMPLE_MODE: "false"
+      MAX_WORKERS: "20"
+      INCREMENTAL_MODE: "true"
+      INCREMENTAL_DAYS: "5"
+
+    steps:
+      - uses: actions/checkout@v3
+      - uses: actions/setup-python@v4
+        with:
+          python-version: "3.10"
+      
+      - name: Install dependencies
+        run: pip install pandas pyarrow pykrx requests plotly
+      
+      - name: Daily update
+        run: |
+          cd src/stocks
+          python fetch_prices.py
+          python fetch_krx_flows.py
+          python curate_financials.py
+          python curate_flows.py
+          python compute_features.py
+          python render_stock_report.py
+      
+      - name: Deploy reports
+        uses: peaceiris/actions-gh-pages@v3
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_dir: ./docs
