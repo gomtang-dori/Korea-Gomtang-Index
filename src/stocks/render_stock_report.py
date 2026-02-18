@@ -6,18 +6,16 @@ import os
 from pathlib import Path
 import pandas as pd
 
-# ✅ 환경변수 우선
-if os.getenv("PROJECT_ROOT"):
-    PROJECT_ROOT = Path(os.getenv("PROJECT_ROOT"))
-else:
-    PROJECT_ROOT = Path(__file__).parent.parent.parent
-
+PROJECT_ROOT = Path.cwd()
+print(f"[DEBUG] CWD: {Path.cwd()}")
 print(f"[DEBUG] PROJECT_ROOT: {PROJECT_ROOT}")
 
 def render_stock_report():
     print("[render_stock_report] 시작...")
     
     master_path = PROJECT_ROOT / "data/stocks/master/listings.parquet"
+    print(f"[DEBUG] master_path exists: {master_path.exists()}")
+    
     if not master_path.exists():
         print(f"⚠️  마스터 파일 없음: {master_path}")
         return
@@ -25,7 +23,7 @@ def render_stock_report():
     
     out_dir = PROJECT_ROOT / "docs/stocks"
     out_dir.mkdir(parents=True, exist_ok=True)
-    print(f"[DEBUG] 출력 디렉토리: {out_dir}")
+    print(f"[DEBUG] 출력 디렉토리: {out_dir} (exists: {out_dir.exists()})")
     
     summary_rows = []
     
@@ -36,7 +34,6 @@ def render_stock_report():
         
         feat_path = PROJECT_ROOT / f"data/stocks/analysis/{ticker}/features.parquet"
         if not feat_path.exists():
-            print(f"  [{idx+1}/{len(df_master)}] {ticker} features 없음, 스킵")
             continue
         
         df_feat = pd.read_parquet(feat_path)
@@ -69,13 +66,12 @@ def render_stock_report():
 <html lang="ko">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>{name} ({ticker}) - 투자 리포트</title>
+<title>{name} ({ticker})</title>
 <style>
 body {{ font-family: sans-serif; margin: 20px; background: #f5f5f5; }}
-.container {{ max-width: 900px; margin: auto; background: white; padding: 30px; border-radius: 8px; }}
-h1 {{ color: #333; border-bottom: 3px solid #4CAF50; padding-bottom: 10px; }}
-.card {{ background: #fafafa; padding: 15px; margin: 15px 0; border-radius: 5px; border-left: 4px solid #2196F3; }}
+.container {{ max-width: 900px; margin: auto; background: white; padding: 30px; }}
+h1 {{ color: #333; border-bottom: 3px solid #4CAF50; }}
+.card {{ background: #fafafa; padding: 15px; margin: 15px 0; border-radius: 5px; }}
 .opinion {{ font-size: 24px; font-weight: bold; color: {opinion_color}; }}
 </style>
 </head>
@@ -89,12 +85,8 @@ h1 {{ color: #333; border-bottom: 3px solid #4CAF50; padding-bottom: 10px; }}
 <div class="card">
 <h2>투자 의견</h2>
 <p class="opinion">{opinion}</p>
-<p><strong>포지션 가이드:</strong> {position}</p>
-<ul>
-<li>펀더멘털: {signal_fund}</li>
-<li>수급: {signal_flow}</li>
-<li>종합: {total_signal}</li>
-</ul>
+<p><strong>포지션:</strong> {position}</p>
+<ul><li>펀더멘털: {signal_fund}</li><li>수급: {signal_flow}</li><li>종합: {total_signal}</li></ul>
 </div>
 </div>
 </body>
@@ -114,14 +106,14 @@ h1 {{ color: #333; border-bottom: 3px solid #4CAF50; padding-bottom: 10px; }}
             "signal": total_signal
         })
         
-        if idx < 5:  # 처음 5개만 디버그 출력
-            print(f"  [{idx+1}/{len(df_master)}] {ticker} 리포트 생성 → {out_path}")
-        elif idx == 5:
-            print(f"  ... (로그 생략)")
+        if len(summary_rows) == 1:
+            print(f"  [첫 파일] {out_path} 생성 완료")
     
     if not summary_rows:
         print("⚠️  생성된 리포트 없음")
         return
+    
+    print(f"  [진행 중] {len(summary_rows)}개 종목 HTML 생성 완료")
     
     df_summary = pd.DataFrame(summary_rows)
     df_summary.sort_values("signal", ascending=False, inplace=True)
@@ -132,11 +124,11 @@ h1 {{ color: #333; border-bottom: 3px solid #4CAF50; padding-bottom: 10px; }}
 <style>
 body {{ font-family: sans-serif; margin: 20px; background: #f5f5f5; }}
 .container {{ max-width: 1200px; margin: auto; background: white; padding: 30px; }}
-h1 {{ color: #333; border-bottom: 3px solid #4CAF50; }}
+h1 {{ color: #333; }}
 table {{ width: 100%; border-collapse: collapse; }}
 th, td {{ padding: 12px; text-align: left; border-bottom: 1px solid #ddd; }}
 th {{ background: #4CAF50; color: white; }}
-a {{ color: #2196F3; text-decoration: none; font-weight: bold; }}
+a {{ color: #2196F3; text-decoration: none; }}
 .BUY {{ color: #4CAF50; font-weight: bold; }}
 .HOLD {{ color: #FF9800; font-weight: bold; }}
 .SELL {{ color: #F44336; font-weight: bold; }}
@@ -144,8 +136,8 @@ a {{ color: #2196F3; text-decoration: none; font-weight: bold; }}
 </head>
 <body>
 <div class="container">
-<h1>📊 전종목 투자 대시보드</h1>
-<p>총 <strong>{len(df_summary)}</strong>개 종목 분석</p>
+<h1>📊 전종목 대시보드</h1>
+<p>총 <strong>{len(df_summary)}</strong>개 종목</p>
 <table><thead><tr>
 <th>종목명</th><th>티커</th><th>시장</th><th>현재가</th><th>1일</th><th>의견</th><th>점수</th>
 </tr></thead><tbody>
@@ -166,8 +158,10 @@ a {{ color: #2196F3; text-decoration: none; font-weight: bold; }}
     with open(dashboard_path, "w", encoding="utf-8") as f:
         f.write(dashboard_html)
     
-    print(f"[render_stock_report] OK → {dashboard_path}")
-    print(f"  생성: HTML {len(summary_rows)}개, 대시보드 1개")
+    print(f"[render_stock_report] ✅ 완료")
+    print(f"  → 대시보드: {dashboard_path}")
+    print(f"  → HTML: {len(summary_rows)}개")
+    print(f"  → 출력 위치: {out_dir}")
 
 if __name__ == "__main__":
     render_stock_report()
