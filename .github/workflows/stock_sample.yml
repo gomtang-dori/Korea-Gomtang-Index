@@ -12,6 +12,7 @@ jobs:
       SAMPLE_SIZE: "50"
       MAX_WORKERS: "5"
       INCREMENTAL_MODE: "false"
+      PROJECT_ROOT: ${{ github.workspace }}  # ✅ 추가
 
     steps:
       - uses: actions/checkout@v4
@@ -36,12 +37,19 @@ jobs:
           python render_stock_report.py
           python export_data_summary.py
       
-      - name: List generated files
+      - name: List generated files (디버깅)
         run: |
-          echo "=== docs/stocks 디렉토리 ==="
-          ls -lh docs/stocks/ || echo "디렉토리 없음"
+          echo "=== 작업 디렉토리 ==="
+          pwd
+          
+          echo "=== docs/stocks 파일 목록 ==="
+          ls -lh docs/stocks/ 2>/dev/null || echo "디렉토리 없음"
+          
+          echo "=== 전체 docs 구조 ==="
+          find docs -type f 2>/dev/null || echo "docs 없음"
       
       - name: Upload HTML reports
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: html-reports
@@ -49,6 +57,7 @@ jobs:
           if-no-files-found: warn
       
       - name: Upload CSV reports
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: csv-reports
