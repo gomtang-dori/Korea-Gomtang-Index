@@ -14,8 +14,9 @@ jobs:
       INCREMENTAL_MODE: "false"
 
     steps:
-      - uses: actions/checkout@v3
-      - uses: actions/setup-python@v4
+      - uses: actions/checkout@v4  # ✅ v4로 업데이트
+      
+      - uses: actions/setup-python@v5  # ✅ v5로 업데이트
         with:
           python-version: "3.10"
       
@@ -35,7 +36,7 @@ jobs:
           python render_stock_report.py
       
       - name: Upload artifacts
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4  # ✅ v4로 업데이트
         with:
           name: sample-reports
           path: docs/stocks/
