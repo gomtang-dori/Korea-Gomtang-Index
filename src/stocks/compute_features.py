@@ -6,22 +6,23 @@ import os
 from pathlib import Path
 import pandas as pd
 
-# ✅ 환경변수 우선, 없으면 __file__ 기준 계산
-if os.getenv("PROJECT_ROOT"):
-    PROJECT_ROOT = Path(os.getenv("PROJECT_ROOT"))
-else:
-    PROJECT_ROOT = Path(__file__).parent.parent.parent
-
+# ✅ 현재 작업 디렉토리 기준 (워크플로우가 루트에서 실행)
+PROJECT_ROOT = Path.cwd()
+print(f"[DEBUG] CWD: {Path.cwd()}")
 print(f"[DEBUG] PROJECT_ROOT: {PROJECT_ROOT}")
 
 def compute_features():
     print("[compute_features] 시작...")
     
     master_path = PROJECT_ROOT / "data/stocks/master/listings.parquet"
+    print(f"[DEBUG] master_path exists: {master_path.exists()} → {master_path}")
+    
     if not master_path.exists():
         print(f"⚠️  마스터 파일 없음: {master_path}")
         return
     df_master = pd.read_parquet(master_path)
+    
+    success_count = 0
     
     for idx, row in df_master.iterrows():
         ticker = row["ticker"]
@@ -31,7 +32,6 @@ def compute_features():
         financials_path = PROJECT_ROOT / f"data/stocks/curated/{ticker}/financials_quarterly.parquet"
         
         if not flows_path.exists() or not prices_path.exists():
-            print(f"  [{idx+1}/{len(df_master)}] {ticker} 필수 파일 없음, 스킵")
             continue
         
         try:
@@ -79,14 +79,17 @@ def compute_features():
             out_path = out_dir / "features.parquet"
             
             df.to_parquet(out_path, index=False)
+            success_count += 1
             
-            latest_signal = df["signal"].iloc[-1]
-            print(f"  [{idx+1}/{len(df_master)}] {ticker} features OK (signal={latest_signal:.0f})")
+            if success_count <= 3:
+                print(f"  [{idx+1}/{len(df_master)}] {ticker} OK (signal={df['signal'].iloc[-1]:.0f})")
+            elif success_count == 4:
+                print(f"  ... (로그 생략, 계속 진행 중)")
             
         except Exception as e:
             print(f"  [{idx+1}/{len(df_master)}] {ticker} 오류: {e}")
     
-    print("[compute_features] 완료")
+    print(f"[compute_features] 완료 (성공: {success_count}/{len(df_master)})")
 
 if __name__ == "__main__":
     compute_features()
