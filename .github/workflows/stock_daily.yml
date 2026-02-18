@@ -2,7 +2,7 @@ name: Stock Daily Update
 
 on:
   schedule:
-    - cron: "0 17 * * *"  # 매일 한국시간 02:00
+    - cron: "0 17 * * *"
   workflow_dispatch:
 
 jobs:
@@ -16,8 +16,9 @@ jobs:
       INCREMENTAL_DAYS: "5"
 
     steps:
-      - uses: actions/checkout@v3
-      - uses: actions/setup-python@v4
+      - uses: actions/checkout@v4
+      
+      - uses: actions/setup-python@v5
         with:
           python-version: "3.10"
       
