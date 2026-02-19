@@ -28,7 +28,7 @@ jobs:
       DART_API_KEY: ${{ secrets.DART_API_KEY }}
       SAMPLE_MODE: "false"
       MAX_WORKERS: "20"          # prices 등 기존 유지
-      MAX_WORKERS_FLOWS: "6"     # flows 전용
+      MAX_WORKERS_FLOWS: "12"     # flows 전용
       INCREMENTAL_MODE: "false"
       START_DATE: "20150101"
       KRX_FLOWS_SAVE_FORMAT: "parquet"
@@ -40,7 +40,7 @@ jobs:
       FLOW_RAW_FORMAT: "auto"
       KRX_NO_DATA_RETRY: "2"
       KRX_NO_DATA_SLEEP_BASE: "3.0"
-      KRX_THROTTLE_SEC: "0.1"    # 필요하면 0.1~0.3으로 올려보세요      
+      KRX_THROTTLE_SEC: "0.0"    # 필요하면 0.1~0.3으로 올려보세요      
 
     steps:
       - uses: actions/checkout@v4
