@@ -1,176 +1,391 @@
 #!/usr/bin/env python3
+# -*- coding: utf-8 -*-
 """
-Curate DART raw cache -> per-ticker parquet + standard summary CSV
-Input:  data/stocks/raw/dart/<ticker>/<year>_<reprt_code>_ALL.json
+Curate OpenDART raw JSON cache -> LONG parquet per ticker (+ optional standard CSV)
+
+Input (raw cache):
+- data/stocks/raw/dart/<ticker>/<year>_<reprt_code>_ALL.json
+
 Output:
-  - data/stocks/curated/<ticker>/dart_accounts_long.parquet
-  - docs/stocks/dart_standard_<YEAR_FROM>_<YEAR_TO>.csv
+- LONG parquet (per ticker):
+  data/stocks/curated/<ticker>/dart_accounts_long.parquet
+
+- OPTIONAL: standard summary CSV (for quick validation / dashboards):
+  docs/stocks/dart_standard_<YEAR_FROM>_<YEAR_TO>.csv
+
+Env:
+- DART_YEAR_FROM (default: 2015)
+- DART_YEAR_TO   (default: 2017)
+- DART_REPRT_CODES (default: "11011,11012,11013,11014")
+- DART_RAW_DIR (default: "data/stocks/raw/dart")
+- DART_CURATED_DIR (default: "data/stocks/curated")
+- DART_LISTINGS_PATH (default: "data/stocks/master/listings.parquet")
+- DART_LONG_OVERWRITE (default: "false")  # true면 parquet 재생성
+- DART_WRITE_STANDARD_CSV (default: "true")
+- DART_STANDARD_FS_DIV_PRIORITY (default: "CFS,OFS")  # standard 만들 때 우선순위
 """
 
-import os, re, json
+from __future__ import annotations
+
+import os
+import re
+import json
 from pathlib import Path
-from typing import Optional
+from typing import Dict, List, Optional, Tuple
+
 import pandas as pd
 
-PROJECT_ROOT = Path(os.getenv("PROJECT_ROOT")) if os.getenv("PROJECT_ROOT") else Path.cwd()
-RAW_DIR = PROJECT_ROOT / "data/stocks/raw/dart"
-CURATED_ROOT = PROJECT_ROOT / "data/stocks/curated"
-DOCS_DIR = PROJECT_ROOT / "docs/stocks"
-DOCS_DIR.mkdir(parents=True, exist_ok=True)
 
-YEAR_FROM = int(os.getenv("DART_YEAR_FROM", "2015"))
-YEAR_TO = int(os.getenv("DART_YEAR_TO", "2017"))
+FILE_RE = re.compile(r"(?P<year>\d{4})_(?P<reprt>11011|11012|11013|11014)_ALL\.json$")
 
-REPRT_CODES = [x.strip() for x in os.getenv("DART_REPRT_CODES", "11011,11012,11013,11014").split(",") if x.strip()]
-pat = re.compile(r"^(?P<year>\d{4})_(?P<reprt>\d{5})_ALL\.json$")
 
-def to_num(x) -> Optional[float]:
+def env_bool(key: str, default: bool) -> bool:
+    v = os.getenv(key)
+    if v is None:
+        return default
+    return v.strip().lower() in ("1", "true", "yes", "y", "on")
+
+
+def parse_codes(s: str) -> List[str]:
+    return [x.strip() for x in (s or "").split(",") if x.strip()]
+
+
+def to_number(x) -> Optional[float]:
     if x is None:
         return None
+    if isinstance(x, (int, float)):
+        return float(x)
     s = str(x).strip()
-    if s in ("", "-", "nan", "NaN"):
+    if s == "" or s == "-" or s.lower() == "nan":
         return None
+    # keep minus sign
     s = s.replace(",", "")
+    # sometimes amounts come with spaces
+    s = s.replace(" ", "")
     try:
         return float(s)
-    except:
+    except Exception:
         return None
 
-# 표준 계정명 후보(추후 확장 가능)
-REV_CANDS = ["매출액", "영업수익", "수익(매출액)", "I. 매출액"]
-OP_CANDS  = ["영업이익", "영업이익(손실)"]
-NI_CANDS  = ["당기순이익", "당기순이익(손실)", "당기순손익", "연결당기순이익"]
-EQ_CANDS  = ["자본총계", "자본총계(결손금)", "자본총액", "자본"]
 
-def pick_account(df, cands, sj_div):
-    s = set(df.loc[df["sj_div"] == sj_div, "account_nm"].dropna().astype(str).tolist())
-    for c in cands:
-        if c in s:
-            return c
-    return None
+def load_listings_map(listings_path: Path) -> Dict[str, Dict[str, str]]:
+    """
+    returns: {ticker: {"name":..., "market":..., ...}}
+    """
+    if not listings_path.exists():
+        print(f"[curate_dart] WARN listings not found: {listings_path} (name mapping will be empty)")
+        return {}
 
-def best_value(row):
-    # 손익계산서 계정은 누적(thstrm_add_amount)이 있으면 우선
-    v_add = row.get("thstrm_add_amount")
-    v = row.get("thstrm_amount")
-    return v_add if pd.notna(v_add) and v_add is not None else v
+    df = pd.read_parquet(listings_path)
+    cols = {c.lower(): c for c in df.columns}
+    # tolerate common variants
+    ticker_col = cols.get("ticker") or cols.get("code") or cols.get("stock_code")
+    name_col = cols.get("name") or cols.get("corp_name") or cols.get("company")
+    market_col = cols.get("market") or cols.get("market_name")
 
-def curate_one_ticker(ticker_dir: Path):
-    ticker = ticker_dir.name
-    long_rows = []
+    out: Dict[str, Dict[str, str]] = {}
+    for _, r in df.iterrows():
+        t = str(r[ticker_col]).strip() if ticker_col else None
+        if not t:
+            continue
+        out[t] = {
+            "name": str(r[name_col]).strip() if name_col else "",
+            "market": str(r[market_col]).strip() if market_col else "",
+        }
+    return out
 
-    for fp in ticker_dir.glob("*.json"):
-        m = pat.match(fp.name)
+
+def iter_raw_json_files(raw_ticker_dir: Path, year_from: int, year_to: int, reprt_codes: set) -> List[Tuple[int, str, Path]]:
+    jobs: List[Tuple[int, str, Path]] = []
+    if not raw_ticker_dir.exists():
+        return jobs
+
+    for p in raw_ticker_dir.glob("*.json"):
+        m = FILE_RE.search(p.name)
         if not m:
             continue
-        year = int(m.group("year"))
-        reprt = m.group("reprt")
-        if year < YEAR_FROM or year > YEAR_TO:
+        y = int(m.group("year"))
+        rc = m.group("reprt")
+        if y < year_from or y > year_to:
             continue
-        if reprt not in REPRT_CODES:
+        if rc not in reprt_codes:
             continue
+        jobs.append((y, rc, p))
 
-        data = json.loads(fp.read_text(encoding="utf-8"))
-        meta = data.get("_meta") or {}
-        status = str(data.get("status", "")).strip()
-        message = str(data.get("message", "")).strip()
-        lst = data.get("list") or []
-        if status != "000" or not isinstance(lst, list):
-            continue
+    jobs.sort(key=lambda x: (x[0], x[1], x[2].name))
+    return jobs
 
-        for r in lst:
-            long_rows.append({
-                "ticker": ticker,
-                "name": meta.get("name", ""),
-                "corp_code": meta.get("corp_code", ""),
-                "bsns_year": int(r.get("bsns_year") or year),
-                "reprt_code": str(r.get("reprt_code") or reprt),
-                "fs_div": str(r.get("fs_div", "")).strip(),
-                "sj_div": str(r.get("sj_div", "")).strip(),
-                "account_nm": r.get("account_nm"),
-                "thstrm_amount": to_num(r.get("thstrm_amount")),
-                "thstrm_add_amount": to_num(r.get("thstrm_add_amount")),
-                "frmtrm_amount": to_num(r.get("frmtrm_amount")),
-                "frmtrm_add_amount": to_num(r.get("frmtrm_add_amount")),
-                "currency": r.get("currency"),
-                "rcept_no": r.get("rcept_no"),
-            })
 
-    if not long_rows:
-        return None, None
+def read_one_json(path: Path) -> Dict:
+    with path.open("r", encoding="utf-8") as f:
+        return json.load(f)
 
-    df_long = pd.DataFrame(long_rows)
-    df_long.sort_values(["bsns_year", "reprt_code", "fs_div", "sj_div"], inplace=True)
 
-    # per-ticker parquet 저장
-    out_dir = CURATED_ROOT / ticker
-    out_dir.mkdir(parents=True, exist_ok=True)
-    df_long.to_parquet(out_dir / "dart_accounts_long.parquet", index=False)
+def json_to_long_rows(
+    ticker: str,
+    name: str,
+    year: int,
+    reprt_code: str,
+    payload: Dict,
+    source_file: str,
+) -> List[Dict]:
+    status = str(payload.get("status", "")).strip()
+    message = str(payload.get("message", "")).strip()
+    fetched_utc = payload.get("fetched_utc", "")
 
-    # 표준 요약 만들기(연도/보고서별, CFS 우선)
-    std_rows = []
-    for (y, rc), g0 in df_long.groupby(["bsns_year", "reprt_code"]):
-        fs_choice = "CFS" if (g0["fs_div"] == "CFS").any() else ("OFS" if (g0["fs_div"] == "OFS").any() else None)
-        g = g0[g0["fs_div"] == fs_choice].copy() if fs_choice else g0.copy()
+    # status 000 only contains useful list; 013 is "no data"
+    items = payload.get("list") or []
+    if status != "000" or not isinstance(items, list) or len(items) == 0:
+        return []
 
-        rev_nm = pick_account(g, REV_CANDS, "IS")
-        op_nm  = pick_account(g, OP_CANDS, "IS")
-        ni_nm  = pick_account(g, NI_CANDS, "IS")
-        eq_nm  = pick_account(g, EQ_CANDS, "BS")
-
-        def get_val(nm, sj):
-            if not nm:
-                return None
-            sub = g[(g["sj_div"] == sj) & (g["account_nm"] == nm)]
-            if sub.empty:
-                return None
-            return best_value(sub.iloc[0])
-
-        revenue = get_val(rev_nm, "IS")
-        op_income = get_val(op_nm, "IS")
-        net_income = get_val(ni_nm, "IS")
-        equity = get_val(eq_nm, "BS")
-        roe = (net_income / equity) if (net_income is not None and equity not in (None, 0)) else None
-
-        std_rows.append({
+    rows: List[Dict] = []
+    for it in items:
+        # Keep the raw DART fields as much as possible for later mapping
+        row = {
             "ticker": ticker,
-            "name": meta.get("name", ""),
-            "bsns_year": int(y),
-            "reprt_code": str(rc),
-            "fs_div": fs_choice,
+            "name": name,
+            "bsns_year": str(it.get("bsns_year") or year),
+            "reprt_code": str(it.get("reprt_code") or reprt_code),
+
+            "rcept_no": it.get("rcept_no"),
+            "stock_code": it.get("stock_code"),
+
+            "fs_div": it.get("fs_div"),
+            "fs_nm": it.get("fs_nm"),
+            "sj_div": it.get("sj_div"),
+            "sj_nm": it.get("sj_nm"),
+
+            "account_nm": it.get("account_nm"),
+            "ord": it.get("ord"),
+            "currency": it.get("currency"),
+
+            "thstrm_nm": it.get("thstrm_nm"),
+            "thstrm_dt": it.get("thstrm_dt"),
+            "thstrm_amount": to_number(it.get("thstrm_amount")),
+            "thstrm_add_amount": to_number(it.get("thstrm_add_amount")),
+
+            "frmtrm_nm": it.get("frmtrm_nm"),
+            "frmtrm_dt": it.get("frmtrm_dt"),
+            "frmtrm_amount": to_number(it.get("frmtrm_amount")),
+            "frmtrm_add_amount": to_number(it.get("frmtrm_add_amount")),
+
+            "bfefrmtrm_nm": it.get("bfefrmtrm_nm"),
+            "bfefrmtrm_dt": it.get("bfefrmtrm_dt"),
+            "bfefrmtrm_amount": to_number(it.get("bfefrmtrm_amount")),
+            "bfefrmtrm_add_amount": to_number(it.get("bfefrmtrm_add_amount")),
+
+            "status": status,
+            "message": message,
+            "fetched_utc": fetched_utc,
+            "source_file": source_file,
+        }
+        rows.append(row)
+
+    return rows
+
+
+def pick_metric_amount(df: pd.DataFrame, candidates: List[str], fs_priority: List[str], sj_div: Optional[str] = None) -> Optional[float]:
+    """
+    df: long ledger for a single (ticker, year, reprt_code)
+    """
+    if df.empty:
+        return None
+    x = df.copy()
+
+    if sj_div is not None and "sj_div" in x.columns:
+        x = x[x["sj_div"] == sj_div]
+
+    if "account_nm" not in x.columns:
+        return None
+
+    x = x[x["account_nm"].isin(candidates)]
+    if x.empty:
+        return None
+
+    # prefer CFS then OFS (or env-defined)
+    if "fs_div" in x.columns and fs_priority:
+        x["fs_rank"] = x["fs_div"].apply(lambda v: fs_priority.index(v) if v in fs_priority else 999)
+        x = x.sort_values(["fs_rank"], ascending=True)
+
+    # choose the first non-null thstrm_amount
+    for v in x["thstrm_amount"].tolist():
+        if v is not None and pd.notna(v):
+            return float(v)
+    return None
+
+
+def build_standard_summary(
+    long_df: pd.DataFrame,
+    fs_priority: List[str],
+) -> pd.DataFrame:
+    """
+    Produce a compact table per (ticker, year, reprt_code)
+    NOTE: Heuristic mapping; you can refine later.
+    """
+    if long_df.empty:
+        return pd.DataFrame()
+
+    # candidate account names (heuristic; adjust later as needed)
+    REV = ["매출액", "수익(매출액)", "영업수익"]
+    OP  = ["영업이익"]
+    NI  = ["당기순이익", "당기순이익(손실)", "연결당기순이익", "지배기업소유주지분당기순이익"]
+    EQ  = ["자본총계", "자본총계(지배기업소유주지분)", "자본총계(지배기업소유주지분)"]
+
+    group_cols = ["ticker", "name", "bsns_year", "reprt_code"]
+    out_rows = []
+
+    for (ticker, name, y, rc), g in long_df.groupby(group_cols, dropna=False):
+        g2 = g.copy()
+        # numeric year
+        year_i = int(str(y)[:4]) if str(y).isdigit() else None
+
+        revenue = pick_metric_amount(g2, REV, fs_priority, sj_div="IS")
+        op      = pick_metric_amount(g2, OP,  fs_priority, sj_div="IS")
+        ni      = pick_metric_amount(g2, NI,  fs_priority, sj_div="IS")
+        equity  = pick_metric_amount(g2, EQ,  fs_priority, sj_div="BS")
+
+        roe = None
+        if ni is not None and equity is not None and equity != 0:
+            roe = float(ni) / float(equity)
+
+        out_rows.append({
+            "ticker": ticker,
+            "name": name,
+            "year": year_i,
+            "reprt_code": rc,
             "revenue": revenue,
-            "op_income": op_income,
-            "net_income": net_income,
+            "operating_income": op,
+            "net_income": ni,
             "equity": equity,
             "roe": roe,
         })
 
-    df_std = pd.DataFrame(std_rows).sort_values(["ticker", "bsns_year", "reprt_code"])
-    return df_long, df_std
+    out = pd.DataFrame(out_rows)
+    # stable sort: year then reprt_code
+    if not out.empty:
+        out = out.sort_values(["ticker", "year", "reprt_code"], ascending=True)
+    return out
+
 
 def main():
-    std_all = []
-    tick_dirs = [p for p in RAW_DIR.iterdir() if p.is_dir()]
-    print(f"[curate_dart] tickers with raw dirs: {len(tick_dirs)}")
+    year_from = int(os.getenv("DART_YEAR_FROM", "2015"))
+    year_to = int(os.getenv("DART_YEAR_TO", "2017"))
+    reprt_codes = set(parse_codes(os.getenv("DART_REPRT_CODES", "11011,11012,11013,11014")))
 
-    ok = 0
-    for i, td in enumerate(tick_dirs, 1):
-        res = curate_one_ticker(td)
-        if res == (None, None):
+    raw_dir = Path(os.getenv("DART_RAW_DIR", "data/stocks/raw/dart"))
+    curated_dir = Path(os.getenv("DART_CURATED_DIR", "data/stocks/curated"))
+    listings_path = Path(os.getenv("DART_LISTINGS_PATH", "data/stocks/master/listings.parquet"))
+
+    overwrite = env_bool("DART_LONG_OVERWRITE", False)
+    write_standard = env_bool("DART_WRITE_STANDARD_CSV", True)
+
+    fs_priority = parse_codes(os.getenv("DART_STANDARD_FS_DIV_PRIORITY", "CFS,OFS"))
+    if not fs_priority:
+        fs_priority = ["CFS", "OFS"]
+
+    print("[curate_dart] config")
+    print(f"  year_from={year_from} year_to={year_to}")
+    print(f"  reprt_codes={sorted(list(reprt_codes))}")
+    print(f"  raw_dir={raw_dir}")
+    print(f"  curated_dir={curated_dir}")
+    print(f"  listings_path={listings_path}")
+    print(f"  overwrite={overwrite}")
+    print(f"  write_standard={write_standard}")
+    print(f"  fs_priority={fs_priority}")
+
+    listings_map = load_listings_map(listings_path)
+
+    if not raw_dir.exists():
+        raise FileNotFoundError(f"raw_dir not found: {raw_dir}")
+
+    ticker_dirs = sorted([p for p in raw_dir.iterdir() if p.is_dir()])
+
+    ok, skip, err = 0, 0, 0
+    all_long_for_standard = []  # collect minimal for standard CSV (can be big; OK per year-slice)
+
+    for td in ticker_dirs:
+        ticker = td.name
+        name = listings_map.get(ticker, {}).get("name", "")
+
+        out_dir = curated_dir / ticker
+        out_dir.mkdir(parents=True, exist_ok=True)
+        out_parquet = out_dir / "dart_accounts_long.parquet"
+
+        if out_parquet.exists() and not overwrite:
+            skip += 1
             continue
-        _, df_std = res
-        std_all.append(df_std)
-        ok += 1
-        if i <= 20 or i % 300 == 0:
-            print(f"  [{i}/{len(tick_dirs)}] {td.name}: OK")
 
-    if std_all:
-        df = pd.concat(std_all, ignore_index=True)
-        out = DOCS_DIR / f"dart_standard_{YEAR_FROM}_{YEAR_TO}.csv"
-        df.to_csv(out, index=False, encoding="utf-8-sig")
-        print(f"[curate_dart] wrote standard csv: {out} rows={len(df):,}")
+        try:
+            jobs = iter_raw_json_files(td, year_from, year_to, reprt_codes)
+            if not jobs:
+                # no raw files in range -> skip
+                skip += 1
+                continue
 
-    print(f"[curate_dart] done ok_tickers={ok}")
+            rows = []
+            for y, rc, fp in jobs:
+                payload = read_one_json(fp)
+                rows.extend(json_to_long_rows(
+                    ticker=ticker,
+                    name=name,
+                    year=y,
+                    reprt_code=rc,
+                    payload=payload,
+                    source_file=str(fp),
+                ))
+
+            if not rows:
+                # all were status!=000 or empty list
+                skip += 1
+                continue
+
+            df = pd.DataFrame(rows)
+
+            # normalize dtypes
+            for c in ["bsns_year", "reprt_code", "fs_div", "sj_div", "account_nm"]:
+                if c in df.columns:
+                    df[c] = df[c].astype(str)
+
+            # Keep long parquet compact: sort & dedup
+            # (Sometimes same account rows can appear; use a conservative key)
+            key_cols = ["ticker", "bsns_year", "reprt_code", "fs_div", "sj_div", "account_nm", "ord", "thstrm_dt"]
+            existing = [c for c in key_cols if c in df.columns]
+            if existing:
+                df = df.drop_duplicates(subset=existing, keep="last")
+
+            sort_cols = [c for c in ["ticker", "bsns_year", "reprt_code", "fs_div", "sj_div", "ord", "account_nm"] if c in df.columns]
+            if sort_cols:
+                df = df.sort_values(sort_cols, ascending=True)
+
+            df.to_parquet(out_parquet, index=False)
+            ok += 1
+
+            if write_standard:
+                # keep only columns needed for standard computation to reduce memory
+                keep_cols = ["ticker", "name", "bsns_year", "reprt_code", "fs_div", "sj_div", "account_nm", "thstrm_amount"]
+                keep_cols = [c for c in keep_cols if c in df.columns]
+                all_long_for_standard.append(df[keep_cols].copy())
+
+        except Exception as e:
+            err += 1
+            print(f"[curate_dart] ERROR ticker={ticker} {e}")
+
+    print("[curate_dart] result")
+    print(f"  OK={ok} SKIP={skip} ERROR={err}")
+
+    if write_standard:
+        docs_dir = Path("docs/stocks")
+        docs_dir.mkdir(parents=True, exist_ok=True)
+        out_csv = docs_dir / f"dart_standard_{year_from}_{year_to}.csv"
+
+        if len(all_long_for_standard) == 0:
+            print(f"[curate_dart] WARN no rows for standard csv -> not writing: {out_csv}")
+        else:
+            long_df = pd.concat(all_long_for_standard, ignore_index=True)
+            std = build_standard_summary(long_df, fs_priority=fs_priority)
+            std.to_csv(out_csv, index=False, encoding="utf-8-sig")
+            print(f"[curate_dart] wrote standard csv: {out_csv} rows={len(std):,}")
+
 
 if __name__ == "__main__":
     main()
