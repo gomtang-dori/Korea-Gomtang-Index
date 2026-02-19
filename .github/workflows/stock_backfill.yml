@@ -27,20 +27,28 @@ jobs:
     env:
       DART_API_KEY: ${{ secrets.DART_API_KEY }}
       SAMPLE_MODE: "false"
-      MAX_WORKERS: "20"          # prices 등 기존 유지
-      MAX_WORKERS_FLOWS: "12"     # flows 전용
+
+      # prices는 20 유지
+      MAX_WORKERS: "20"
+
+      # flows는 별도(안정성) - 6 권장
+      MAX_WORKERS_FLOWS: "6"
+
       INCREMENTAL_MODE: "false"
       START_DATE: "20150101"
+
+      # KRX flows raw 저장
       KRX_FLOWS_SAVE_FORMAT: "parquet"
       KRX_RETRY: "3"
+      KRX_NO_DATA_RETRY: "2"
+      KRX_NO_DATA_SLEEP_BASE: "3.0"
+      KRX_THROTTLE_SEC: "0.0"    # 필요시 0.1~0.3
 
+      # curate flows 옵션
       FLOW_INCLUDE_BUYSELL: "true"
       FLOW_INCLUDE_VOLUME: "true"
       FLOW_WINDOWS: "3,5,10,20"
       FLOW_RAW_FORMAT: "auto"
-      KRX_NO_DATA_RETRY: "2"
-      KRX_NO_DATA_SLEEP_BASE: "3.0"
-      KRX_THROTTLE_SEC: "0.0"    # 필요하면 0.1~0.3으로 올려보세요      
 
     steps:
       - uses: actions/checkout@v4
@@ -57,83 +65,8 @@ jobs:
           echo "RUN_TAG=${GITHUB_RUN_ID}_${GITHUB_RUN_ATTEMPT}" >> $GITHUB_ENV
           echo "RUN_TAG=$RUN_TAG"
 
-      # ✅ 모든 스크립트를 프로젝트 루트에서 실행 (cd src/stocks 제거)
-
-      - name: "[1/11] Fetch listings (2771 stocks)"
-        continue-on-error: true
-        run: |
-          python src/stocks/fetch_listings.py || echo "⚠️ 마스터 목록 오류"
-
-      - name: "[2/11] Fetch prices (30~60분)"
-        if: ${{ !inputs.skip_prices }}
-        continue-on-error: true
-        run: |
-          echo "⏱️  예상 소요: 30~60분 (병렬 20 workers)"
-          python src/stocks/fetch_prices.py || echo "⚠️ 가격 데이터 일부 오류"
-
-      - name: "[3/11] Fetch KRX flows (60~90분)"
-        if: ${{ !inputs.skip_flows }}
-        continue-on-error: true
-        run: |
-          echo "⏱️  예상 소요: 60~90분 (병렬 20 workers)"
-          python src/stocks/fetch_krx_flows.py || echo "⚠️ 수급 데이터 일부 오류"
-
-      - name: "[3-1] Retry KRX flows (no data tickers only)"
-        continue-on-error: true
-        env:
-          MAX_WORKERS_FLOWS_RETRY: "3"
-          KRX_THROTTLE_SEC_RETRY2: "0.2"
-          KRX_NO_DATA_RETRY_RETRY2: "3"
-          KRX_NO_DATA_SLEEP_BASE_RETRY2: "5.0"
-          RETRY2_OVERWRITE_IF_EXISTS: "false"
-        run: |
-          python src/stocks/fetch_krx_flows_retry_nodata.py || echo "⚠️ flows retry2 일부 오류"
-          
-      - name: "[4/11] Fetch fundamentals (DIV/BPS/PER/EPS)"
-        continue-on-error: true
-        env:
-          MAX_WORKERS_FUNDAMENTALS: "10"
-          FUND_CHUNK_YEARS: "2"
-          FUND_SAVE_FORMAT: "parquet"
-          START_DATE: "20150101"
-          END_DATE: "20261231"
-        run: |
-          python src/stocks/fetch_fundamentals.py || echo "⚠️ fundamentals 일부 오류"
-      
-      - name: "[4-1/11] Curate fundamentals"
-        continue-on-error: true
-        run: |
-          python src/stocks/curate_fundamentals.py || echo "⚠️ fundamentals curate 일부 오류"
-          
-      
-
-      - name: "[5/11] Fetch DART financials (30~60분)"
-        if: ${{ !inputs.skip_dart }}
-        continue-on-error: true
-        run: |
-          echo "⏱️  예상 소요: 30~60분 (병렬 5 workers, DART API rate limit)"
-          python src/stocks/fetch_dart_financials.py || echo "⚠️ DART 데이터 일부 오류"
-
-      # ✅ 중간 저장 1: Raw 데이터 백업
-      - name: "[중간 저장 1] Raw 데이터 백업"
-        continue-on-error: true
-        run: |
-          echo "=== 중간 저장 $(date) ==="
-          du -sh data/stocks/ || true
-          tar -czf raw_data_backup.tar.gz data/stocks/raw/ || true
-
-      - name: "[중간 저장 1-1] Raw 데이터 업로드"
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: raw-data-backup
-          path: raw_data_backup.tar.gz
-          retention-days: 7
-          if-no-files-found: warn
-
       # ============================================================
-      # ✅ (NEW) derived outputs 클린 리빌드 + pre-clean 백업
-      # - 위치: raw 업로드 직후 / curate 시작 직전
+      # ✅ clean_derived 는 "모든 curate/compute/render/export" 보다 먼저!
       # ============================================================
 
       - name: "[클린업] Backup existing derived outputs (curated/analysis/docs)"
@@ -167,7 +100,6 @@ jobs:
           mkdir -p data/stocks/curated data/stocks/analysis docs/stocks
           echo "OK: derived outputs cleaned & directories recreated"
 
-      # ✅ (NEW) Run marker: 이번 run에서 생성된 산출물인지 판별
       - name: "[마커] Write run marker"
         if: always()
         run: |
@@ -181,28 +113,107 @@ jobs:
           echo "=== marker ==="
           cat docs/stocks/_run_marker.txt
 
-      - name: "[6/11] Curate financials"
+      # ============================================================
+      # ✅ Fetch 단계 (raw 생성/갱신)
+      # ============================================================
+
+      - name: "[1/12] Fetch listings (2771 stocks)"
+        continue-on-error: true
+        run: |
+          python src/stocks/fetch_listings.py || echo "⚠️ 마스터 목록 오류"
+
+      - name: "[2/12] Fetch prices (30~60분)"
+        if: ${{ !inputs.skip_prices }}
+        continue-on-error: true
+        run: |
+          echo "⏱️  예상 소요: 30~60분 (병렬 20 workers)"
+          python src/stocks/fetch_prices.py || echo "⚠️ 가격 데이터 일부 오류"
+
+      - name: "[3/12] Fetch KRX flows (60~90분)"
+        if: ${{ !inputs.skip_flows }}
+        continue-on-error: true
+        run: |
+          echo "⏱️  예상 소요: 60~90분 (flows workers=${MAX_WORKERS_FLOWS})"
+          python src/stocks/fetch_krx_flows.py || echo "⚠️ 수급 데이터 일부 오류"
+
+      - name: "[3-1/12] Retry KRX flows (no data tickers only)"
+        if: ${{ !inputs.skip_flows }}
+        continue-on-error: true
+        env:
+          MAX_WORKERS_FLOWS_RETRY: "3"
+          KRX_THROTTLE_SEC_RETRY2: "0.2"
+          KRX_NO_DATA_RETRY_RETRY2: "3"
+          KRX_NO_DATA_SLEEP_BASE_RETRY2: "5.0"
+          RETRY2_OVERWRITE_IF_EXISTS: "false"
+        run: |
+          python src/stocks/fetch_krx_flows_retry_nodata.py || echo "⚠️ flows retry2 일부 오류"
+
+      - name: "[4/12] Fetch fundamentals (DIV/BPS/PER/EPS)"
+        continue-on-error: true
+        env:
+          MAX_WORKERS_FUNDAMENTALS: "10"
+          FUND_CHUNK_YEARS: "2"
+          FUND_SAVE_FORMAT: "parquet"
+          START_DATE: "20150101"
+          END_DATE: "20261231"
+        run: |
+          python src/stocks/fetch_fundamentals.py || echo "⚠️ fundamentals 일부 오류"
+
+      - name: "[5/12] Fetch DART financials (30~60분)"
+        if: ${{ !inputs.skip_dart }}
+        continue-on-error: true
+        run: |
+          echo "⏱️  예상 소요: 30~60분 (병렬 5 workers, DART API rate limit)"
+          python src/stocks/fetch_dart_financials.py || echo "⚠️ DART 데이터 일부 오류"
+
+      # ✅ 중간 저장 1: Raw 데이터 백업
+      - name: "[중간 저장 1] Raw 데이터 백업"
+        continue-on-error: true
+        run: |
+          echo "=== raw backup $(date) ==="
+          du -sh data/stocks/ || true
+          tar -czf raw_data_backup.tar.gz data/stocks/raw/ || true
+
+      - name: "[중간 저장 1-1] Raw 데이터 업로드"
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: raw-data-backup
+          path: raw_data_backup.tar.gz
+          retention-days: 7
+          if-no-files-found: warn
+
+      # ============================================================
+      # ✅ Curate 단계 (derived 생성) - clean 이후에만 실행
+      # ============================================================
+
+      - name: "[6/12] Curate financials"
         continue-on-error: true
         run: |
           python src/stocks/curate_financials.py || echo "⚠️ 재무 큐레이션 일부 오류"
 
-      - name: "[7/11] Curate flows"
+      - name: "[7/12] Curate flows"
         continue-on-error: true
         run: |
           python src/stocks/curate_flows.py || echo "⚠️ 수급 큐레이션 일부 오류"
 
-      - name: "[8/11] Compute features"
+      - name: "[8/12] Curate fundamentals"
+        continue-on-error: true
+        run: |
+          python src/stocks/curate_fundamentals.py || echo "⚠️ fundamentals curate 일부 오류"
+
+      - name: "[9/12] Compute features"
         continue-on-error: true
         run: |
           python src/stocks/compute_features.py || echo "⚠️ Features 계산 일부 오류"
 
-      - name: Export flows recent 60d CSV (Excel/검증용)
+      - name: "Export flows recent 60d CSV (Excel/검증용)"
         continue-on-error: true
         run: |
           export RECENT_DAYS=60
           python src/stocks/export_flows_recent60d_csv.py || echo "⚠️ flows_recent60d.csv 생성 일부 오류"
 
-      - name: Upload flows recent 60d CSV
+      - name: "Upload flows recent 60d CSV"
         if: always()
         uses: actions/upload-artifact@v4
         with:
@@ -234,27 +245,24 @@ jobs:
 
           git push || echo "⚠️ Git push 실패 (계속 진행)"
 
-      - name: "[9/11] Render reports (2771 stocks)"
+      - name: "[10/12] Render reports (2771 stocks)"
         continue-on-error: true
         run: |
           python src/stocks/render_stock_report.py || echo "⚠️ 리포트 생성 일부 오류"
 
-      - name: "[10/11] Export CSV summaries"
+      - name: "[11/12] Export CSV summaries"
         continue-on-error: true
         run: |
           python src/stocks/export_data_summary.py || echo "⚠️ CSV 출력 일부 오류"
 
-      - name: "[11/11] Export raw data to CSV"
+      - name: "[12/12] Export raw data to CSV"
         continue-on-error: true
         run: |
           echo "⏱️  예상 소요: 5~10분 (대용량 CSV 생성)"
           python src/stocks/export_raw_to_csv.py || echo "⚠️ Raw CSV 출력 일부 오류"
 
       # ============================================================
-      # ✅ (NEW) Output verification
-      # - index.html만 남은 "가짜 성공" 방지
-      # - marker가 이번 RUN_TAG인지 확인
-      # - 이후 업로드 step들을 조건부로 실행
+      # ✅ Output verification / artifact / final commit / summary
       # ============================================================
 
       - name: "Verify outputs (prevent stale artifacts)"
@@ -275,15 +283,6 @@ jobs:
           HTML_TOTAL=$(ls docs/stocks/*.html 2>/dev/null | wc -l | tr -d ' ')
           HTML_NON_INDEX=$(ls docs/stocks/*.html 2>/dev/null | grep -v "index.html" | wc -l | tr -d ' ')
           CSV_TOTAL=$(ls docs/stocks/*.csv 2>/dev/null | wc -l | tr -d ' ')
-
-          INDEX_EXISTS="false"
-          [ -f "docs/stocks/index.html" ] && INDEX_EXISTS="true"
-
-          echo "MARKER_OK=$MARKER_OK"
-          echo "INDEX_EXISTS=$INDEX_EXISTS"
-          echo "HTML_TOTAL=$HTML_TOTAL"
-          echo "HTML_NON_INDEX=$HTML_NON_INDEX"
-          echo "CSV_TOTAL=$CSV_TOTAL"
 
           HAS_HTML="false"
           if [ "$MARKER_OK" = "true" ] && [ "$HTML_NON_INDEX" -ge 1 ]; then
@@ -322,29 +321,23 @@ jobs:
           echo "verify.csv_total=${{ steps.verify_outputs.outputs.csv_total }}"
 
           echo ""
-          echo "데이터 용량:"
+          echo "디렉토리 용량:"
           du -sh data/stocks/ 2>/dev/null || echo "data 없음"
           du -sh docs/stocks/ 2>/dev/null || echo "docs 없음"
-
-          echo ""
-          echo "docs/stocks 상위 목록:"
-          ls -lh docs/stocks/ 2>/dev/null | head -30 || true
 
           echo ""
           echo "종목 수 통계:"
           echo "  가격: $(ls data/stocks/raw/prices/ 2>/dev/null | wc -l)"
           echo "  수급: $(ls data/stocks/raw/krx_flows/ 2>/dev/null | wc -l)"
-          echo "  DART: $(ls data/stocks/raw/dart/ 2>/dev/null | wc -l)"
+          echo "  fundamentals(raw): $(ls data/stocks/raw/fundamentals/ 2>/dev/null | wc -l)"
+          echo "  fundamentals(curated): $(find data/stocks/curated -name fundamentals_daily.parquet 2>/dev/null | wc -l)"
           echo "  HTML: $(ls docs/stocks/*.html 2>/dev/null | wc -l)"
           echo "  CSV: $(ls docs/stocks/*.csv 2>/dev/null | wc -l)"
-
-      # ✅ Artifacts 업로드 (조건부)
 
       - name: "Prepare HTML upload (샘플 100개)"
         if: ${{ always() && steps.verify_outputs.outputs.has_html == 'true' }}
         run: |
           mkdir -p upload_html
-          # index 포함 + 개별 html 100개
           cp docs/stocks/index.html upload_html/ 2>/dev/null || true
           ls docs/stocks/*.html 2>/dev/null | grep -v "index.html" | head -100 | xargs -I {} cp {} upload_html/ || true
           cp docs/stocks/_run_marker.txt upload_html/ 2>/dev/null || true
@@ -388,8 +381,6 @@ jobs:
           retention-days: 90
           if-no-files-found: warn
 
-      # ✅ 최종 커밋 (빈 커밋 방지)
-
       - name: "Final commit (curated + reports)"
         if: always()
         continue-on-error: true
@@ -417,8 +408,6 @@ jobs:
 
           git push || echo "⚠️ Final push 실패"
 
-      # ✅ 백필 요약 리포트
-
       - name: "Generate backfill summary"
         if: always()
         run: |
@@ -432,6 +421,8 @@ jobs:
           📊 데이터 통계:
           - 가격 데이터: $(ls data/stocks/raw/prices/ 2>/dev/null | wc -l) 종목
           - 수급 데이터: $(ls data/stocks/raw/krx_flows/ 2>/dev/null | wc -l) 종목
+          - fundamentals(raw): $(ls data/stocks/raw/fundamentals/ 2>/dev/null | wc -l) 종목
+          - fundamentals(curated): $(find data/stocks/curated -name fundamentals_daily.parquet 2>/dev/null | wc -l) 종목
           - DART 데이터: $(ls data/stocks/raw/dart/ 2>/dev/null | wc -l) 종목
           - Features: $(ls data/stocks/analysis/ 2>/dev/null | wc -l) 종목
           - HTML 리포트: $(ls docs/stocks/*.html 2>/dev/null | wc -l) 개
@@ -448,20 +439,6 @@ jobs:
           $(du -sh data/stocks/curated/ 2>/dev/null || echo "curated: N/A")
           $(du -sh data/stocks/analysis/ 2>/dev/null || echo "analysis: N/A")
           $(du -sh docs/stocks/ 2>/dev/null || echo "docs: N/A")
-
-          📈 완료율:
-          $(python3 -c "
-          import pandas as pd
-          try:
-              df = pd.read_csv('docs/stocks/master_summary.csv')
-              complete = (df['has_features']==True).sum()
-              total = len(df)
-              print(f'데이터 완료: {complete}/{total} ({complete/total*100:.1f}%)')
-          except Exception as e:
-              print('완료율 계산 불가', e)
-          " 2>/dev/null || echo "완료율: N/A")
-
-          ===================================
           EOF
 
           cat backfill_summary.txt
