@@ -59,19 +59,19 @@ jobs:
 
       # ✅ 모든 스크립트를 프로젝트 루트에서 실행 (cd src/stocks 제거)
 
-      - name: "[1/10] Fetch listings (2771 stocks)"
+      - name: "[1/11] Fetch listings (2771 stocks)"
         continue-on-error: true
         run: |
           python src/stocks/fetch_listings.py || echo "⚠️ 마스터 목록 오류"
 
-      - name: "[2/10] Fetch prices (30~60분)"
+      - name: "[2/11] Fetch prices (30~60분)"
         if: ${{ !inputs.skip_prices }}
         continue-on-error: true
         run: |
           echo "⏱️  예상 소요: 30~60분 (병렬 20 workers)"
           python src/stocks/fetch_prices.py || echo "⚠️ 가격 데이터 일부 오류"
 
-      - name: "[3/10] Fetch KRX flows (60~90분)"
+      - name: "[3/11] Fetch KRX flows (60~90분)"
         if: ${{ !inputs.skip_flows }}
         continue-on-error: true
         run: |
@@ -88,9 +88,26 @@ jobs:
           RETRY2_OVERWRITE_IF_EXISTS: "false"
         run: |
           python src/stocks/fetch_krx_flows_retry_nodata.py || echo "⚠️ flows retry2 일부 오류"
+          
+      - name: "[4/11] Fetch fundamentals (DIV/BPS/PER/EPS)"
+        continue-on-error: true
+        env:
+          MAX_WORKERS_FUNDAMENTALS: "10"
+          FUND_CHUNK_YEARS: "2"
+          FUND_SAVE_FORMAT: "parquet"
+          START_DATE: "20150101"
+          END_DATE: "20261231"
+        run: |
+          python src/stocks/fetch_fundamentals.py || echo "⚠️ fundamentals 일부 오류"
+      
+      - name: "[4-1/11] Curate fundamentals"
+        continue-on-error: true
+        run: |
+          python src/stocks/curate_fundamentals.py || echo "⚠️ fundamentals curate 일부 오류"
+          
       
 
-      - name: "[4/10] Fetch DART financials (30~60분)"
+      - name: "[5/11] Fetch DART financials (30~60분)"
         if: ${{ !inputs.skip_dart }}
         continue-on-error: true
         run: |
@@ -164,17 +181,17 @@ jobs:
           echo "=== marker ==="
           cat docs/stocks/_run_marker.txt
 
-      - name: "[5/10] Curate financials"
+      - name: "[6/11] Curate financials"
         continue-on-error: true
         run: |
           python src/stocks/curate_financials.py || echo "⚠️ 재무 큐레이션 일부 오류"
 
-      - name: "[6/10] Curate flows"
+      - name: "[7/11] Curate flows"
         continue-on-error: true
         run: |
           python src/stocks/curate_flows.py || echo "⚠️ 수급 큐레이션 일부 오류"
 
-      - name: "[7/10] Compute features"
+      - name: "[8/11] Compute features"
         continue-on-error: true
         run: |
           python src/stocks/compute_features.py || echo "⚠️ Features 계산 일부 오류"
@@ -217,17 +234,17 @@ jobs:
 
           git push || echo "⚠️ Git push 실패 (계속 진행)"
 
-      - name: "[8/10] Render reports (2771 stocks)"
+      - name: "[9/11] Render reports (2771 stocks)"
         continue-on-error: true
         run: |
           python src/stocks/render_stock_report.py || echo "⚠️ 리포트 생성 일부 오류"
 
-      - name: "[9/10] Export CSV summaries"
+      - name: "[10/11] Export CSV summaries"
         continue-on-error: true
         run: |
           python src/stocks/export_data_summary.py || echo "⚠️ CSV 출력 일부 오류"
 
-      - name: "[10/10] Export raw data to CSV"
+      - name: "[11/11] Export raw data to CSV"
         continue-on-error: true
         run: |
           echo "⏱️  예상 소요: 5~10분 (대용량 CSV 생성)"
