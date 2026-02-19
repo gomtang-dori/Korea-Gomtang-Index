@@ -1,0 +1,147 @@
+name: DART Backfill (Raw JSON Cache)
+
+on:
+  workflow_dispatch:
+    inputs:
+      year_from:
+        description: "Start year (YYYY)"
+        type: string
+        default: "2015"
+      year_to:
+        description: "End year (YYYY)"
+        type: string
+        default: "2017"
+      reprt_codes:
+        description: "Report codes comma-separated (11011,11012,11013,11014)"
+        type: string
+        default: "11011,11012,11013,11014"
+      fs_div_order:
+        description: "FS priority order (CFS,OFS)"
+        type: string
+        default: "CFS,OFS"
+      dart_max_workers:
+        description: "DART workers (recommend 3~6)"
+        type: string
+        default: "5"
+      dart_min_interval_sec:
+        description: "Global request min interval seconds (e.g., 0.15)"
+        type: string
+        default: "0.15"
+      dart_run_budget:
+        description: "Max calls in this run (safety). e.g., 38000"
+        type: string
+        default: "38000"
+      cache_mode:
+        description: "skip or overwrite"
+        type: string
+        default: "skip"
+      upload_raw_artifact:
+        description: "Upload raw dart folder as artifact"
+        type: boolean
+        default: true
+
+jobs:
+  dart_backfill:
+    runs-on: ubuntu-latest
+    timeout-minutes: 210  # 약 3.5시간 (3시간 운영 목표 + 여유)
+    env:
+      DART_API_KEY: ${{ secrets.DART_API_KEY }}
+
+      # 🔽 fetch_dart_financials.py가 읽을 env들(교체된 버전 기준)
+      DART_YEAR_FROM: ${{ inputs.year_from }}
+      DART_YEAR_TO: ${{ inputs.year_to }}
+      DART_REPRT_CODES: ${{ inputs.reprt_codes }}
+      DART_FS_DIV_ORDER: ${{ inputs.fs_div_order }}
+      DART_MAX_WORKERS: ${{ inputs.dart_max_workers }}
+      DART_MIN_INTERVAL_SEC: ${{ inputs.dart_min_interval_sec }}
+      DART_RUN_BUDGET: ${{ inputs.dart_run_budget }}
+      DART_CACHE_MODE: ${{ inputs.cache_mode }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+
+      - name: Install dependencies
+        run: |
+          pip install pandas pyarrow requests
+
+      - name: Print config
+        run: |
+          echo "=== DART Backfill Config ==="
+          echo "year_from=${{ inputs.year_from }}"
+          echo "year_to=${{ inputs.year_to }}"
+          echo "reprt_codes=${{ inputs.reprt_codes }}"
+          echo "fs_div_order=${{ inputs.fs_div_order }}"
+          echo "dart_max_workers=${{ inputs.dart_max_workers }}"
+          echo "dart_min_interval_sec=${{ inputs.dart_min_interval_sec }}"
+          echo "dart_run_budget=${{ inputs.dart_run_budget }}"
+          echo "cache_mode=${{ inputs.cache_mode }}"
+          echo "============================"
+
+      - name: Run fetch_dart_financials.py (raw cache only)
+        continue-on-error: true
+        run: |
+          python src/stocks/fetch_dart_financials.py || echo "⚠️ DART fetch 일부 오류 (continue)"
+
+      - name: Quick stats (file counts)
+        if: always()
+        run: |
+          echo "=== raw dart file count ==="
+          ls -al data/stocks/raw 2>/dev/null || true
+          echo "dart dir:"
+          ls -al data/stocks/raw/dart 2>/dev/null || true
+          echo "total json files:"
+          find data/stocks/raw/dart -type f -name "*.json" 2>/dev/null | wc -l || true
+          echo "corpcode cache:"
+          find data/stocks/raw/dart/_corpcode_cache -type f 2>/dev/null | wc -l || true
+
+      - name: Create raw dart tar.gz
+        if: ${{ always() && inputs.upload_raw_artifact }}
+        continue-on-error: true
+        run: |
+          echo "Compressing raw DART cache..."
+          tar -czf dart_raw_${{ inputs.year_from }}_${{ inputs.year_to }}.tar.gz data/stocks/raw/dart 2>/dev/null || true
+          ls -lh dart_raw_${{ inputs.year_from }}_${{ inputs.year_to }}.tar.gz 2>/dev/null || true
+
+      - name: Upload raw dart artifact
+        if: ${{ always() && inputs.upload_raw_artifact }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: dart-raw-${{ inputs.year_from }}-${{ inputs.year_to }}
+          path: dart_raw_${{ inputs.year_from }}_${{ inputs.year_to }}.tar.gz
+          retention-days: 30
+          if-no-files-found: warn
+
+      - name: Write run summary
+        if: always()
+        run: |
+          cat > dart_backfill_summary.txt <<EOF
+          ===================================
+          DART Raw Backfill Summary
+          ===================================
+          run: $GITHUB_RUN_ID / attempt: $GITHUB_RUN_ATTEMPT
+          year_from: ${{ inputs.year_from }}
+          year_to:   ${{ inputs.year_to }}
+          reprt_codes: ${{ inputs.reprt_codes }}
+          fs_div_order: ${{ inputs.fs_div_order }}
+          cache_mode: ${{ inputs.cache_mode }}
+
+          json_files:
+          $(find data/stocks/raw/dart -type f -name "*.json" 2>/dev/null | wc -l || true)
+
+          note:
+          - reprt_code meaning (11013/11012/11014/11011) and "since 2015" availability are defined by OpenDART guide.
+          EOF
+          cat dart_backfill_summary.txt
+
+      - name: Upload summary
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: dart-backfill-summary-${{ inputs.year_from }}-${{ inputs.year_to }}
+          path: dart_backfill_summary.txt
+          retention-days: 90
+          if-no-files-found: warn
