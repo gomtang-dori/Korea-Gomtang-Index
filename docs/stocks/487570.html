@@ -5,25 +5,57 @@
 <title>HS효성 (487570)</title>
 <style>
 body { font-family: sans-serif; margin: 20px; background: #f5f5f5; }
-.container { max-width: 900px; margin: auto; background: white; padding: 30px; }
-h1 { color: #333; border-bottom: 3px solid #4CAF50; }
-.card { background: #fafafa; padding: 15px; margin: 15px 0; border-radius: 5px; }
-.opinion { font-size: 24px; font-weight: bold; color: #F44336; }
+.container { max-width: 960px; margin: auto; background: white; padding: 28px; border-radius: 10px; }
+h1 { color: #333; margin-bottom: 10px; }
+.grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+.card { background: #fafafa; padding: 14px; border-radius: 8px; border: 1px solid #eee; }
+.opinion { font-size: 22px; font-weight: 800; color: #F44336; }
+small { color: #666; }
+table { width: 100%; border-collapse: collapse; }
+th, td { padding: 10px; border-bottom: 1px solid #e5e5e5; text-align:left; }
+th { width: 140px; color:#333; }
 </style>
 </head>
 <body>
 <div class="container">
-<h1>HS효성 (487570)</h1>
-<div class="card">
-<p><strong>시장:</strong> KOSPI | <strong>현재가:</strong> 63,500원</p>
-<p><strong>수익률:</strong> 1일 -0.63% | 5일 +7.63%</p>
-</div>
-<div class="card">
-<h2>투자 의견</h2>
-<p class="opinion">SELL</p>
-<p><strong>포지션:</strong> -10% ~ -30%</p>
-<ul><li>펀더멘털: 0</li><li>수급: 0</li><li>종합: 0</li></ul>
-</div>
+  <h1>HS효성 (487570)</h1>
+  <small>시장: KOSPI</small>
+
+  <div class="grid" style="margin-top:12px;">
+    <div class="card">
+      <h3>가격/수익률</h3>
+      <table>
+        <tr><th>현재가</th><td>63500</td></tr>
+        <tr><th>1일 수익률</th><td>-0.63%</td></tr>
+        <tr><th>5일 수익률</th><td>7.63%</td></tr>
+        <tr><th>20일 수익률</th><td>9.29%</td></tr>
+      </table>
+    </div>
+
+    <div class="card">
+      <h3>투자 의견(임시)</h3>
+      <div class="opinion">SELL</div>
+      <small>※ SIGNAL은 추후 로직 확정 예정</small>
+      <table style="margin-top:8px;">
+        <tr><th>Fund 점수</th><td>0</td></tr>
+        <tr><th>Flow 점수</th><td>0</td></tr>
+        <tr><th>Total</th><td>0</td></tr>
+      </table>
+    </div>
+  </div>
+
+  <div class="card" style="margin-top:12px;">
+    <h3>Fundamentals (PyKRX)</h3>
+    <table>
+      <tr><th>PER</th><td>106.54</td></tr>
+      <tr><th>PBR</th><td>0.43</td></tr>
+      <tr><th>EPS</th><td>596</td></tr>
+      <tr><th>BPS</th><td>148012</td></tr>
+      <tr><th>DIV(배당수익률)</th><td>0.0</td></tr>
+      <tr><th>DPS</th><td>0</td></tr>
+    </table>
+  </div>
+
 </div>
 </body>
 </html>
