@@ -4,7 +4,15 @@ DART raw JSON cache backfill (2015~) - optimized 1 call per (ticker, year, reprt
 - API: fnlttSinglAcnt.json  [Source] https://opendart.fss.or.kr/guide/detail.do?apiGrpCd=DS003&apiId=2019016
 - Save:
   data/stocks/raw/dart/<ticker>/<year>_<reprt_code>_ALL.json
-  (optional derived split caches)
+
+Key rotation (B-2):
+- Use DART_API_KEY + optional DART_API2_KEY
+- Round-robin key selection per request attempt
+- Per-key budget: DART_RUN_BUDGET_PER_KEY (fallback: DART_RUN_BUDGET)
+- If one key budget is exhausted, automatically failover to the other key
+
+Notes:
+- Each HTTP request consumes 1 unit from the selected key's budget (including retries and corpCode.xml download).
 """
 
 import os, re, io, json, time, zipfile, random, threading
@@ -25,9 +33,13 @@ MASTER = DATA_DIR / "master" / "listings.parquet"
 RAW_DIR = DATA_DIR / "raw" / "dart"
 RAW_DIR.mkdir(parents=True, exist_ok=True)
 
+# ---------- API keys ----------
 DART_API_KEY = os.getenv("DART_API_KEY", "").strip()
-if not DART_API_KEY:
-    raise RuntimeError("Missing env var DART_API_KEY")
+DART_API2_KEY = os.getenv("DART_API2_KEY", "").strip()
+
+API_KEYS = [k for k in [DART_API_KEY, DART_API2_KEY] if k]
+if not API_KEYS:
+    raise RuntimeError("Missing env var DART_API_KEY (and optional DART_API2_KEY)")
 
 # ---------- env config ----------
 TODAY_YEAR = datetime.utcnow().year
@@ -39,7 +51,11 @@ MAX_WORKERS = int(os.getenv("DART_MAX_WORKERS", "5"))
 CACHE_MODE = os.getenv("DART_CACHE_MODE", "skip").lower()  # skip|overwrite
 RETRY = int(os.getenv("DART_RETRY", "3"))
 MIN_INTERVAL = float(os.getenv("DART_MIN_INTERVAL_SEC", "0.15"))
-RUN_BUDGET = int(os.getenv("DART_RUN_BUDGET", "38000"))
+
+# Budget:
+# - preferred: DART_RUN_BUDGET_PER_KEY
+# - fallback:  DART_RUN_BUDGET (for backward compatibility; treated as per-key budget)
+RUN_BUDGET_PER_KEY = int(os.getenv("DART_RUN_BUDGET_PER_KEY", os.getenv("DART_RUN_BUDGET", "38000")))
 
 BACKOFF_BASE = float(os.getenv("DART_BACKOFF_BASE_SEC", "1.5"))
 BACKOFF_MAX = float(os.getenv("DART_BACKOFF_MAX_SEC", "30"))
@@ -82,36 +98,86 @@ class RateLimiter:
             self.last = time.time()
 
 
-class Budget:
-    def __init__(self, budget: int):
-        self.budget = budget
-        self.used = 0
+class KeyBudgetManager:
+    """
+    Round-robin key selection with per-key budget.
+    - acquire(): returns (key_index, key_string) or (None, None) if all budgets exhausted.
+    - consume(key_index, n=1): consumes budget.
+    """
+    def __init__(self, keys: List[str], budget_per_key: int):
+        self.keys = keys
         self.lock = threading.Lock()
+        self.budget_total = {i: int(budget_per_key) for i in range(len(keys))}
+        self.used = {i: 0 for i in range(len(keys))}
+        self.next_idx = 0
 
-    def consume(self, n=1) -> bool:
+    def remaining(self, i: int) -> int:
+        return self.budget_total[i] - self.used[i]
+
+    def acquire(self) -> Tuple[Optional[int], Optional[str]]:
         with self.lock:
-            if self.used + n > self.budget:
+            n = len(self.keys)
+            for _ in range(n):
+                i = self.next_idx
+                self.next_idx = (self.next_idx + 1) % n
+                if self.remaining(i) > 0:
+                    return i, self.keys[i]
+            return None, None
+
+    def consume(self, i: int, n: int = 1) -> bool:
+        with self.lock:
+            if i not in self.used:
                 return False
-            self.used += n
+            if self.used[i] + n > self.budget_total[i]:
+                return False
+            self.used[i] += n
             return True
 
-    def get(self) -> int:
+    def used_total(self) -> int:
         with self.lock:
-            return self.used
+            return sum(self.used.values())
+
+    def snapshot(self) -> Dict[str, int]:
+        with self.lock:
+            out = {}
+            for i in range(len(self.keys)):
+                out[f"key{i+1}_used"] = self.used[i]
+                out[f"key{i+1}_remain"] = self.budget_total[i] - self.used[i]
+            out["total_used"] = sum(self.used.values())
+            out["total_budget"] = sum(self.budget_total.values())
+            return out
 
 
 rl = RateLimiter(MIN_INTERVAL)
-bd = Budget(RUN_BUDGET)
+km = KeyBudgetManager(API_KEYS, RUN_BUDGET_PER_KEY)
+
+# thread-local session (safer than sharing one Session across threads)
+_tls = threading.local()
 
 
-def download_corpcode(session: requests.Session):
+def get_session() -> requests.Session:
+    s = getattr(_tls, "session", None)
+    if s is None:
+        s = requests.Session()
+        _tls.session = s
+    return s
+
+
+def download_corpcode():
     if CORP_XML.exists() and CORP_XML.stat().st_size > 1000:
         return
-    rl.wait()
-    if not bd.consume(1):
-        raise RuntimeError("RUN_BUDGET exceeded before corpCode.xml")
 
-    r = session.get(URL_CORPCODE, params={"crtfc_key": DART_API_KEY}, timeout=60)
+    # Select key + consume budget
+    k_idx, k = km.acquire()
+    if k is None:
+        raise RuntimeError("All API key budgets exhausted before corpCode.xml")
+
+    rl.wait()
+    if not km.consume(k_idx, 1):
+        raise RuntimeError("All API key budgets exhausted before corpCode.xml (consume failed)")
+
+    s = get_session()
+    r = s.get(URL_CORPCODE, params={"crtfc_key": k}, timeout=60)
     r.raise_for_status()
 
     content = r.content
@@ -147,35 +213,48 @@ def out_path(ticker: str, year: int, reprt_code: str) -> Path:
     return d / f"{year}_{reprt_code}_ALL.json"
 
 
-def request_one(session: requests.Session, corp_code: str, year: int, reprt_code: str) -> dict:
-    params = {
-        "crtfc_key": DART_API_KEY,
-        "corp_code": corp_code,
-        "bsns_year": str(year),
-        "reprt_code": str(reprt_code),
-    }
-
+def request_one(corp_code: str, year: int, reprt_code: str) -> dict:
     last_exc = None
+
     for attempt in range(1, RETRY + 1):
         try:
-            rl.wait()
-            if not bd.consume(1):
-                raise RuntimeError("RUN_BUDGET exceeded")
+            # choose key (round-robin among those with remaining budget)
+            k_idx, k = km.acquire()
+            if k is None:
+                raise RuntimeError("All API key budgets exhausted")
 
-            r = session.get(URL_FNLTT, params=params, timeout=60)
+            rl.wait()
+            if not km.consume(k_idx, 1):
+                # race/edge: in case budget exhausted between acquire/consume
+                last_exc = RuntimeError("Budget consume failed (exhausted)")
+                continue
+
+            params = {
+                "crtfc_key": k,
+                "corp_code": corp_code,
+                "bsns_year": str(year),
+                "reprt_code": str(reprt_code),
+            }
+
+            s = get_session()
+            r = s.get(URL_FNLTT, params=params, timeout=60)
             r.raise_for_status()
+
             data = r.json()
             status = str(data.get("status", "")).strip()
 
+            # 정상 or 데이터없음은 그대로 반환 (데이터없음도 캐시해두는 게 중요)
             if status == "000" or status == "013":
                 return data
 
+            # 요청제한(020): backoff 후 재시도 (다음 attempt에서 다른 키로 넘어갈 수 있음)
             if status == "020":
                 wait = min(BACKOFF_MAX, BACKOFF_BASE * (2 ** (attempt - 1)) + random.random())
                 time.sleep(wait)
                 last_exc = RuntimeError(f"status=020 rate limit wait={wait:.2f}")
                 continue
 
+            # 기타 오류: backoff 후 재시도
             wait = min(BACKOFF_MAX, BACKOFF_BASE * (2 ** (attempt - 1)) + random.random())
             time.sleep(wait)
             last_exc = RuntimeError(f"status={status} msg={data.get('message')}")
@@ -189,12 +268,13 @@ def request_one(session: requests.Session, corp_code: str, year: int, reprt_code
     raise last_exc
 
 
-def job_one(session: requests.Session, ticker: str, name: str, corp_code: str, year: int, reprt_code: str) -> Tuple[str, str]:
+def job_one(ticker: str, name: str, corp_code: str, year: int, reprt_code: str) -> Tuple[str, str]:
     p = out_path(ticker, year, reprt_code)
     if CACHE_MODE == "skip" and p.exists() and p.stat().st_size > 50:
         return ticker, "skip"
 
-    data = request_one(session, corp_code, year, reprt_code)
+    data = request_one(corp_code, year, reprt_code)
+
     meta = {
         "_meta": {
             "ticker": str(ticker),
@@ -223,10 +303,13 @@ def job_one(session: requests.Session, ticker: str, name: str, corp_code: str, y
 
 
 def main():
+    snap = km.snapshot()
     print("[fetch_dart_financials] start")
     print(f"  PROJECT_ROOT={PROJECT_ROOT}")
     print(f"  years={YEAR_FROM}..{YEAR_TO}, reprt_codes={REPRT_CODES}")
-    print(f"  workers={MAX_WORKERS}, cache_mode={CACHE_MODE}, run_budget={RUN_BUDGET}, min_interval={MIN_INTERVAL}")
+    print(f"  workers={MAX_WORKERS}, cache_mode={CACHE_MODE}, retry={RETRY}, min_interval={MIN_INTERVAL}")
+    print(f"  keys={len(API_KEYS)}, budget_per_key={RUN_BUDGET_PER_KEY}, total_budget={snap['total_budget']}")
+    print(f"  budget_snapshot={snap}")
 
     if not MASTER.exists():
         raise FileNotFoundError(f"missing {MASTER} (run fetch_listings first)")
@@ -235,8 +318,8 @@ def main():
     df["ticker"] = df["ticker"].astype(str)
     df["ticker6"] = df["ticker"].map(normalize_ticker6)
 
-    session = requests.Session()
-    download_corpcode(session)
+    # corpCode.xml (consumes 1 call budget from one of keys, only when not cached)
+    download_corpcode()
     corp_map = parse_corp_map()
     print(f"  corp_map size={len(corp_map)}")
 
@@ -258,7 +341,7 @@ def main():
 
     ok = skip = nodata = err = 0
     with ThreadPoolExecutor(max_workers=MAX_WORKERS) as ex:
-        futures = [ex.submit(job_one, session, *j) for j in jobs]
+        futures = [ex.submit(job_one, *j) for j in jobs]
         done = 0
         for f in as_completed(futures):
             done += 1
@@ -272,14 +355,24 @@ def main():
                     nodata += 1
                 else:
                     err += 1
-            except Exception as e:
+            except Exception:
                 err += 1
 
             if done % 500 == 0:
-                print(f"  [progress] {done:,}/{len(futures):,} ok={ok:,} skip={skip:,} nodata={nodata:,} err={err:,} calls_used={bd.get():,}")
+                snap = km.snapshot()
+                print(
+                    f"  [progress] {done:,}/{len(futures):,} "
+                    f"ok={ok:,} skip={skip:,} nodata={nodata:,} err={err:,} "
+                    f"calls_used_total={snap['total_used']:,} "
+                    f"(k1_used={snap.get('key1_used',0):,} k1_rem={snap.get('key1_remain',0):,} "
+                    f"k2_used={snap.get('key2_used',0):,} k2_rem={snap.get('key2_remain',0):,})"
+                )
 
-    print(f"[fetch_dart_financials] done ok={ok:,} skip={skip:,} nodata={nodata:,} err={err:,} calls_used={bd.get():,}")
+    snap = km.snapshot()
+    print(f"[fetch_dart_financials] done ok={ok:,} skip={skip:,} nodata={nodata:,} err={err:,} calls_used_total={snap['total_used']:,}")
+    print(f"[fetch_dart_financials] budget_snapshot={snap}")
     print(f"[fetch_dart_financials] raw dir={RAW_DIR}")
+
 
 if __name__ == "__main__":
     main()
