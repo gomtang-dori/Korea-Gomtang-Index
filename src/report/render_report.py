@@ -980,18 +980,19 @@ def main():
             f"</div>"
         )
 
-        # Safe-mode: embed plotly.js inside each block
-        factor_cards.append(header_html + fig.to_html(include_plotlyjs=True, full_html=False))
-
+        # Plotly.js is loaded once in <head> (CDN). Do NOT embed plotly.js per chart.
+        factor_cards.append(header_html + fig.to_html(include_plotlyjs=False, full_html=False))
+ 
     factors_extreme_greed_str = ", ".join(factors_extreme_greed) if factors_extreme_greed else "-"
     factors_extreme_fear_str = ", ".join(factors_extreme_fear) if factors_extreme_fear else "-"
 
-    # Safe embed for all figs
+    # Convert figures to HTML.
+    # Plotly.js is loaded once in <head> (CDN) to reduce HTML size. 
     def _fig_html(fig):
         if fig is None:
             return "<div style='color:#666;font-size:12px'>데이터 없음</div>"
-        return fig.to_html(include_plotlyjs=True, full_html=False)
-
+        return fig.to_html(include_plotlyjs=False, full_html=False)
+     
     html = Template(HTML_TMPL).render(
         title=title,
         asof_date=asof_date,
