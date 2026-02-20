@@ -60,6 +60,75 @@ jobs:
 
       - name: Install dependencies
         run: pip install pandas pyarrow requests
+        
+      - name: "[검증] listings 행 수 + 예상 DART jobs(call) 계산"
+        if: always()
+        run: |
+          python - << 'PY'
+          import os
+          from pathlib import Path
+          import pandas as pd
+
+          listings_path = Path("data/stocks/master/listings.parquet")
+
+          year_from = int(os.getenv("DART_YEAR_FROM", "0") or 0)
+          year_to   = int(os.getenv("DART_YEAR_TO", "0") or 0)
+          years_cnt = max(0, year_to - year_from + 1)
+
+          codes = [c.strip() for c in os.getenv("DART_REPRT_CODES", "").split(",") if c.strip()]
+          codes_cnt = len(codes)
+
+          # key count (secrets are injected as env)
+          key1 = (os.getenv("DART_API_KEY", "") or "").strip()
+          key2 = (os.getenv("DART_API2_KEY", "") or "").strip()
+          keys_cnt = 0
+          if key1:
+            keys_cnt += 1
+          if key2:
+            keys_cnt += 1
+
+          # budget (current workflow sets DART_RUN_BUDGET; fetch script treats it as per-key budget)
+          budget_per_key = int(os.getenv("DART_RUN_BUDGET", "0") or 0)
+          total_budget = budget_per_key * max(keys_cnt, 1)
+
+          print("[verify] ===== DART backfill precheck =====")
+          print(f"[verify] years={year_from}..{year_to} (count={years_cnt})")
+          print(f"[verify] reprt_codes={codes} (count={codes_cnt})")
+          print(f"[verify] keys_cnt={keys_cnt} (DART_API_KEY={'Y' if bool(key1) else 'N'}, DART_API2_KEY={'Y' if bool(key2) else 'N'})")
+          print(f"[verify] budget_per_key(DART_RUN_BUDGET)={budget_per_key:,}")
+          print(f"[verify] total_budget_estimate=budget_per_key*keys_cnt={total_budget:,}")
+
+          if not listings_path.exists():
+            print(f"[verify][WARN] MISSING: {listings_path}")
+            print("[verify][WARN] listings가 없으면 실제 jobs 계산/수집 대상이 매우 작아질 수 있습니다.")
+            raise SystemExit(0)
+
+          df = pd.read_parquet(listings_path)
+          rows = len(df)
+          if "ticker" in df.columns:
+            uniq = df["ticker"].astype(str).nunique()
+          else:
+            uniq = rows
+
+          print(f"[verify] listings rows={rows:,}, unique_tickers={uniq:,}")
+
+          if years_cnt == 0 or codes_cnt == 0:
+            print("[verify][WARN] years_cnt 또는 codes_cnt가 0입니다. 입력값(year_from/to, reprt_codes)을 확인하세요.")
+            raise SystemExit(0)
+
+          expected_jobs = uniq * years_cnt * codes_cnt
+          print(f"[verify] expected_jobs_estimate ~= {expected_jobs:,} (=unique_tickers*years*reprt_codes)")
+
+          # budget sanity check
+          if budget_per_key > 0:
+            margin = total_budget - expected_jobs
+            print(f"[verify] margin(total_budget - expected_jobs) = {margin:,}")
+            if expected_jobs > total_budget:
+              print("[verify][WARN] expected_jobs > total_budget -> 이번 run에서 cap에 걸려 중간 종료될 가능성이 큽니다.")
+              print("[verify][HINT] 해결: (1) 연도 구간 축소 (2) reprt_codes 축소 (3) budget 상향 (4) cache_mode=skip로 누락분만")
+          print("[verify] =================================")
+          PY
+        
 
       - name: Fetch DART raw cache
         continue-on-error: true
