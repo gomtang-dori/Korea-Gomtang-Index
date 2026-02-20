@@ -87,17 +87,23 @@ jobs:
           export PYTHONPATH=src
           python src/caches/cache_f09_credit_deposit_datago.py
 
-      - name: Cache K200 close (FDR)
+      # ✅ (B) 추가: index_levels 캐시 (KOSPI/KOSDAQ/K200 close)
+      # - 메인 리포트에서 KOSPI(raw)가 '-'로 뜨는 문제를 해결하려면,
+      #   render_report.py가 merge하는 data/cache/index_levels.parquet가 최신이어야 함.
+      - name: Cache index levels (FDR) [KOSPI/KOSDAQ/K200]
         env:
           BACKFILL_START: ${{ env.BACKFILL_START }}
           BACKFILL_END: ${{ env.BACKFILL_END }}
           CACHE_BUFFER_DAYS: ${{ env.CACHE_BUFFER_DAYS }}
+          INDEX_LEVELS_CACHE_PATH: data/cache/index_levels.parquet
           K200_CACHE_PATH: data/cache/k200_close.parquet
-          K200_SYMBOL: "KS200"
+          FDR_KOSPI_SYMBOL: "KS11"
+          FDR_KOSDAQ_SYMBOL: "KQ11"
+          FDR_K200_SYMBOL: "KS200"
         run: |
           set -e
           export PYTHONPATH=src
-          python src/caches/cache_k200_close_fdr.py
+          python src/caches/cache_index_levels_fdr.py
 
       - name: Cache USD/KRW (ECOS)
         env:
@@ -131,23 +137,12 @@ jobs:
           export PYTHONPATH=src
           python src/caches/cache_putcall.py
 
-      - name: Cache index levels (FDR)  # KOSPI/KOSDAQ/K200 close
-        env:
-          BACKFILL_START: ${{ env.BACKFILL_START }}
-          BACKFILL_END: ${{ env.BACKFILL_END }}
-          CACHE_BUFFER_DAYS: ${{ env.CACHE_BUFFER_DAYS }}
-          INDEX_LEVELS_CACHE_PATH: data/cache/index_levels.parquet
-          K200_CACHE_PATH: data/cache/k200_close.parquet
-        run: |
-          set -e
-          export PYTHONPATH=src
-          python src/caches/cache_index_levels_fdr.py
-
       - name: Sanity check caches exist
         run: |
           set -e
           ls -lah data/cache || true
           ls -lah data || true
+          test -f data/cache/index_levels.parquet
           test -f data/cache/k200_close.parquet
           test -f data/cache/putcall_ratio.parquet
           test -f data/usdkrw_level.parquet
@@ -157,7 +152,7 @@ jobs:
       # -------------------------
       # Factor 계산
       # -------------------------
-      - name: Calculate Factors (F01,F04,F06,F08,F09,F10)
+      - name: Calculate Factors (F01,F04,F05,F06,F07,F08,F09,F10)
         env:
           ROLLING_DAYS: "1260"
           MIN_OBS: "252"
@@ -174,20 +169,66 @@ jobs:
           export PYTHONPATH=src
           python src/factors/f01_momentum.py
           python src/factors/f04_putcall.py
+          python src/factors/f05_credit_spread.py
           python src/factors/f06_vkospi.py
+          python src/factors/f07_safehaven.py
           python src/factors/f08_foreigner_flow.py
           python src/factors/f09_margin_ratio.py
           python src/factors/f10_fxvol.py
 
-      - name: Assemble & Report Generation
+      # -------------------------
+      # Assemble (index_daily)
+      # -------------------------
+      - name: Assemble index (main)
         run: |
           set -e
           export PYTHONPATH=src
-          python src/assemble/assemble_index.py          
-          python src/report/render_report.py
-          python src/factors/f05_credit_spread.py
-          python src/factors/f07_safehaven.py
+          python src/assemble/assemble_index.py
 
+      # -------------------------
+      # ✅ (C) 메인 ML(prob_up_10d) 생성 + index_daily에 merge
+      # - "render_report.py" 실행 전에 index_daily.parquet에 prob_up_10d가 들어가야
+      #   메인 리포트에서 ML이 '-'가 아니라 값으로 표시됨.
+      # -------------------------
+      - name: ML prob_up_10d (main, XGBoost, KOSPI, horizon=10)
+        run: |
+          set -e
+          export PYTHONPATH=src
+          python src/analysis/train_xgb_prob_up10.py
+        env:
+          FACTORS_DIR: data/factors
+          INDEX_LEVELS_PATH: data/cache/index_levels.parquet
+          TARGET_COL: kospi_close
+          HORIZON_DAYS: "10"
+          ADD_CONTRARIAN: "1"
+          CONTRARIAN_SUFFIX: "_c"
+          EXCLUDE_FACTORS: ""
+          TAG: "main"
+          OUT_PRED_PARQUET: data/analysis/prob_up_10d_main.parquet
+          OUT_METRICS_CSV: data/analysis/ml_prob_up10_main_metrics.csv
+          VKOSPI_LEVELS_PATH: data/vkospi_level.parquet
+          F08_FLOW_PATH: data/cache/f08_foreigner_flow.parquet
+          USDKRW_PATH: data/usdkrw_level.parquet
+          ADD_USDKRW_RET20: "1"
+
+      - name: Merge prob_up_10d into index_daily (main)
+        run: |
+          set -e
+          export PYTHONPATH=src
+          python src/analysis/merge_prob_into_index.py
+        env:
+          INDEX_PATH: data/index_daily.parquet
+          CSV_PATH: data/index_daily.csv
+          PROB_PATH: data/analysis/prob_up_10d_main.parquet
+
+      # -------------------------
+      # Report (docs/index.html)
+      # -------------------------
+      - name: Render report (main)
+        run: |
+          set -e
+          export PYTHONPATH=src
+          python src/report/render_report.py
 
       - name: Convert parquet to CSV (index_daily)
         run: |
@@ -201,16 +242,28 @@ jobs:
           git config user.name "github-actions"
           git config user.email "github-actions@github.com"
 
-          git add data/factors/ data/index_daily.* docs/index.html || true
+          # ✅ 캐시/분석/지수/리포트 산출물 포함
+          git add data/cache/index_levels.* || true
+          git add data/cache/k200_close.* || true
+          git add data/cache/*.parquet || true
+          git add data/factors/ || true
+          git add data/analysis/prob_up_10d_main.parquet data/analysis/ml_prob_up10_main_metrics.csv || true
+          git add data/index_daily.* docs/index.html || true
+
           git diff --quiet && git diff --staged --quiet && exit 0
 
           git stash push -u -m "actions-stash-before-rebase" || true
           git fetch origin main
           git pull --rebase origin main
           git stash pop || true
-          git add data/cache/index_levels.* || true
 
-          git add data/factors/ data/index_daily.* docs/index.html || true
+          git add data/cache/index_levels.* || true
+          git add data/cache/k200_close.* || true
+          git add data/cache/*.parquet || true
+          git add data/factors/ || true
+          git add data/analysis/prob_up_10d_main.parquet data/analysis/ml_prob_up10_main_metrics.csv || true
+          git add data/index_daily.* docs/index.html || true
+
           git diff --quiet && git diff --staged --quiet && exit 0
 
           git commit -m "Daily update $(date -u +%Y-%m-%d)" || true
