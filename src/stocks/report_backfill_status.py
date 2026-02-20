@@ -15,6 +15,33 @@ import numpy as np
 
 PROJECT_ROOT = Path.cwd()
 
+def _safe_to_markdown(df: pd.DataFrame, index: bool = False, max_rows: int = 30) -> str:
+    """
+    pandas.DataFrame.to_markdown() requires optional dependency 'tabulate'.
+    This helper:
+    - uses to_markdown when available
+    - falls back to a minimal pipe-table markdown when tabulate is missing
+    """
+    if df is None or len(df) == 0:
+        return "(none)"
+
+    # limit rows so MD doesn't explode on Actions logs
+    d = df.head(max_rows).copy()
+
+    try:
+        # will raise ImportError if tabulate is missing
+        return d.to_markdown(index=index)
+    except Exception:
+        cols = list(d.columns)
+        lines = []
+        lines.append("| " + " | ".join(str(c) for c in cols) + " |")
+        lines.append("| " + " | ".join(["---"] * len(cols)) + " |")
+        for _, r in d.iterrows():
+            lines.append("| " + " | ".join("" if pd.isna(r[c]) else str(r[c]) for c in cols) + " |")
+        if len(df) > max_rows:
+            lines.append(f"\n... (showing first {max_rows} rows of {len(df):,})")
+        return "\n".join(lines)
+
 MASTER = PROJECT_ROOT / "data/stocks/master/listings.parquet"
 PRICES_DIR = PROJECT_ROOT / "data/stocks/raw/prices"
 CURATED_DIR = PROJECT_ROOT / "data/stocks/curated"
@@ -165,22 +192,22 @@ def main():
     lines.append("## Top missing (prices)")
     lines.append("")
     miss_prices = df[~df["has_prices"]].head(30)[["ticker","name","market"]]
-    lines.append(miss_prices.to_markdown(index=False) if len(miss_prices) else "(none)")
+    lines.append(_safe_to_markdown(miss_prices, index=False))
     lines.append("")
     lines.append("## Top missing (flows curated)")
     lines.append("")
     miss_flows = df[~df["has_flows_curated"]].head(30)[["ticker","name","market"]]
-    lines.append(miss_flows.to_markdown(index=False) if len(miss_flows) else "(none)")
+    lines.append(_safe_to_markdown(miss_flows, index=False))
     lines.append("")
     lines.append("## Top missing (fundamentals curated)")
     lines.append("")
     miss_fund = df[~df["has_fundamentals_curated"]].head(30)[["ticker","name","market"]]
-    lines.append(miss_fund.to_markdown(index=False) if len(miss_fund) else "(none)")
+    lines.append(_safe_to_markdown(miss_fund, index=False))
     lines.append("")
     lines.append("## Top missing (DART standard)")
     lines.append("")
     miss_dart = df[~df["has_dart_standard"]].head(30)[["ticker","name","market"]]
-    lines.append(miss_dart.to_markdown(index=False) if len(miss_dart) else "(none)")
+    lines.append(_safe_to_markdown(miss_dart, index=False))
     lines.append("")
 
     OUT_MD.write_text("\n".join(lines), encoding="utf-8")
