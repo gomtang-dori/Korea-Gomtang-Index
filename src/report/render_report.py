@@ -666,4 +666,447 @@ HTML_TMPL = r"""
       <div class="muted">- {{ action_reason_1 }}</div>
       <div class="muted">- {{ action_reason_2 }}</div>
       <div class="muted">- {{ action_reason_3 }}</div>
-      <div class="muted<span class="cursor">█</span>
+      <div class="muted">Risks:</div>
+      <div class="muted">- 표본 부족/레짐 변화/ML 결측(마지막 non-null 사용) 가능</div>
+      <div class="muted">Tomorrow checklist:</div>
+      <div class="muted">- Trend state 변화(Δ3/Δ5)와 ML(prob) 변화를 함께 확인</div>
+      <div class="muted">- Top20/Bot20 분리력이 최근에도 유지되는지 점검</div>
+    </div>
+  </div>
+
+</body>
+</html>
+"""
+
+
+def main():
+    index_path = _env("INDEX_PATH", "data/index_daily.parquet")
+    report_path = _env("REPORT_PATH", "docs/index.html")
+    lookback_days = int(_env("LOOKBACK_DAYS", "252"))
+    title = _env("REPORT_TITLE", "한국곰탕지수 일일 리포트")
+    factors_dir = _env("FACTORS_DIR", "data/factors")
+    index_levels_path = _env("INDEX_LEVELS_PATH", "data/cache/index_levels.parquet")
+
+    # Guide link
+    guide_url = _env("GUIDE_URL", "gomtang_index_report_guide.html")
+    guide_label = _env("GUIDE_LABEL", "Report Guide (Full)")
+
+    date_col = _env("DATE_COL", "date")
+    score_col = _env("SCORE_COL", "index_score_total")
+    kospi_col = _env("KOSPI_COL", "kospi_close")
+    kosdaq_col = _env("KOSDAQ_COL", "kosdaq_close")
+    k200_col = _env("K200_COL", "kospi200_close")
+
+    # Confirmed: flat threshold 1.0
+    score_flat_pts = float(_env("SCORE_FLAT_PTS", "1.0"))
+
+    hm_font_size = int(_env("HEATMAP_FONT_SIZE", "16"))
+
+    Path(report_path).parent.mkdir(parents=True, exist_ok=True)
+
+    # Load index daily
+    df = pd.read_parquet(index_path)
+    if date_col not in df.columns:
+        raise RuntimeError(f"[report] missing '{date_col}' in {index_path}")
+    df[date_col] = pd.to_datetime(df[date_col])
+    df = df.sort_values(date_col).reset_index(drop=True)
+
+    # Merge index levels for KOSPI/KOSDAQ/K200 raw lines
+    if Path(index_levels_path).exists():
+        lv = pd.read_parquet(index_levels_path)
+        if date_col in lv.columns:
+            lv[date_col] = pd.to_datetime(lv[date_col])
+            lv = lv.sort_values(date_col)
+            df = df.merge(lv, on=date_col, how="left", suffixes=("", "_lv"))
+
+    base = df.tail(lookback_days).copy()
+
+    if score_col not in base.columns:
+        raise RuntimeError(f"[report] missing '{score_col}'")
+    if kospi_col not in base.columns:
+        raise RuntimeError(f"[report] missing '{kospi_col}' (check INDEX_LEVELS_PATH merge)")
+
+    asof_date = base[date_col].iloc[-1].date().isoformat()
+
+    # --- Overview KPIs ---
+    g_score = float(base[score_col].iloc[-1]) if pd.notna(base[score_col].iloc[-1]) else np.nan
+    g_bucket = _bucket_5pt(g_score)
+    regime = _regime_label(g_score)
+
+    g_d3 = _delta_over_n(base[score_col], 3)
+    g_d5 = _delta_over_n(base[score_col], 5)
+    g_d10 = _delta_over_n(base[score_col], 10)
+
+    g_state_internal = _gomtang_state_5bins(g_d3, g_d5, score_flat_pts)
+    g_state_label = STATE_LABEL.get(g_state_internal, g_state_internal)
+
+    kospi_close = float(base[kospi_col].iloc[-1])
+    kospi_r3 = _ret_over_n(base[kospi_col], 3)
+    kospi_r5 = _ret_over_n(base[kospi_col], 5)
+    kospi_r10 = _ret_over_n(base[kospi_col], 10)
+
+    # ML prob (last non-null)
+    prob_col = "prob_up_10d"
+    prob_last = np.nan
+    prob_asof = "-"
+    if prob_col in base.columns:
+        s = base.set_index(date_col)[prob_col]
+        v, idx = _last_valid(s)
+        prob_last = v
+        if pd.notna(idx):
+            prob_asof = pd.to_datetime(idx).date().isoformat()
+    prob_disp = "-" if (prob_last is None or (isinstance(prob_last, float) and np.isnan(prob_last))) else f"{prob_last:.3f}"
+
+    # Work DF for heatmaps/backtests
+    work = base[[date_col, score_col, kospi_col]].dropna().copy()
+    work["bucket_5pt"] = work[score_col].apply(_bucket_5pt)
+    work["g_d3"] = work[score_col].diff(3)
+    work["g_d5"] = work[score_col].diff(5)
+    work["state_internal"] = [
+        _gomtang_state_5bins(d3, d5, score_flat_pts)
+        for d3, d5 in zip(work["g_d3"].fillna(0), work["g_d5"].fillna(0))
+    ]
+    work["market_state"] = work["state_internal"]
+    work["fwd10"] = _forward_return(work[kospi_col], 10)
+
+    today_bucket = g_bucket
+    today_state_internal = g_state_internal
+    today_state_label = STATE_LABEL.get(today_state_internal, today_state_internal)
+
+    # Current cell stats (unclipped)
+    cell_stats = _group_cell_stats(
+        df=work,
+        state_col="market_state",
+        bucket_col="bucket_5pt",
+        fwd_col="fwd10",
+        state=today_state_internal,
+        bucket=today_bucket,
+    )
+    cell_warn = "표본 부족 (n<10) — 해석 주의" if cell_stats["n"] < 10 else ""
+
+    # Confidence and Action
+    has_ml = not (prob_last is None or (isinstance(prob_last, float) and np.isnan(prob_last)))
+    confidence = _confidence_level(has_ml, int(cell_stats["n"]))
+    confidence_note = "Confidence Low → 비중 가이드를 절반으로 축소" if confidence == "Low" else ""
+
+    op0 = _opinion_from_prob(prob_last)
+    reason_ml = f"ML(prob={prob_last:.3f}, as of {prob_asof})" if has_ml else "ML(prob 없음 → trend로 대체)"
+    if op0 is None:
+        op0 = _opinion_from_trend(g_d3, g_d5)
+
+    action = _apply_trend_filter(op0, g_d3, g_d5)
+    position_guide = _position_guide(action, confidence)
+
+    # 3 fixed reasons
+    action_reason_1 = f"ML: {reason_ml}"
+    action_reason_2 = f"Trend: Δ3={_fmt_float(g_d3,1)}, Δ5={_fmt_float(g_d5,1)} → {g_state_label}"
+    action_reason_3 = f"Heatmap cell: n={cell_stats['n']}, win={_fmt_pct(cell_stats['win'],1, signed=False)}, avg={_fmt_pct(cell_stats['avg'],2, signed=True)}"
+
+    # --- Charts (overview) ---
+    fig_g = _line_fig(base, date_col, score_col, "GOMTANG INDEX (score 0–100)")
+    fig_k = _line_fig(base, date_col, kospi_col, "KOSPI (raw)")
+
+    # prob chart (dropna)
+    fig_p = None
+    if prob_col in base.columns:
+        dprob = base[[date_col, prob_col]].dropna()
+        if len(dprob) > 0:
+            fig_p = go.Figure()
+            fig_p.add_trace(
+                go.Scatter(
+                    x=dprob[date_col],
+                    y=dprob[prob_col],
+                    mode="lines",
+                    line=dict(width=2),
+                    name="prob_up_10d",
+                )
+            )
+            fig_p.update_layout(
+                title="XGBoost: prob_up_10d (series, non-null)",
+                height=260,
+                margin=dict(l=30, r=20, t=40, b=30),
+                template="plotly_white",
+                yaxis=dict(range=[0, 1]),
+            )
+
+    # --- Heatmaps ---
+    grp = work.dropna(subset=["fwd10"]).groupby(["bucket_5pt", "market_state"])["fwd10"]
+    pivot_mean = grp.mean().unstack("market_state").reindex(columns=STATE_ORDER_INTERNAL)
+    pivot_n = grp.count().unstack("market_state").reindex(columns=STATE_ORDER_INTERNAL)
+
+    pivot_mean_clip = pivot_mean.clip(lower=-0.03, upper=0.03)
+
+    # relabel for display
+    pivot_mean_clip.columns = [STATE_LABEL.get(c, c) for c in pivot_mean_clip.columns]
+    pivot_n.columns = [STATE_LABEL.get(c, c) for c in pivot_n.columns]
+
+    grp_win = (
+        work.dropna(subset=["fwd10"])
+        .groupby(["bucket_5pt", "market_state"])["fwd10"]
+        .apply(lambda x: (x > 0).mean())
+    )
+    pivot_win = grp_win.unstack("market_state").reindex(columns=STATE_ORDER_INTERNAL)
+    pivot_win.columns = [STATE_LABEL.get(c, c) for c in pivot_win.columns]
+    pivot_win_n = pivot_n
+
+    fig_hm_mean = _heatmap_fig(
+        pivot_val=pivot_mean_clip,
+        pivot_n=pivot_n,
+        title="Heatmap: 10D Forward KOSPI Mean Return (clipped ±3%)",
+        colorscale="RdBu",
+        zmid=0,
+        zmin=-0.03,
+        zmax=0.03,
+        is_percent=False,
+        highlight_xy=(today_state_label, today_bucket),
+        cell_font_size=hm_font_size,
+    )
+
+    fig_hm_win = _heatmap_fig(
+        pivot_val=pivot_win,
+        pivot_n=pivot_win_n,
+        title="Heatmap: 10D Forward KOSPI Win-rate",
+        colorscale="Greens",
+        zmid=None,
+        zmin=0.0,
+        zmax=1.0,
+        is_percent=True,
+        highlight_xy=(today_state_label, today_bucket),
+        cell_font_size=hm_font_size,
+    )
+
+    # Regime stats 20D/60D
+    reg20 = _regime_forward_stats(work, score_col, kospi_col, 20, regime)
+    reg60 = _regime_forward_stats(work, score_col, kospi_col, 60, regime)
+
+    # --- Backtesting ---
+    bt = work.dropna(subset=["fwd10"]).copy()
+    bt_tbl = (
+        bt.groupby("bucket_5pt")
+        .agg(
+            n=("fwd10", "count"),
+            win=("fwd10", lambda x: (x > 0).mean()),
+            avg=("fwd10", "mean"),
+            med=("fwd10", "median"),
+        )
+        .sort_index()
+    )
+
+    fig_bt_bucket = _barline_bucket_fig(bt_tbl, "Backtest: bucket별 10D forward KOSPI (mean + win-rate)")
+
+    if len(bt_tbl) > 0:
+        bt_tbl_disp = bt_tbl.copy()
+        bt_tbl_disp["win"] = bt_tbl_disp["win"].map(lambda x: _fmt_pct(x, 1, signed=False))
+        bt_tbl_disp["avg"] = bt_tbl_disp["avg"].map(lambda x: _fmt_pct(x, 2, signed=True))
+        bt_tbl_disp["med"] = bt_tbl_disp["med"].map(lambda x: _fmt_pct(x, 2, signed=True))
+        bt_table_html = (
+            bt_tbl_disp.reset_index()
+            .rename(columns={"bucket_5pt": "bucket"})
+            .to_html(index=False, escape=False)
+        )
+    else:
+        bt_table_html = "<div class='small'>데이터 없음</div>"
+
+    bt_note = "score(곰탕지수) 상/하위 20% 기준의 10D forward KOSPI 요약 (리포트 기간 내)"
+    bt_top_n = bt_bot_n = 0
+    bt_top_win = bt_bot_win = np.nan
+    bt_top_avg = bt_bot_avg = np.nan
+
+    if len(bt) >= 30:
+        q80 = bt[score_col].quantile(0.80)
+        q20 = bt[score_col].quantile(0.20)
+
+        top = bt[bt[score_col] >= q80]["fwd10"].dropna()
+        bot = bt[bt[score_col] <= q20]["fwd10"].dropna()
+
+        bt_top_n = int(len(top))
+        bt_bot_n = int(len(bot))
+        bt_top_win = float((top > 0).mean()) if len(top) > 0 else np.nan
+        bt_bot_win = float((bot > 0).mean()) if len(bot) > 0 else np.nan
+        bt_top_avg = float(top.mean()) if len(top) > 0 else np.nan
+        bt_bot_avg = float(bot.mean()) if len(bot) > 0 else np.nan
+    else:
+        bt_note += " (표본 부족으로 신뢰 낮음)"
+
+    # --- Factors (summary + cards) ---
+    factors_extreme_greed = []
+    factors_extreme_fear = []
+    factor_cards = []
+
+    for i in range(1, 11):
+        tag = f"f{i:02d}"
+        p = Path(factors_dir) / f"{tag}.parquet"
+        if not p.exists():
+            continue
+
+        try:
+            f = pd.read_parquet(p)
+        except Exception:
+            continue
+        if date_col not in f.columns:
+            continue
+
+        f[date_col] = pd.to_datetime(f[date_col])
+        f = f.sort_values(date_col)
+        f = f[(f[date_col] >= base[date_col].min()) & (f[date_col] <= base[date_col].max())].copy()
+        if len(f) == 0:
+            continue
+
+        raw_cols = [c for c in f.columns if c.lower().endswith("_raw")]
+        score_cols = [c for c in f.columns if c.lower().endswith("_score")]
+
+        ycol = None
+        mode = None
+        if raw_cols:
+            ycol = raw_cols[0]
+            mode = "RAW"
+        elif score_cols:
+            ycol = score_cols[0]
+            mode = "SCORE"
+        else:
+            continue
+
+        name, desc = FACTOR_META.get(tag, (tag.upper(), ""))
+
+        series = f[ycol].dropna()
+        today_val = np.nan
+        pct = np.nan
+        band_disp = "-"
+        q20 = q40 = q60 = q80 = None
+
+        if len(series) >= 5:
+            today_val = float(series.iloc[-1])
+            pct = float(series.rank(pct=True).iloc[-1])
+            band = pct_to_band(pct)
+            greed_is_high = FACTOR_GREED_IS_HIGH.get(tag, True)
+            band_disp = band if greed_is_high else flip_band(band)
+            q20, q40, q60, q80 = series.quantile([0.2, 0.4, 0.6, 0.8]).tolist()
+
+            # summary lists
+            if band_disp == "EXTREME GREED":
+                factors_extreme_greed.append(tag.upper())
+            if band_disp == "EXTREME FEAR":
+                factors_extreme_fear.append(tag.upper())
+
+        fig = _line_fig(f, date_col, ycol, f"{tag.upper()} · {name} ({mode})")
+        if fig is None:
+            continue
+
+        if q20 is not None and pd.notna(q20):
+            for q, lab in [(q20, "P20"), (q40, "P40"), (q60, "P60"), (q80, "P80")]:
+                fig.add_hline(
+                    y=float(q),
+                    line_width=1,
+                    line_dash="dot",
+                    line_color="#666",
+                    annotation_text=lab,
+                    annotation_position="top left",
+                )
+
+        if pd.notna(today_val):
+            fig.add_trace(
+                go.Scatter(
+                    x=[f[date_col].iloc[-1]],
+                    y=[today_val],
+                    mode="markers",
+                    marker=dict(size=10, color="#111"),
+                    name="Today",
+                    hovertemplate="Today=%{y}<extra></extra>",
+                )
+            )
+
+        pct_disp = "-" if np.isnan(pct) else f"{pct*100:,.1f}%"
+        today_disp = "-" if (isinstance(today_val, float) and np.isnan(today_val)) else _fmt_float(today_val, 4)
+        direction_note = "높을수록 탐욕" if FACTOR_GREED_IS_HIGH.get(tag, True) else "낮을수록 탐욕(표시 밴드 반전)"
+
+        header_html = (
+            f"<div class='card' style='margin:4px 4px 10px 4px'>"
+            f"  <div class='k'>{tag.upper()} · {name}</div>"
+            f"  <div class='muted'>{desc}</div>"
+            f"  <div class='muted'>Today: <b>{today_disp}</b> · Percentile: <b>{pct_disp}</b> · Band: <b>{band_disp}</b></div>"
+            f"  <div class='muted small'>Direction: {direction_note} · Bands: 20/40/60/80 · SPEC: P20/P40/P60/P80</div>"
+            f"</div>"
+        )
+
+        # A안: Plotly.js를 HTML에 내장하지 않고, figure 블록에서 CDN으로 로드
+        factor_cards.append(header_html + fig.to_html(include_plotlyjs="cdn", full_html=False))
+
+    factors_extreme_greed_str = ", ".join(factors_extreme_greed) if factors_extreme_greed else "-"
+    factors_extreme_fear_str = ", ".join(factors_extreme_fear) if factors_extreme_fear else "-"
+
+    # Convert figures to HTML (A안: include_plotlyjs="cdn")
+    def _fig_html(fig):
+        if fig is None:
+            return "<div style='color:#666;font-size:12px'>데이터 없음</div>"
+        return fig.to_html(include_plotlyjs="cdn", full_html=False)
+
+    html = Template(HTML_TMPL).render(
+        title=title,
+        asof_date=asof_date,
+        lookback_days=lookback_days,
+        guide_url=guide_url,
+        guide_label=guide_label,
+        gomtang_score=_fmt_float(g_score, 1),
+        gomtang_bucket=g_bucket,
+        regime=regime,
+        gomtang_d3=_fmt_float(g_d3, 1),
+        gomtang_d5=_fmt_float(g_d5, 1),
+        gomtang_d10=_fmt_float(g_d10, 1),
+        gomtang_state_label=g_state_label,
+        kospi_close=_fmt_float(kospi_close, 2),
+        kospi_r3=_fmt_pct(kospi_r3, 2, signed=True),
+        kospi_r5=_fmt_pct(kospi_r5, 2, signed=True),
+        kospi_r10=_fmt_pct(kospi_r10, 2, signed=True),
+        prob_up_10d=prob_disp,
+        prob_asof=prob_asof,
+        action=action,
+        position_guide=position_guide,
+        confidence=confidence,
+        confidence_note=confidence_note,
+        has_ml=("Y" if has_ml else "N"),
+        cell_n_plain=int(cell_stats["n"]),
+        action_reason_1=action_reason_1,
+        action_reason_2=action_reason_2,
+        action_reason_3=action_reason_3,
+        fig_gomtang=_fig_html(fig_g),
+        fig_kospi=_fig_html(fig_k),
+        fig_prob=_fig_html(fig_p),
+        factor_cards=factor_cards,
+        factors_extreme_greed=factors_extreme_greed_str,
+        factors_extreme_fear=factors_extreme_fear_str,
+        fig_hm_mean=_fig_html(fig_hm_mean),
+        fig_hm_win=_fig_html(fig_hm_win),
+        cell_bucket=today_bucket,
+        cell_state_label=today_state_label,
+        cell_n=_fmt_int(cell_stats["n"]),
+        cell_win=_fmt_pct(cell_stats["win"], 1, signed=False),
+        cell_avg=_fmt_pct(cell_stats["avg"], 2, signed=True),
+        cell_med=_fmt_pct(cell_stats["median"], 2, signed=True),
+        cell_q1=_fmt_pct(cell_stats["q1"], 2, signed=True),
+        cell_q3=_fmt_pct(cell_stats["q3"], 2, signed=True),
+        cell_warn=cell_warn,
+        reg20_n=_fmt_int(reg20["n"]),
+        reg20_win=_fmt_pct(reg20["win"], 1, signed=False),
+        reg20_avg=_fmt_pct(reg20["avg"], 2, signed=True),
+        reg60_n=_fmt_int(reg60["n"]),
+        reg60_win=_fmt_pct(reg60["win"], 1, signed=False),
+        reg60_avg=_fmt_pct(reg60["avg"], 2, signed=True),
+        bt_top_n=_fmt_int(bt_top_n),
+        bt_top_win=_fmt_pct(bt_top_win, 1, signed=False),
+        bt_top_avg=_fmt_pct(bt_top_avg, 2, signed=True),
+        bt_bot_n=_fmt_int(bt_bot_n),
+        bt_bot_win=_fmt_pct(bt_bot_win, 1, signed=False),
+        bt_bot_avg=_fmt_pct(bt_bot_avg, 2, signed=True),
+        bt_note=bt_note,
+        fig_bt_bucket=_fig_html(fig_bt_bucket),
+        bt_table_html=bt_table_html,
+    )
+
+    with open(report_path, "w", encoding="utf-8") as f:
+        f.write(html)
+
+    print(f"[report] OK -> {report_path}")
+
+
+if __name__ == "__main__":
+    main()
