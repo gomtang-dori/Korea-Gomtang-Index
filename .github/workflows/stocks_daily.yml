@@ -1,0 +1,253 @@
+name: Stocks Daily Update (10D incremental -> curate -> panel -> features -> report)
+
+on:
+  workflow_dispatch:
+    inputs:
+      incremental_days:
+        description: "Incremental days to fetch"
+        type: string
+        default: "10"
+      sample_mode:
+        description: "Sample mode (true/false)"
+        type: string
+        default: "false"
+      sample_size:
+        description: "Sample size if sample_mode=true"
+        type: string
+        default: "300"
+      push_docs:
+        description: "Commit & push docs outputs (true/false)"
+        type: string
+        default: "true"
+
+  schedule:
+    # Weekdays 07:10 UTC (adjust as needed)
+    - cron: "10 7 * * 1-5"
+
+jobs:
+  stocks_daily:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+
+    env:
+      # --- incremental settings ---
+      INCREMENTAL_MODE: "true"
+      INCREMENTAL_DAYS: ${{ inputs.incremental_days || '10' }}
+
+      # --- safe worker defaults (conservative) ---
+      MAX_WORKERS: "10"                 # prices
+      MAX_WORKERS_FLOWS: "4"            # flows (safer)
+      MAX_WORKERS_FUNDAMENTALS: "6"     # fundamentals (safer)
+
+      # flows throttling (optional, reduce blocking risk)
+      KRX_THROTTLE_SEC: "0.10"
+
+      # listings sampling
+      SAMPLE_MODE: ${{ inputs.sample_mode || 'false' }}
+      SAMPLE_SIZE: ${{ inputs.sample_size || '300' }}
+
+      # panel (single parquet) build range
+      PANEL_TAIL_DAYS: "260"   # keep it light for daily; increase later if needed
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+
+      - name: Install dependencies
+        run: pip install pandas pyarrow requests pykrx
+
+      # ------------------------------------------------------------
+      # Restore caches so incremental mode is meaningful on fresh runners
+      # (split caches by dataset to avoid one giant cache)
+      # ------------------------------------------------------------
+      - name: Restore cache - prices
+        id: cache_prices
+        uses: actions/cache/restore@v4
+        with:
+          path: data/stocks/raw/prices
+          key: stocks-prices-v1-${{ github.ref_name }}-${{ github.run_id }}
+          restore-keys: |
+            stocks-prices-v1-${{ github.ref_name }}-
+            stocks-prices-v1-
+
+      - name: Restore cache - flows
+        id: cache_flows
+        uses: actions/cache/restore@v4
+        with:
+          path: data/stocks/raw/krx_flows
+          key: stocks-flows-v1-${{ github.ref_name }}-${{ github.run_id }}
+          restore-keys: |
+            stocks-flows-v1-${{ github.ref_name }}-
+            stocks-flows-v1-
+
+      - name: Restore cache - fundamentals
+        id: cache_fund
+        uses: actions/cache/restore@v4
+        with:
+          path: data/stocks/raw/fundamentals
+          key: stocks-fund-v1-${{ github.ref_name }}-${{ github.run_id }}
+          restore-keys: |
+            stocks-fund-v1-${{ github.ref_name }}-
+            stocks-fund-v1-
+
+      - name: Restore cache - curated
+        id: cache_curated
+        uses: actions/cache/restore@v4
+        with:
+          path: data/stocks/curated
+          key: stocks-curated-v1-${{ github.ref_name }}-${{ github.run_id }}
+          restore-keys: |
+            stocks-curated-v1-${{ github.ref_name }}-
+            stocks-curated-v1-
+
+      - name: Restore cache - analysis
+        id: cache_analysis
+        uses: actions/cache/restore@v4
+        with:
+          path: data/stocks/analysis
+          key: stocks-analysis-v1-${{ github.ref_name }}-${{ github.run_id }}
+          restore-keys: |
+            stocks-analysis-v1-${{ github.ref_name }}-
+            stocks-analysis-v1-
+
+      - name: Restore cache - mart(panel)
+        id: cache_mart
+        uses: actions/cache/restore@v4
+        with:
+          path: data/stocks/mart
+          key: stocks-mart-v1-${{ github.ref_name }}-${{ github.run_id }}
+          restore-keys: |
+            stocks-mart-v1-${{ github.ref_name }}-
+            stocks-mart-v1-
+
+      - name: Fetch listings (master)
+        run: |
+          python src/stocks/fetch_listings.py
+          python - << 'PY'
+          import pandas as pd
+          df = pd.read_parquet("data/stocks/master/listings.parquet")
+          print("[listings] rows=", len(df), "unique_tickers=", df["ticker"].astype(str).nunique())
+          print(df.head(3))
+          PY
+
+      # ------------------------------------------------------------
+      # 10D incremental fetch
+      # ------------------------------------------------------------
+      - name: Fetch prices (incremental)
+        run: python src/stocks/fetch_prices.py
+
+      - name: Fetch KRX flows (incremental)
+        run: python src/stocks/fetch_krx_flows.py
+
+      - name: Fetch fundamentals (incremental)
+        run: python src/stocks/fetch_fundamentals.py
+
+      # ------------------------------------------------------------
+      # Curate
+      # ------------------------------------------------------------
+      - name: Curate flows
+        run: python src/stocks/curate_flows.py
+
+      - name: Curate fundamentals
+        run: python src/stocks/curate_fundamentals.py
+
+      # ------------------------------------------------------------
+      # Build daily panel parquet (single file) + health report
+      # (requires you to add the 2 scripts below)
+      # ------------------------------------------------------------
+      - name: Build panel parquet (tail days)
+        run: python src/stocks/build_panel_daily_parquet.py
+
+      - name: Verify coverage (prices/flows/fundamentals + panel)
+        run: python src/stocks/verify_stocks_daily.py
+
+      # ------------------------------------------------------------
+      # Daily analysis + report
+      # ------------------------------------------------------------
+      - name: Compute features
+        run: python src/stocks/compute_features.py
+
+      - name: Render stock report (HTML)
+        run: python src/stocks/render_stock_report.py
+
+      - name: Export summary CSVs
+        run: python src/stocks/export_data_summary.py
+
+      # ------------------------------------------------------------
+      # Save caches (new key each run; restore-keys pulls latest)
+      # ------------------------------------------------------------
+      - name: Save cache - prices
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: data/stocks/raw/prices
+          key: stocks-prices-v1-${{ github.ref_name }}-${{ github.run_id }}
+
+      - name: Save cache - flows
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: data/stocks/raw/krx_flows
+          key: stocks-flows-v1-${{ github.ref_name }}-${{ github.run_id }}
+
+      - name: Save cache - fundamentals
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: data/stocks/raw/fundamentals
+          key: stocks-fund-v1-${{ github.ref_name }}-${{ github.run_id }}
+
+      - name: Save cache - curated
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: data/stocks/curated
+          key: stocks-curated-v1-${{ github.ref_name }}-${{ github.run_id }}
+
+      - name: Save cache - analysis
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: data/stocks/analysis
+          key: stocks-analysis-v1-${{ github.ref_name }}-${{ github.run_id }}
+
+      - name: Save cache - mart(panel)
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: data/stocks/mart
+          key: stocks-mart-v1-${{ github.ref_name }}-${{ github.run_id }}
+
+      # ------------------------------------------------------------
+      # Artifacts (so you can inspect even if you don't push)
+      # ------------------------------------------------------------
+      - name: Upload artifacts (panel + health + docs)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: stocks-daily-outputs
+          path: |
+            data/stocks/mart/panel_daily_tail.parquet
+            docs/stocks/stocks_daily_health.md
+            docs/stocks/stocks_daily_health.csv
+            docs/stocks/index.html
+            docs/stocks/master_summary.csv
+            docs/stocks/signals_summary.csv
+          retention-days: 30
+          if-no-files-found: warn
+
+      # ------------------------------------------------------------
+      # Optional: commit & push docs to update GitHub Pages
+      # ------------------------------------------------------------
+      - name: Commit & push docs (optional)
+        if: ${{ (inputs.push_docs || 'true') == 'true' }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add docs/stocks || true
+          git diff --cached --quiet && echo "No docs changes" && exit 0
+          git commit -m "stocks daily: update docs/stocks"
+          git push
