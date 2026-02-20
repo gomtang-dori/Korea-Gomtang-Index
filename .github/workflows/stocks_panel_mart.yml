@@ -1,4 +1,4 @@
-name: Stocks Panel Mart (cache-based 1-file parquet + backfill status)
+name: Stocks Panel Mart (prefer backfill cache -> panel build + backfill status)
 
 on:
   workflow_dispatch:
@@ -40,6 +40,10 @@ jobs:
       PYTHONPATH: src
       # cache namespace (so you can reset cache by bumping this)
       STOCKS_PANEL_CACHE_NS: "v1"
+      
+      # IMPORTANT: must match stock_backfill.yml cache namespace
+      # (the cache key prefix is: stocks-backfill-${STOCKS_BACKFILL_CACHE_NS}-...)
+      STOCKS_BACKFILL_CACHE_NS: "v1"
 
       # NOTE: This workflow assumes raw/curated are provided via cache.
       # If cache is empty, curate/build_panel will still run, but coverage will be low.
@@ -77,14 +81,38 @@ jobs:
           pip install --quiet --no-input pandas pyarrow requests pykrx tabulate
           python -c "import tabulate; print('tabulate=', tabulate.__version__)"
 
-      - name: Restore cache (raw + curated)
-        id: cache_restore
+      # ============================================================
+      # (1) Prefer restoring cache produced by stock_backfill.yml
+      # ============================================================
+
+      - name: Restore cache (prefer- stocks-backfill raw + curated)
+        id: cache_restore_backfill
         uses: actions/cache/restore@v4
         with:
           path: |
             data/stocks/raw/prices
             data/stocks/raw/krx_flows
             data/stocks/raw/fundamentals
+            data/stocks/raw/dart
+            data/stocks/curated
+          key: stocks-backfill-${{ env.STOCKS_BACKFILL_CACHE_NS }}-${{ github.ref_name }}-${{ github.run_id }}
+          restore-keys: |
+            stocks-backfill-${{ env.STOCKS_BACKFILL_CACHE_NS }}-${{ github.ref_name }}-
+            stocks-backfill-${{ env.STOCKS_BACKFILL_CACHE_NS }}-
+
+      # ============================================================
+      # (2) Fallback: restore panel_mart's own cache (if backfill cache miss)
+      # ============================================================
+      - name: Restore cache (fallback: stocks-panel-mart raw + curated)
+        if: ${{ steps.cache_restore_backfill.outputs.cache-hit != 'true' }}
+        id: cache_restore_panel
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            data/stocks/raw/prices
+            data/stocks/raw/krx_flows
+            data/stocks/raw/fundamentals
+            data/stocks/raw/dart
             data/stocks/curated
           key: stocks-panel-mart-${{ env.STOCKS_PANEL_CACHE_NS }}-${{ github.ref_name }}-${{ github.run_id }}
           restore-keys: |
@@ -94,7 +122,8 @@ jobs:
       - name: Cache precheck summary (raw/curated coverage)
         if: always()
         run: |
-          echo "[cache] hit? -> ${{ steps.cache_restore.outputs.cache-hit }}"
+          echo "[cache] backfill hit? -> ${{ steps.cache_restore_backfill.outputs.cache-hit }}"
+          echo "[cache] panel hit?    -> ${{ steps.cache_restore_panel.outputs.cache-hit }}"
           python - <<'PY'
           from pathlib import Path
           def count_files(p: Path, suffix: str):
@@ -105,11 +134,13 @@ jobs:
           prices = Path("data/stocks/raw/prices")
           flows  = Path("data/stocks/raw/krx_flows")
           fund   = Path("data/stocks/raw/fundamentals")
+          dart   = Path("data/stocks/raw/dart")          
           curated= Path("data/stocks/curated")
 
           print("[precheck] prices_csv_files =", count_files(prices, ".csv"))
           print("[precheck] flows_parquet_files =", count_files(flows, ".parquet"))
           print("[precheck] fundamentals_parquet_files =", count_files(fund, ".parquet"))
+          print("[precheck] dart_json_files (rglob) =", count_files(dart, ".json"))          
           # curated has nested ticker folders; just show whether folder exists + a few counts
           print("[precheck] curated_exists =", curated.exists())
           if curated.exists():
