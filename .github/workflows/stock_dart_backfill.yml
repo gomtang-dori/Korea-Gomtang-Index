@@ -59,7 +59,20 @@ jobs:
           python-version: "3.10"
 
       - name: Install dependencies
-        run: pip install pandas pyarrow requests
+        run: pip install pandas pyarrow requests pykrx
+
+      - name: "[사전] Fetch FULL listings (force SAMPLE_MODE=false)"
+        continue-on-error: true
+        env:
+          SAMPLE_MODE: "false"
+        run: |
+          python src/stocks/fetch_listings.py || echo "⚠️ fetch_listings 오류"
+          python - << 'PY'
+          import pandas as pd
+          df = pd.read_parquet("data/stocks/master/listings.parquet")
+          print(f"[listings] rows={len(df):,}, unique_tickers={df['ticker'].astype(str).nunique():,}")
+          print(df.head(3))
+          PY
         
       - name: "[검증] listings 행 수 + 예상 DART jobs(call) 계산"
         if: always()
