@@ -96,6 +96,10 @@ jobs:
       - name: Install dependencies
         run: pip install pandas pyarrow requests pykrx tabulate
 
+      - name: Sanity check (tabulate)
+        run: |
+          python -c "import tabulate; print('tabulate=', tabulate.__version__)"        
+
       # ------------------------------------------------------------
       # Restore DART raw cache (누적 목적)
       # - 저장 key는 매 run마다 유니크(run_id)로 생성
