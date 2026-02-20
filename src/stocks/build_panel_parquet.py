@@ -3,6 +3,11 @@
 """
 Build unified stock panel parquet (single file, overwrite)
 
+daily(최근5년): PANEL_SCOPE=5y, 출력 data/stocks/mart/panel_5y.parquet (덮어쓰기)
+weekly(전체기간): PANEL_SCOPE=all, 출력 data/stocks/mart/panel_all.parquet (덮어쓰기)
+DART 표준요약: docs/stocks/dart_standard_2015_2026.csv 그대로 사용, dart_asof_date를 reprt_code로 분기말(또는 연말) 매핑 후 merge_asof(backward)로 일자에 붙임
+(DART는 분기 업데이트지만 “최근 일자에도 직전 값이 들어가는” 효과)
+
 Inputs:
 - listings: data/stocks/master/listings.parquet
 - prices (raw): data/stocks/raw/prices/{ticker}.csv
