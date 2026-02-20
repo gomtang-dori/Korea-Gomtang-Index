@@ -1,4 +1,4 @@
-name: Stock Backfill (Full History)
+name: Stock Backfill (Full History + cache raw/curated)
 
 on:
   workflow_dispatch:
@@ -27,6 +27,9 @@ jobs:
     env:
       DART_API_KEY: ${{ secrets.DART_API_KEY }}
       SAMPLE_MODE: "false"
+
+      # cache namespace (원하면 올려서 캐시 리셋)
+      STOCKS_BACKFILL_CACHE_NS: "v1"
 
       # prices는 20 유지
       MAX_WORKERS: "20"
@@ -59,6 +62,56 @@ jobs:
 
       - name: Install dependencies
         run: pip install pandas pyarrow pykrx requests plotly
+
+      # ============================================================
+      # (NEW) Restore cache: raw/curated가 이미 있으면 backfill 재실행 비용 감소
+      # ============================================================
+      - name: Restore cache (stocks raw + curated)
+        id: stocks_cache_restore
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            data/stocks/raw/prices
+            data/stocks/raw/krx_flows
+            data/stocks/raw/fundamentals
+            data/stocks/raw/dart
+            data/stocks/curated
+          key: stocks-backfill-${{ env.STOCKS_BACKFILL_CACHE_NS }}-${{ github.ref_name }}-${{ github.run_id }}
+          restore-keys: |
+            stocks-backfill-${{ env.STOCKS_BACKFILL_CACHE_NS }}-${{ github.ref_name }}-
+            stocks-backfill-${{ env.STOCKS_BACKFILL_CACHE_NS }}-
+
+      - name: Cache precheck summary
+        if: always()
+        run: |
+          echo "[cache] hit? -> ${{ steps.stocks_cache_restore.outputs.cache-hit }}"
+          python - <<'PY'
+          from pathlib import Path
+          import os
+
+          def count_files(p: Path, pattern: str):
+            if not p.exists():
+              return 0
+            return len(list(p.glob(pattern)))
+
+          def count_rglob(p: Path, suffix: str):
+            if not p.exists():
+              return 0
+            return sum(1 for x in p.rglob(f"*{suffix}") if x.is_file())
+
+          print("=== precheck raw/curated ===")
+          print("[raw] prices csv files      =", count_files(Path("data/stocks/raw/prices"), "*.csv"))
+          print("[raw] krx_flows parquet     =", count_files(Path("data/stocks/raw/krx_flows"), "*.parquet"))
+          print("[raw] fundamentals parquet  =", count_files(Path("data/stocks/raw/fundamentals"), "*.parquet"))
+          # dart는 ticker dir 구조라 파일 수가 많을 수 있어 json만 카운트
+          print("[raw] dart json count       =", count_rglob(Path("data/stocks/raw/dart"), ".json"))
+          print("[curated] flows_daily       =", count_rglob(Path("data/stocks/curated"), "flows_daily.parquet"))
+          print("[curated] fundamentals_daily=", count_rglob(Path("data/stocks/curated"), "fundamentals_daily.parquet"))
+          print("================================")
+          PY
+          echo "Disk usage (top-level):"
+          du -sh data/stocks/raw 2>/dev/null || true
+          du -sh data/stocks/curated 2>/dev/null || true
 
       - name: Init RUN TAG (for marker)
         run: |
@@ -99,6 +152,8 @@ jobs:
           rm -rf docs/stocks || true
           mkdir -p data/stocks/curated data/stocks/analysis docs/stocks
           echo "OK: derived outputs cleaned & directories recreated"
+
+      # (주의) clean_derived=true면 curated를 지우므로, cache restore가 있어도 이 시점 이후 curated는 새로 생성됩니다.
 
       - name: "[마커] Write run marker"
         if: always()
@@ -371,6 +426,21 @@ jobs:
             docs/stocks/financials_raw.csv
           retention-days: 30
           if-no-files-found: warn
+
+      # ============================================================
+      # (NEW) Save cache: 다음 runs/패널마트에서 raw/curated 재사용
+      # ============================================================
+      - name: Save cache (stocks raw + curated)
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            data/stocks/raw/prices
+            data/stocks/raw/krx_flows
+            data/stocks/raw/fundamentals
+            data/stocks/raw/dart
+            data/stocks/curated
+          key: stocks-backfill-${{ env.STOCKS_BACKFILL_CACHE_NS }}-${{ github.ref_name }}-${{ github.run_id }}
 
       - name: "Upload master summary"
         if: ${{ always() && steps.verify_outputs.outputs.has_master_summary == 'true' }}
