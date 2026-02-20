@@ -1,6 +1,10 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-
+'''
+daily/weekly 공용
+docs/stocks/panel_health_<scope>.md + docs/stocks/panel_health_<scope>.csv 생성
+패널 파일 크기/row 수(메타), DART 컬럼 포함 여부, 소스 파일 커버리지(가격/flows/fund) 요약
+'''
 import os
 from pathlib import Path
 import pandas as pd
