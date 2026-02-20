@@ -1,4 +1,4 @@
-name: Stocks Panel Mart (1-file parquet + backfill status)
+name: Stocks Panel Mart (cache-based 1-file parquet + backfill status)
 
 on:
   workflow_dispatch:
@@ -38,8 +38,14 @@ jobs:
     timeout-minutes: 360
     env:
       PYTHONPATH: src
+      # cache namespace (so you can reset cache by bumping this)
+      STOCKS_PANEL_CACHE_NS: "v1"
 
+      # NOTE: This workflow assumes raw/curated are provided via cache.
+      # If cache is empty, curate/build_panel will still run, but coverage will be low.
+      # (fetch_prices / fetch_krx_flows / fetch_fundamentals should be handled by a separate daily job.)
       # listings
+      
       SAMPLE_MODE: ${{ inputs.sample_mode }}
       SAMPLE_SIZE: ${{ inputs.sample_size }}
 
@@ -67,7 +73,50 @@ jobs:
       - name: Install dependencies
         run: |
           pip install --quiet --no-input -U pip
-          pip install --quiet --no-input -r requirements.txt
+          # minimal deps for this workflow + tabulate (required by pandas.to_markdown)
+          pip install --quiet --no-input pandas pyarrow requests pykrx tabulate
+          python -c "import tabulate; print('tabulate=', tabulate.__version__)"
+
+      - name: Restore cache (raw + curated)
+        id: cache_restore
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            data/stocks/raw/prices
+            data/stocks/raw/krx_flows
+            data/stocks/raw/fundamentals
+            data/stocks/curated
+          key: stocks-panel-mart-${{ env.STOCKS_PANEL_CACHE_NS }}-${{ github.ref_name }}-${{ github.run_id }}
+          restore-keys: |
+            stocks-panel-mart-${{ env.STOCKS_PANEL_CACHE_NS }}-${{ github.ref_name }}-
+            stocks-panel-mart-${{ env.STOCKS_PANEL_CACHE_NS }}-
+
+      - name: Cache precheck summary (raw/curated coverage)
+        if: always()
+        run: |
+          echo "[cache] hit? -> ${{ steps.cache_restore.outputs.cache-hit }}"
+          python - <<'PY'
+          from pathlib import Path
+          def count_files(p: Path, suffix: str):
+            if not p.exists():
+              return 0
+            return sum(1 for x in p.rglob(f"*{suffix}") if x.is_file())
+
+          prices = Path("data/stocks/raw/prices")
+          flows  = Path("data/stocks/raw/krx_flows")
+          fund   = Path("data/stocks/raw/fundamentals")
+          curated= Path("data/stocks/curated")
+
+          print("[precheck] prices_csv_files =", count_files(prices, ".csv"))
+          print("[precheck] flows_parquet_files =", count_files(flows, ".parquet"))
+          print("[precheck] fundamentals_parquet_files =", count_files(fund, ".parquet"))
+          # curated has nested ticker folders; just show whether folder exists + a few counts
+          print("[precheck] curated_exists =", curated.exists())
+          if curated.exists():
+            # sample counts
+            print("[precheck] curated_flows_daily_parquet =", count_files(curated, "flows_daily.parquet"))
+            print("[precheck] curated_fund_daily_parquet =", count_files(curated, "fundamentals_daily.parquet"))
+          PY
           
       - name: Restore stocks raw/curated cache
         uses: actions/cache/restore@v4
@@ -93,6 +142,8 @@ jobs:
           PY
 
       # (선택) prices/flows/fundamentals 수집 워크플로우가 별도로 존재한다면 여기서 호출하지 않고,
+      # 이 워크플로우는 "cache 기반"으로 raw/curated를 사용해 panel + 리포트만 생성합니다.
+      # cache가 비어있다면 curate/build_panel은 실행되지만 커버리지는 낮을 수 있습니다.      
       # 이미 raw/curated 가 존재(또는 cache restore)한다고 가정합니다.
       # 필요한 경우, 아래 3개 스텝을 별도 워크플로우(또는 이 워크플로우에 옵션으로) 추가하면 됩니다.
       # - python src/stocks/fetch_prices.py
@@ -137,6 +188,17 @@ jobs:
         run: |
           python src/stocks/report_backfill_status.py
           ls -lh docs/stocks/backfill_status.*
+
+      - name: Save cache (raw + curated)
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            data/stocks/raw/prices
+            data/stocks/raw/krx_flows
+            data/stocks/raw/fundamentals
+            data/stocks/curated
+          key: stocks-panel-mart-${{ env.STOCKS_PANEL_CACHE_NS }}-${{ github.ref_name }}-${{ github.run_id }}
 
       - name: Upload panel + reports (artifact)
         if: always()
