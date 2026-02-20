@@ -13,7 +13,7 @@ Confirmed specs:
 - Backtesting (within report window): bucket table/plot + Top20/Bot20 summary (fixed 20%)
 - Mean-return heatmap clipped ±3%
 - prob_up_10d: show last non-null value + date
-- Opinion: BUY/HOLD/SELL using prob (>=0.6 BUY, <0.4 SELL else HOLD). If ML missing → trend-only fallback, then apply trend filter.
+- Opinion: ML 우선 (prob_up_10d >=0.6 BUY, <0.4 SELL, else HOLD). ML 결측 시: heatmap cell win_rate(>=60% BUY, <=40% SELL, else HOLD). (trend filter 미적용)
 - Position guide (%): Option2 standard
   * BUY +10~+20, HOLD 0, SELL -10~-30
   * If Confidence Low → halve the guidance (BUY +5~+10, SELL -5~-15)
@@ -214,6 +214,25 @@ def _opinion_from_prob(prob: float):
     if prob >= 0.6:
         return "BUY"
     if prob < 0.4:
+        return "SELL"
+    return "HOLD"
+
+
+def _opinion_from_win_rate(win_rate: float, n: int):
+    """
+    ML 결측 시: heatmap 현재 셀(win_rate) 기반 Action.
+    - win_rate >= 0.60 -> BUY
+    - win_rate <= 0.40 -> SELL
+    - else -> HOLD
+    (n==0 또는 win_rate NaN이면 HOLD)
+    """
+    if n is None or n <= 0:
+        return "HOLD"
+    if win_rate is None or (isinstance(win_rate, float) and np.isnan(win_rate)):
+        return "HOLD"
+    if win_rate >= 0.60:
+        return "BUY"
+    if win_rate <= 0.40:
         return "SELL"
     return "HOLD"
 
@@ -788,17 +807,21 @@ def main():
     has_ml = not (prob_last is None or (isinstance(prob_last, float) and np.isnan(prob_last)))
     confidence = _confidence_level(has_ml, int(cell_stats["n"]))
     confidence_note = "Confidence Low → 비중 가이드를 절반으로 축소" if confidence == "Low" else ""
-
     op0 = _opinion_from_prob(prob_last)
-    reason_ml = f"ML(prob={prob_last:.3f}, as of {prob_asof})" if has_ml else "ML(prob 없음 → trend로 대체)"
-    if op0 is None:
-        op0 = _opinion_from_trend(g_d3, g_d5)
+    if has_ml:
+        reason_ml = f"ML(prob={prob_last:.3f}, as of {prob_asof})"
+    else:
+        # ML 결측 시: heatmap 현재 셀(win_rate)로 Action 결정 (trend filter 미적용)
+        op0 = _opinion_from_win_rate(float(cell_stats["win"]), int(cell_stats["n"]))
+        reason_ml = (
+            f"ML(prob 결측 → Heatmap win_rate 규칙) (win={_fmt_pct(cell_stats['win'],1, signed=False)}, n={cell_stats['n']})"
+        )
 
-    action = _apply_trend_filter(op0, g_d3, g_d5)
+    action = op0
     position_guide = _position_guide(action, confidence)
 
     # 3 fixed reasons
-    action_reason_1 = f"ML: {reason_ml}"
+    action_reason_1 = f"Signal: {reason_ml}"
     action_reason_2 = f"Trend: Δ3={_fmt_float(g_d3,1)}, Δ5={_fmt_float(g_d5,1)} → {g_state_label}"
     action_reason_3 = f"Heatmap cell: n={cell_stats['n']}, win={_fmt_pct(cell_stats['win'],1, signed=False)}, avg={_fmt_pct(cell_stats['avg'],2, signed=True)}"
 
