@@ -39,7 +39,8 @@ on:
 jobs:
   dart_backfill:
     runs-on: ubuntu-latest
-    timeout-minutes: 2  # 약 3.5시간
+    timeout-minutes: 360  # 6 hours (was 2 minutes)
+
     env:
       DART_API_KEY:  ${{ secrets.DART_API_KEY }}
       DART_API2_KEY: ${{ secrets.DART_API2_KEY }}
@@ -61,6 +62,28 @@ jobs:
       - name: Install dependencies
         run: pip install pandas pyarrow requests pykrx
 
+      # ------------------------------------------------------------
+      # Cache restore/save for DART raw directory (누적 목적)
+      # - actions/cache는 동일 key 덮어쓰기가 불가하므로,
+      #   매 실행마다 고유 key(run_id)로 저장하고,
+      #   restore-keys prefix로 "가장 최신" 캐시를 복원합니다.
+      # ------------------------------------------------------------
+      - name: Restore DART raw cache (actions/cache)
+        id: dart_cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            data/stocks/raw/dart
+          key: dart-raw-v1-${{ github.ref_name }}-${{ github.run_id }}
+          restore-keys: |
+            dart-raw-v1-${{ github.ref_name }}-
+
+      - name: Show cache restore result
+        run: |
+          echo "[cache] hit? -> ${{ steps.dart_cache.outputs.cache-hit }}"
+          ls -lah data/stocks/raw/dart || true
+          find data/stocks/raw/dart -maxdepth 2 -type d | head -n 20 || true
+
       - name: "[사전] Fetch FULL listings (force SAMPLE_MODE=false)"
         continue-on-error: true
         env:
@@ -73,7 +96,7 @@ jobs:
           print(f"[listings] rows={len(df):,}, unique_tickers={df['ticker'].astype(str).nunique():,}")
           print(df.head(3))
           PY
-        
+
       - name: "[검증] listings 행 수 + 예상 DART jobs(call) 계산"
         if: always()
         run: |
@@ -91,7 +114,6 @@ jobs:
           codes = [c.strip() for c in os.getenv("DART_REPRT_CODES", "").split(",") if c.strip()]
           codes_cnt = len(codes)
 
-          # key count (secrets are injected as env)
           key1 = (os.getenv("DART_API_KEY", "") or "").strip()
           key2 = (os.getenv("DART_API2_KEY", "") or "").strip()
           keys_cnt = 0
@@ -100,7 +122,6 @@ jobs:
           if key2:
             keys_cnt += 1
 
-          # budget (current workflow sets DART_RUN_BUDGET; fetch script treats it as per-key budget)
           budget_per_key = int(os.getenv("DART_RUN_BUDGET", "0") or 0)
           total_budget = budget_per_key * max(keys_cnt, 1)
 
@@ -118,10 +139,7 @@ jobs:
 
           df = pd.read_parquet(listings_path)
           rows = len(df)
-          if "ticker" in df.columns:
-            uniq = df["ticker"].astype(str).nunique()
-          else:
-            uniq = rows
+          uniq = df["ticker"].astype(str).nunique() if "ticker" in df.columns else rows
 
           print(f"[verify] listings rows={rows:,}, unique_tickers={uniq:,}")
 
@@ -132,7 +150,6 @@ jobs:
           expected_jobs = uniq * years_cnt * codes_cnt
           print(f"[verify] expected_jobs_estimate ~= {expected_jobs:,} (=unique_tickers*years*reprt_codes)")
 
-          # budget sanity check
           if budget_per_key > 0:
             margin = total_budget - expected_jobs
             print(f"[verify] margin(total_budget - expected_jobs) = {margin:,}")
@@ -141,7 +158,6 @@ jobs:
               print("[verify][HINT] 해결: (1) 연도 구간 축소 (2) reprt_codes 축소 (3) budget 상향 (4) cache_mode=skip로 누락분만")
           print("[verify] =================================")
           PY
-        
 
       - name: Fetch DART raw cache
         continue-on-error: true
@@ -162,7 +178,6 @@ jobs:
           DART_VERIFY_YEAR_TO: "2026"
           DART_VERIFY_REPRT_CODES: "11011,11012,11013,11014"
           DART_VERIFY_OUT_DIR: "docs/stocks"
-          # 기대 ticker 모수는 listings ∩ corp-mapped 기준(가장 현실적인 기대치)
           DART_VERIFY_EXPECT_MODE: "corp_mapped_or_raw"
         run: |
           python src/stocks/verify_dart_backfill.py || echo "⚠️ DART backfill 검증 일부 오류"
