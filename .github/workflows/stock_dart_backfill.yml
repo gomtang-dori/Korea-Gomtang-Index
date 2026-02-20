@@ -154,6 +154,33 @@ jobs:
         run: |
           python src/stocks/export_dart_audit_csv.py || echo "⚠️ audit csv 생성 오류"
 
+      - name: "[검증] Verify DART backfill coverage & integrity (2019~2026)"
+        if: always()
+        continue-on-error: true
+        env:
+          DART_VERIFY_YEAR_FROM: "2019"
+          DART_VERIFY_YEAR_TO: "2026"
+          DART_VERIFY_REPRT_CODES: "11011,11012,11013,11014"
+          DART_VERIFY_OUT_DIR: "docs/stocks"
+          # 기대 ticker 모수는 listings ∩ corp-mapped 기준(가장 현실적인 기대치)
+          DART_VERIFY_EXPECT_MODE: "corp_mapped_or_raw"
+        run: |
+          python src/stocks/verify_dart_backfill.py || echo "⚠️ DART backfill 검증 일부 오류"
+          echo "=== verify outputs ==="
+          ls -lh docs/stocks/dart_verify_*_2019_2026.* 2>/dev/null || true
+
+      - name: Upload DART verify artifacts (retention 90d)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: dart-verify-2019-2026
+          path: |
+            docs/stocks/dart_verify_details_2019_2026.csv
+            docs/stocks/dart_verify_issues_2019_2026.csv
+            docs/stocks/dart_verify_summary_2019_2026.txt
+          retention-days: 90
+          if-no-files-found: warn
+
       - name: (Optional) Curate to parquet/csv
         if: ${{ inputs.run_curate }}
         continue-on-error: true
