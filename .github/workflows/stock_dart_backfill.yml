@@ -41,7 +41,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 210  # 약 3.5시간
     env:
-      DART_API_KEY: ${{ secrets.DART_API_KEY }}
+      DART_API_KEY: ${{ secrets.DART_API2_KEY }}
       DART_YEAR_FROM: ${{ inputs.year_from }}
       DART_YEAR_TO: ${{ inputs.year_to }}
       DART_REPRT_CODES: ${{ inputs.reprt_codes }}
