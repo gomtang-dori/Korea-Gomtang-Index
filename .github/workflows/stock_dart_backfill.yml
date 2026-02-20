@@ -39,7 +39,7 @@ on:
 jobs:
   dart_backfill:
     runs-on: ubuntu-latest
-    timeout-minutes: 210  # 약 3.5시간
+    timeout-minutes: 360  # 약 3.5시간
     env:
       DART_API_KEY:  ${{ secrets.DART_API_KEY }}
       DART_API2_KEY: ${{ secrets.DART_API2_KEY }}
