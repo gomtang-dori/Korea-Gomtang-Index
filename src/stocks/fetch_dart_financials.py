@@ -25,7 +25,7 @@ MASTER = DATA_DIR / "master" / "listings.parquet"
 RAW_DIR = DATA_DIR / "raw" / "dart"
 RAW_DIR.mkdir(parents=True, exist_ok=True)
 
-DART_API_KEY = os.getenv("DART_API2_KEY", "").strip()
+DART_API_KEY = os.getenv("DART_API_KEY", "").strip()
 if not DART_API_KEY:
     raise RuntimeError("Missing env var DART_API_KEY")
 
