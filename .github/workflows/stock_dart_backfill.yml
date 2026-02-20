@@ -11,26 +11,53 @@ on:
         description: "End year (YYYY)"
         type: string
         default: "2017"
+
       reprt_codes:
-        description: "Report codes (11011,11012,11013,11014)"
+        description: "Report codes (11011,11012,11013,11014). You can split runs by codes."
         type: string
         default: "11011,11012,11013,11014"
+
+      # 안전 추천 기본값(보수적)
       dart_max_workers:
-        description: "DART workers (3~6 recommended)"
+        description: "DART workers (3~6 recommended). Rate limiter is global."
         type: string
-        default: "5"
+        default: "4"
       dart_min_interval_sec:
-        description: "Global request min interval seconds"
+        description: "Global request min interval seconds (safety). 0.25~0.35 recommended."
         type: string
-        default: "0.15"
+        default: "0.30"
+
       dart_run_budget:
-        description: "Max calls in this run (safety)"
+        description: "Max calls per key in this run (safety). If 2 keys, total budget ~= 2x."
         type: string
-        default: "38000"
+        default: "25000"
+
       cache_mode:
         description: "skip or overwrite"
         type: string
         default: "skip"
+
+      # 캐시 분할/유지 전략
+      cache_namespace:
+        description: "Cache namespace. Use 'global' or a segment label (e.g., '2022-2024')."
+        type: string
+        default: "global"
+
+      prune_before_cache_save:
+        description: "If true, prune old years before saving cache (keeps cache small)."
+        type: boolean
+        default: false
+
+      retain_years_in_cache:
+        description: "When prune enabled, keep only last N years (based on year_to)."
+        type: string
+        default: "5"
+
+      max_cache_size_mb:
+        description: "If cache dir exceeds this size, prune (if enabled) or skip cache save. 0=ignore."
+        type: string
+        default: "0"
+
       run_curate:
         description: "Run curate_dart.py after fetch"
         type: boolean
@@ -39,18 +66,25 @@ on:
 jobs:
   dart_backfill:
     runs-on: ubuntu-latest
-    timeout-minutes: 360  # 6 hours (was 2 minutes)
+    timeout-minutes: 360
 
     env:
       DART_API_KEY:  ${{ secrets.DART_API_KEY }}
       DART_API2_KEY: ${{ secrets.DART_API2_KEY }}
+
       DART_YEAR_FROM: ${{ inputs.year_from }}
       DART_YEAR_TO: ${{ inputs.year_to }}
       DART_REPRT_CODES: ${{ inputs.reprt_codes }}
+
       DART_MAX_WORKERS: ${{ inputs.dart_max_workers }}
       DART_MIN_INTERVAL_SEC: ${{ inputs.dart_min_interval_sec }}
       DART_RUN_BUDGET: ${{ inputs.dart_run_budget }}
       DART_CACHE_MODE: ${{ inputs.cache_mode }}
+
+      CACHE_NAMESPACE: ${{ inputs.cache_namespace }}
+      PRUNE_BEFORE_CACHE_SAVE: ${{ inputs.prune_before_cache_save }}
+      RETAIN_YEARS_IN_CACHE: ${{ inputs.retain_years_in_cache }}
+      MAX_CACHE_SIZE_MB: ${{ inputs.max_cache_size_mb }}
 
     steps:
       - uses: actions/checkout@v4
@@ -63,26 +97,37 @@ jobs:
         run: pip install pandas pyarrow requests pykrx
 
       # ------------------------------------------------------------
-      # Cache restore/save for DART raw directory (누적 목적)
-      # - actions/cache는 동일 key 덮어쓰기가 불가하므로,
-      #   매 실행마다 고유 key(run_id)로 저장하고,
-      #   restore-keys prefix로 "가장 최신" 캐시를 복원합니다.
+      # Restore DART raw cache (누적 목적)
+      # - 저장 key는 매 run마다 유니크(run_id)로 생성
+      # - restore-keys prefix로 가장 최신 캐시를 자동 복원
       # ------------------------------------------------------------
       - name: Restore DART raw cache (actions/cache)
-        id: dart_cache
-        uses: actions/cache@v4
+        id: dart_cache_restore
+        uses: actions/cache/restore@v4
         with:
           path: |
             data/stocks/raw/dart
-          key: dart-raw-v1-${{ github.ref_name }}-${{ github.run_id }}
+          key: dart-raw-v1-${{ github.ref_name }}-${{ env.CACHE_NAMESPACE }}-${{ github.run_id }}
           restore-keys: |
+            dart-raw-v1-${{ github.ref_name }}-${{ env.CACHE_NAMESPACE }}-
             dart-raw-v1-${{ github.ref_name }}-
 
       - name: Show cache restore result
         run: |
-          echo "[cache] hit? -> ${{ steps.dart_cache.outputs.cache-hit }}"
+          echo "[cache] restore hit? -> ${{ steps.dart_cache_restore.outputs.cache-hit }}"
+          echo "[cache] namespace=${CACHE_NAMESPACE}"
           ls -lah data/stocks/raw/dart || true
-          find data/stocks/raw/dart -maxdepth 2 -type d | head -n 20 || true
+          python - << 'PY'
+          import os
+          from pathlib import Path
+          raw = Path("data/stocks/raw/dart")
+          if not raw.exists():
+            print("[cache] raw dir missing")
+            raise SystemExit(0)
+          # count ticker dirs
+          ticker_dirs = [p for p in raw.iterdir() if p.is_dir() and p.name.isdigit() and len(p.name)==6]
+          print(f"[cache] raw_ticker_dirs={len(ticker_dirs):,}")
+          PY
 
       - name: "[사전] Fetch FULL listings (force SAMPLE_MODE=false)"
         continue-on-error: true
@@ -97,7 +142,7 @@ jobs:
           print(df.head(3))
           PY
 
-      - name: "[검증] listings 행 수 + 예상 DART jobs(call) 계산"
+      - name: "[사전점검] 예상 jobs / 예산 / 안전 추천값 출력"
         if: always()
         run: |
           python - << 'PY'
@@ -106,57 +151,49 @@ jobs:
           import pandas as pd
 
           listings_path = Path("data/stocks/master/listings.parquet")
-
-          year_from = int(os.getenv("DART_YEAR_FROM", "0") or 0)
-          year_to   = int(os.getenv("DART_YEAR_TO", "0") or 0)
+          year_from = int(os.getenv("DART_YEAR_FROM","0") or 0)
+          year_to   = int(os.getenv("DART_YEAR_TO","0") or 0)
           years_cnt = max(0, year_to - year_from + 1)
 
-          codes = [c.strip() for c in os.getenv("DART_REPRT_CODES", "").split(",") if c.strip()]
+          codes = [c.strip() for c in os.getenv("DART_REPRT_CODES","").split(",") if c.strip()]
           codes_cnt = len(codes)
 
-          key1 = (os.getenv("DART_API_KEY", "") or "").strip()
-          key2 = (os.getenv("DART_API2_KEY", "") or "").strip()
-          keys_cnt = 0
-          if key1:
-            keys_cnt += 1
-          if key2:
-            keys_cnt += 1
+          key1 = (os.getenv("DART_API_KEY","") or "").strip()
+          key2 = (os.getenv("DART_API2_KEY","") or "").strip()
+          keys_cnt = int(bool(key1)) + int(bool(key2))
+          keys_cnt = max(keys_cnt, 1)
 
-          budget_per_key = int(os.getenv("DART_RUN_BUDGET", "0") or 0)
-          total_budget = budget_per_key * max(keys_cnt, 1)
+          budget_per_key = int(os.getenv("DART_RUN_BUDGET","0") or 0)
+          total_budget = budget_per_key * keys_cnt
 
-          print("[verify] ===== DART backfill precheck =====")
-          print(f"[verify] years={year_from}..{year_to} (count={years_cnt})")
-          print(f"[verify] reprt_codes={codes} (count={codes_cnt})")
-          print(f"[verify] keys_cnt={keys_cnt} (DART_API_KEY={'Y' if bool(key1) else 'N'}, DART_API2_KEY={'Y' if bool(key2) else 'N'})")
-          print(f"[verify] budget_per_key(DART_RUN_BUDGET)={budget_per_key:,}")
-          print(f"[verify] total_budget_estimate=budget_per_key*keys_cnt={total_budget:,}")
+          workers = int(os.getenv("DART_MAX_WORKERS","0") or 0)
+          interval = float(os.getenv("DART_MIN_INTERVAL_SEC","0") or 0.0)
+
+          print("[precheck] ===== recommended safe defaults =====")
+          print("[precheck] min_interval_sec: 0.25~0.35 (safer), workers: 3~6 (rate limiter is global)")
+          print("[precheck] budget_per_key: split by (year range / reprt_codes) until expected_jobs <= total_budget")
+          print("[precheck] =======================================")
+
+          print("[precheck] config")
+          print(f"  years={year_from}..{year_to} (count={years_cnt})")
+          print(f"  reprt_codes={codes} (count={codes_cnt})")
+          print(f"  keys_cnt={keys_cnt} (DART_API_KEY={'Y' if bool(key1) else 'N'}, DART_API2_KEY={'Y' if bool(key2) else 'N'})")
+          print(f"  workers={workers}, min_interval={interval}")
+          print(f"  budget_per_key={budget_per_key:,}, total_budget_estimate={total_budget:,}")
 
           if not listings_path.exists():
-            print(f"[verify][WARN] MISSING: {listings_path}")
-            print("[verify][WARN] listings가 없으면 실제 jobs 계산/수집 대상이 매우 작아질 수 있습니다.")
+            print(f"[precheck][WARN] MISSING: {listings_path}")
             raise SystemExit(0)
 
           df = pd.read_parquet(listings_path)
-          rows = len(df)
-          uniq = df["ticker"].astype(str).nunique() if "ticker" in df.columns else rows
-
-          print(f"[verify] listings rows={rows:,}, unique_tickers={uniq:,}")
-
-          if years_cnt == 0 or codes_cnt == 0:
-            print("[verify][WARN] years_cnt 또는 codes_cnt가 0입니다. 입력값(year_from/to, reprt_codes)을 확인하세요.")
-            raise SystemExit(0)
-
+          uniq = df["ticker"].astype(str).nunique() if "ticker" in df.columns else len(df)
           expected_jobs = uniq * years_cnt * codes_cnt
-          print(f"[verify] expected_jobs_estimate ~= {expected_jobs:,} (=unique_tickers*years*reprt_codes)")
-
-          if budget_per_key > 0:
-            margin = total_budget - expected_jobs
-            print(f"[verify] margin(total_budget - expected_jobs) = {margin:,}")
-            if expected_jobs > total_budget:
-              print("[verify][WARN] expected_jobs > total_budget -> 이번 run에서 cap에 걸려 중간 종료될 가능성이 큽니다.")
-              print("[verify][HINT] 해결: (1) 연도 구간 축소 (2) reprt_codes 축소 (3) budget 상향 (4) cache_mode=skip로 누락분만")
-          print("[verify] =================================")
+          print(f"[precheck] listings unique_tickers={uniq:,}")
+          print(f"[precheck] expected_jobs ~= {expected_jobs:,} (=unique_tickers*years*reprt_codes)")
+          print(f"[precheck] margin(total_budget - expected_jobs) = {total_budget - expected_jobs:,}")
+          if budget_per_key > 0 and expected_jobs > total_budget:
+            print("[precheck][WARN] expected_jobs > total_budget -> 이번 run에서 cap/중단 가능성↑")
+            print("[precheck][HINT] 분할전략: year_from/to 구간을 쪼개거나 reprt_codes를 나눠서 여러 번 실행하세요.")
           PY
 
       - name: Fetch DART raw cache
@@ -170,6 +207,114 @@ jobs:
         run: |
           python src/stocks/export_dart_audit_csv.py || echo "⚠️ audit csv 생성 오류"
 
+      # ------------------------------------------------------------
+      # Cache size strategy (optional prune + conditional save)
+      # - prune_before_cache_save=true 일 때:
+      #   year_to 기준 최근 N년만 남기고 나머지는 삭제(캐시만 슬림화)
+      # - max_cache_size_mb > 0 일 때:
+      #   크기 초과하면 (prune enabled면 prune) / 아니면 save 스킵
+      # ------------------------------------------------------------
+      - name: Cache size check / optional prune
+        if: always()
+        continue-on-error: true
+        run: |
+          python - << 'PY'
+          import os, re, shutil
+          from pathlib import Path
+
+          raw = Path("data/stocks/raw/dart")
+          if not raw.exists():
+            print("[prune] raw dir missing -> skip")
+            raise SystemExit(0)
+
+          def dir_size_bytes(p: Path) -> int:
+            total = 0
+            for fp in p.rglob("*"):
+              if fp.is_file():
+                try:
+                  total += fp.stat().st_size
+                except Exception:
+                  pass
+            return total
+
+          max_mb = int(os.getenv("MAX_CACHE_SIZE_MB","0") or 0)
+          do_prune = (os.getenv("PRUNE_BEFORE_CACHE_SAVE","false").lower() == "true")
+          retain_years = int(os.getenv("RETAIN_YEARS_IN_CACHE","5") or 5)
+          y_to = int(os.getenv("DART_YEAR_TO","0") or 0)
+
+          size0 = dir_size_bytes(raw)
+          print(f"[prune] raw_size_before={size0/1024/1024:.1f} MB")
+
+          need_action = False
+          if max_mb > 0 and (size0/1024/1024) > max_mb:
+            print(f"[prune][WARN] raw cache size exceeds MAX_CACHE_SIZE_MB={max_mb}")
+            need_action = True
+
+          if do_prune and (need_action or True):
+            # prune logic: keep only last N years based on y_to
+            y_keep_from = max(0, y_to - retain_years + 1)
+            print(f"[prune] enabled. keep years {y_keep_from}..{y_to} (retain_years={retain_years})")
+
+            # files are <year>_<reprt>_ALL.json under each ticker dir
+            year_re = re.compile(r"^(\\d{4})_1101[1-4]_ALL\\.json$")
+            removed = 0
+            scanned = 0
+            for td in raw.iterdir():
+              if not (td.is_dir() and td.name.isdigit() and len(td.name)==6):
+                continue
+              for f in td.iterdir():
+                if not f.is_file():
+                  continue
+                m = year_re.match(f.name)
+                if not m:
+                  continue
+                scanned += 1
+                y = int(m.group(1))
+                if y < y_keep_from or y > y_to:
+                  try:
+                    f.unlink()
+                    removed += 1
+                  except Exception:
+                    pass
+
+            print(f"[prune] scanned={scanned:,}, removed={removed:,}")
+
+            # remove empty ticker dirs
+            empty_dirs = 0
+            for td in raw.iterdir():
+              if td.is_dir() and td.name.isdigit() and len(td.name)==6:
+                if not any(td.iterdir()):
+                  try:
+                    td.rmdir()
+                    empty_dirs += 1
+                  except Exception:
+                    pass
+            print(f"[prune] removed empty ticker dirs={empty_dirs:,}")
+
+          size1 = dir_size_bytes(raw)
+          print(f"[prune] raw_size_after={size1/1024/1024:.1f} MB")
+
+          # decide whether to save cache
+          save_ok = True
+          if max_mb > 0 and (size1/1024/1024) > max_mb and not do_prune:
+            save_ok = False
+            print("[prune][WARN] still exceeds max size and prune disabled -> will SKIP cache save")
+
+          Path(".cache_flags").mkdir(exist_ok=True)
+          (Path(".cache_flags")/"SAVE_OK").write_text("1" if save_ok else "0", encoding="utf-8")
+          PY
+
+      - name: Save DART raw cache (actions/cache)
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            data/stocks/raw/dart
+          key: dart-raw-v1-${{ github.ref_name }}-${{ env.CACHE_NAMESPACE }}-${{ github.run_id }}
+
+      # ------------------------------------------------------------
+      # Verify (coverage & integrity)
+      # ------------------------------------------------------------
       - name: "[검증] Verify DART backfill coverage & integrity (2019~2026)"
         if: always()
         continue-on-error: true
@@ -184,6 +329,66 @@ jobs:
           echo "=== verify outputs ==="
           ls -lh docs/stocks/dart_verify_*_2019_2026.* 2>/dev/null || true
 
+      # ------------------------------------------------------------
+      # (3) 자동 리포팅: 연도×reprt_code 커버리지 표 생성
+      # - verify_details_*.csv 기반
+      # - md 파일로 저장 + 로그에도 출력
+      # ------------------------------------------------------------
+      - name: "[리포트] Coverage table by year x reprt_code"
+        if: always()
+        continue-on-error: true
+        run: |
+          python - << 'PY'
+          import pandas as pd
+          from pathlib import Path
+
+          details = Path("docs/stocks/dart_verify_details_2019_2026.csv")
+          if not details.exists():
+            print("[coverage] missing details csv -> skip")
+            raise SystemExit(0)
+
+          df = pd.read_csv(details)
+          # expected rows = expected_tickers * years * codes
+          # coverage per (year, reprt_code): file_exists ratio + status breakdown
+          df["file_exists"] = df["file_exists"].astype(bool)
+          df["year"] = pd.to_numeric(df["year"], errors="coerce")
+          df["reprt_code"] = df["reprt_code"].astype(str)
+
+          g = df.groupby(["year","reprt_code"]).agg(
+            expected=("ticker","count"),
+            exist=("file_exists","sum"),
+            json_ok=("json_ok","sum"),
+            meta_ok=("meta_ok","sum"),
+          ).reset_index()
+
+          g["missing"] = g["expected"] - g["exist"]
+          g["exist_rate"] = (g["exist"] / g["expected"]).fillna(0.0)
+
+          # pivot for quick view
+          pivot = g.pivot(index="year", columns="reprt_code", values="exist_rate").fillna(0.0)
+          pivot_cnt = g.pivot(index="year", columns="reprt_code", values="exist").fillna(0).astype(int)
+
+          out = Path("docs/stocks/dart_verify_coverage_2019_2026.md")
+          lines = []
+          lines.append("# DART Coverage Report (2019..2026)")
+          lines.append("")
+          lines.append("## Coverage rate (exist/expected) by year x reprt_code")
+          lines.append("")
+          lines.append(pivot.applymap(lambda x: f"{x*100:.1f}%").to_markdown())
+          lines.append("")
+          lines.append("## Exists count by year x reprt_code")
+          lines.append("")
+          lines.append(pivot_cnt.to_markdown())
+          lines.append("")
+          lines.append("## Notes")
+          lines.append("- exist_rate는 raw JSON 파일 존재 여부 기준입니다.")
+          lines.append("- status=013(데이터 없음)은 file_exists=True로 잡힙니다(정상 응답 저장).")
+          out.write_text("\n".join(lines), encoding="utf-8")
+
+          print(f"[coverage] wrote -> {out}")
+          print("\n".join(lines[:40]))
+          PY
+
       - name: Upload DART verify artifacts (retention 90d)
         if: always()
         uses: actions/upload-artifact@v4
@@ -193,6 +398,7 @@ jobs:
             docs/stocks/dart_verify_details_2019_2026.csv
             docs/stocks/dart_verify_issues_2019_2026.csv
             docs/stocks/dart_verify_summary_2019_2026.txt
+            docs/stocks/dart_verify_coverage_2019_2026.md
           retention-days: 90
           if-no-files-found: warn
 
