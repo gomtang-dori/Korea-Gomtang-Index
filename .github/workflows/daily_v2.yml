@@ -131,6 +131,18 @@ jobs:
           export PYTHONPATH=src
           python src/caches/cache_putcall.py
 
+      - name: Cache index levels (FDR)  # KOSPI/KOSDAQ/K200 close
+        env:
+          BACKFILL_START: ${{ env.BACKFILL_START }}
+          BACKFILL_END: ${{ env.BACKFILL_END }}
+          CACHE_BUFFER_DAYS: ${{ env.CACHE_BUFFER_DAYS }}
+          INDEX_LEVELS_CACHE_PATH: data/cache/index_levels.parquet
+          K200_CACHE_PATH: data/cache/k200_close.parquet
+        run: |
+          set -e
+          export PYTHONPATH=src
+          python src/caches/cache_index_levels_fdr.py
+
       - name: Sanity check caches exist
         run: |
           set -e
@@ -196,6 +208,7 @@ jobs:
           git fetch origin main
           git pull --rebase origin main
           git stash pop || true
+          git add data/cache/index_levels.* || true
 
           git add data/factors/ data/index_daily.* docs/index.html || true
           git diff --quiet && git diff --staged --quiet && exit 0
