@@ -1,0 +1,73 @@
+name: Stocks Weekly Panel (ALL period overwrite)
+#주 1회 전체기간 패널 생성(덮어쓰기)
+#DART 표준요약은 기존 파일을 그대로 사용
+#너무 무거우면 timeout을 더 키우거나, 우선 테스트로 sample 모드 적용도 가능합니다(필요시 옵션 추가 가능)
+on:
+  workflow_dispatch: {}
+  schedule:
+    # Sundays 08:30 UTC (조정 가능)
+    - cron: "30 8 * * 0"
+
+permissions:
+  contents: write
+
+jobs:
+  weekly_panel:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+
+    env:
+      PANEL_SCOPE: "all"
+      DART_STD_PATH: "docs/stocks/dart_standard_2015_2026.csv"
+      PANEL_PARQUET_COMPRESSION: "zstd"
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          lfs: true
+
+      - name: Install git-lfs
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y git-lfs
+          git lfs install
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+
+      - name: Install dependencies
+        run: pip install pandas pyarrow
+
+      # daily에서 누적된 원천/curated를 캐시로 복원해서 전체기간 패널 생성
+      - name: Restore cache (prices/curated)
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            data/stocks/raw/prices
+            data/stocks/curated
+          key: stocks-daily-v1-${{ github.ref_name }}-${{ github.run_id }}
+          restore-keys: |
+            stocks-daily-v1-${{ github.ref_name }}-
+            stocks-daily-v1-
+
+      - name: Build panel parquet (ALL overwrite)
+        run: python src/stocks/build_panel_parquet.py
+
+      - name: Verify panel health (ALL)
+        env:
+          PANEL_SCOPE: "all"
+          PANEL_PATH: "data/stocks/mart/panel_all.parquet"
+        run: python src/stocks/verify_panel_health.py
+
+      - name: Commit & push (panel_all + health)
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          git add data/stocks/mart/panel_all.parquet || true
+          git add docs/stocks/panel_health_all.* || true
+
+          git diff --cached --quiet && echo "No changes" && exit 0
+          git commit -m "stocks weekly: update panel_all"
+          git push
