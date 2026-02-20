@@ -1,0 +1,46 @@
+name: after_daily_v2
+
+on:
+  workflow_run:
+    workflows: ["daily_v2"]
+    types: [completed]
+
+permissions:
+  actions: write
+  contents: read
+
+concurrency:
+  group: after-daily_v2-${{ github.event.workflow_run.id }}
+  cancel-in-progress: true
+
+jobs:
+  dispatch_builds:
+    if: >
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.head_branch == 'main'
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Dispatch build_1Y
+        uses: actions/github-script@v7
+        with:
+          script: |
+            await github.rest.actions.createWorkflowDispatch({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              workflow_id: "build_1Y.yml",
+              ref: "main",
+              inputs: {}
+            })
+
+      - name: Dispatch build_8Y
+        uses: actions/github-script@v7
+        with:
+          script: |
+            await github.rest.actions.createWorkflowDispatch({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              workflow_id: "build_8Y.yml",
+              ref: "main",
+              inputs: {}
+            })
