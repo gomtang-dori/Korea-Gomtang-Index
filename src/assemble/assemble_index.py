@@ -219,6 +219,16 @@ def main():
         base = base.merge(d, on="date", how="outer")
     base = base.sort_values("date").reset_index(drop=True)
 
+    # ------------------------------------------------------------
+    # Patch: F09 is not guaranteed to be observed daily (data.go.kr cadence).
+    # Forward-fill to keep a usable daily series in the assembled index output.
+    # (No look-ahead: uses only past observed values.)
+    # ------------------------------------------------------------
+    for c in ["f09_raw", "f09_score"]:
+        if c in base.columns:
+            base[c] = pd.to_numeric(base[c], errors="coerce").ffill()
+
+
     # factor EMA
     if factor_ema_span > 0:
         base = apply_ema_per_score_col(base, loaded_score_cols, factor_ema_span)
