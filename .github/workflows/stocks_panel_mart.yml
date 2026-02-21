@@ -89,7 +89,7 @@ jobs:
       # ============================================================
       # (1) Prefer restoring cache produced by stock_backfill.yml
       # ============================================================
-      - name: Restore cache (prefer: stocks-backfill)
+      - name: Restore cache (prefer stocks-backfill)
         id: cache_restore_backfill
         uses: actions/cache/restore@v4
         with:
@@ -108,7 +108,7 @@ jobs:
       # ============================================================
       # (2) Fallback: restore panel_mart cache
       # ============================================================
-      - name: Restore cache (fallback: stocks-panel-mart)
+      - name: Restore cache (fallback stocks-panel-mart)
         if: ${{ steps.cache_restore_backfill.outputs.cache-hit != 'true' }}
         id: cache_restore_panel
         uses: actions/cache/restore@v4
