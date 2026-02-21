@@ -1,0 +1,155 @@
+name: Export Panel Daily Parquet to CSV Artifact
+
+on:
+  workflow_dispatch:
+    inputs:
+      panel_path:
+        description: "Input parquet path (repo path)"
+        type: string
+        default: "data/stocks/mart/panel_daily.parquet"
+      out_basename:
+        description: "Output base filename (without extension)"
+        type: string
+        default: "panel_daily"
+      chunk_rows:
+        description: "0 = single file, else split by N rows per part (e.g. 3000000)"
+        type: string
+        default: "0"
+      batch_size:
+        description: "Arrow batch size (e.g. 200000). Smaller uses less memory"
+        type: string
+        default: "200000"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: export-panel-csv-${{ github.ref_name }}
+  cancel-in-progress: true
+
+jobs:
+  export_csv:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+
+    steps:
+      - name: Checkout (with LFS)
+        uses: actions/checkout@v4
+        with:
+          lfs: true
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+
+      - name: Install dependencies
+        run: |
+          pip install --quiet --no-input -U pip
+          pip install --quiet --no-input pyarrow
+
+      - name: Show input file
+        run: |
+          set -euo pipefail
+          echo "panel_path=${{ inputs.panel_path }}"
+          ls -lh "${{ inputs.panel_path }}"
+
+      - name: Convert parquet -> csv.gz (streaming, full rows/cols)
+        env:
+          PANEL_PATH: ${{ inputs.panel_path }}
+          OUT_BASENAME: ${{ inputs.out_basename }}
+          CHUNK_ROWS: ${{ inputs.chunk_rows }}
+          BATCH_SIZE: ${{ inputs.batch_size }}
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import os, math, gzip
+          import pyarrow as pa
+          import pyarrow.parquet as pq
+          import pyarrow.csv as pcsv
+
+          in_path = os.environ["PANEL_PATH"]
+          base = os.environ.get("OUT_BASENAME","panel_daily").strip() or "panel_daily"
+          chunk_rows = int(os.environ.get("CHUNK_ROWS","0") or "0")
+          batch_size = int(os.environ.get("BATCH_SIZE","200000") or "200000")
+
+          pf = pq.ParquetFile(in_path)
+          total_rows = pf.metadata.num_rows
+          print(f"[export] in={in_path}")
+          print(f"[export] total_rows={total_rows:,} row_groups={pf.num_row_groups:,}")
+          print(f"[export] chunk_rows={chunk_rows} batch_size={batch_size}")
+
+          def open_writer(part_idx: int, schema: pa.Schema):
+            if chunk_rows <= 0:
+              out_path = f"{base}.csv.gz"
+            else:
+              out_path = f"{base}.part{part_idx:03d}.csv.gz"
+            f = gzip.open(out_path, "wb")
+            w = pcsv.CSVWriter(f, schema, write_options=pcsv.WriteOptions(include_header=True))
+            return out_path, f, w
+
+          part_idx = 0
+          written_total = 0
+          written_in_part = 0
+          out_files = []
+
+          writer = None
+          gz_f = None
+          out_path = None
+
+          for batch in pf.iter_batches(batch_size=batch_size):
+            # writer는 첫 배치에서 schema 확정 후 오픈
+            if writer is None:
+              table0 = pa.Table.from_batches([batch])
+              out_path, gz_f, writer = open_writer(part_idx, table0.schema)
+              out_files.append(out_path)
+
+            offset = 0
+            while offset < batch.num_rows:
+              if chunk_rows > 0:
+                remain = chunk_rows - written_in_part
+                take = min(remain, batch.num_rows - offset)
+              else:
+                take = batch.num_rows - offset
+
+              sub = batch.slice(offset, take)
+              table = pa.Table.from_batches([sub])
+              writer.write_table(table)
+
+              offset += take
+              written_total += take
+              written_in_part += take
+
+              if chunk_rows > 0 and written_in_part >= chunk_rows:
+                writer.close()
+                gz_f.close()
+                writer = None
+                gz_f = None
+                out_path = None
+                written_in_part = 0
+                part_idx += 1
+
+          if writer is not None:
+            writer.close()
+            gz_f.close()
+
+          print(f"[export] written_total={written_total:,}")
+          for p in out_files:
+            print(f"[export] out_file={p}")
+          if written_total != total_rows:
+            raise SystemExit(f"[export] ERROR: rows mismatch: written={written_total} total={total_rows}")
+
+          PY
+
+      - name: List outputs
+        run: |
+          ls -lh *.csv.gz || true
+
+      - name: Upload artifact (CSV.GZ)
+        uses: actions/upload-artifact@v4
+        with:
+          name: panel-daily-csv-${{ github.run_id }}
+          path: |
+            *.csv.gz
+          retention-days: 7
+          if-no-files-found: error
