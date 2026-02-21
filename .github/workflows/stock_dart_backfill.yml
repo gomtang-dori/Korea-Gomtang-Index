@@ -1,4 +1,4 @@
-name: DART Backfill (Raw Cache + Audit)
+name: DART Backfill (Raw Cache + Audit + Monthly Curate/Commit)
 
 on:
   workflow_dispatch:
@@ -59,9 +59,16 @@ on:
         default: "0"
 
       run_curate:
-        description: "Run curate_dart.py after fetch"
+        description: "Run curate_dart.py after fetch (manual only; schedule forces true)"
         type: boolean
         default: false
+
+  schedule:
+    # 매월 15일 18:00 KST = 09:00 UTC
+    - cron: "0 9 15 * *"
+
+permissions:
+  contents: write
 
 jobs:
   dart_backfill:
@@ -72,19 +79,33 @@ jobs:
       DART_API_KEY:  ${{ secrets.DART_API_KEY }}
       DART_API2_KEY: ${{ secrets.DART_API2_KEY }}
 
-      DART_YEAR_FROM: ${{ inputs.year_from }}
-      DART_YEAR_TO: ${{ inputs.year_to }}
-      DART_REPRT_CODES: ${{ inputs.reprt_codes }}
+      # 아래 값들은 "Resolve schedule/manual settings" step에서 최종 확정(GITHUB_ENV로 override)
+      DART_YEAR_FROM: "2015"
+      DART_YEAR_TO: "2017"
+      DART_REPRT_CODES: "11011,11012,11013,11014"
 
-      DART_MAX_WORKERS: ${{ inputs.dart_max_workers }}
-      DART_MIN_INTERVAL_SEC: ${{ inputs.dart_min_interval_sec }}
-      DART_RUN_BUDGET: ${{ inputs.dart_run_budget }}
-      DART_CACHE_MODE: ${{ inputs.cache_mode }}
+      DART_MAX_WORKERS: "4"
+      DART_MIN_INTERVAL_SEC: "0.30"
+      DART_RUN_BUDGET: "25000"
+      DART_CACHE_MODE: "skip"
 
-      CACHE_NAMESPACE: ${{ inputs.cache_namespace }}
-      PRUNE_BEFORE_CACHE_SAVE: ${{ inputs.prune_before_cache_save }}
-      RETAIN_YEARS_IN_CACHE: ${{ inputs.retain_years_in_cache }}
-      MAX_CACHE_SIZE_MB: ${{ inputs.max_cache_size_mb }}
+      CACHE_NAMESPACE: "global"
+      PRUNE_BEFORE_CACHE_SAVE: "false"
+      RETAIN_YEARS_IN_CACHE: "5"
+      MAX_CACHE_SIZE_MB: "0"
+
+      # curate control (schedule에서 true로 강제)
+      RUN_CURATE: "false"
+
+      # curate_dart standard csv (schedule에서 true로 강제)
+      DART_STANDARD_FULL_RANGE: "false"
+      DART_STANDARD_FULL_YEAR_FROM: "2015"
+      DART_STANDARD_FULL_YEAR_TO: "2026"
+      DART_WRITE_STANDARD_CSV: "true"
+      DART_CURATE_MODE: "upsert_slice"
+
+      # schedule에서 standard csv를 커밋/푸시할지
+      COMMIT_DART_STANDARD: "false"
 
     steps:
       - uses: actions/checkout@v4
@@ -98,12 +119,102 @@ jobs:
 
       - name: Sanity check (tabulate)
         run: |
-          python -c "import tabulate; print('tabulate=', tabulate.__version__)"        
+          python -c "import tabulate; print('tabulate=', tabulate.__version__)"
+
+      # ============================================================
+      # Resolve schedule/manual settings
+      # - schedule: run_curate=true + full-range standard csv 생성 + 커밋
+      # - manual: inputs 값 사용 (run_curate는 입력값 그대로)
+      # ============================================================
+      - name: Resolve schedule/manual settings
+        run: |
+          set -euo pipefail
+
+          EVENT="${{ github.event_name }}"
+          echo "[mode] event_name=${EVENT}"
+
+          if [ "${EVENT}" = "schedule" ]; then
+            # 스케줄: 매월 15일 18:00 KST에 실행됨
+            # - 매번 전체(2015~2026)를 다시 긁기보단 최근 3년 정도 slice만 새로 받아 누적 cache에 upsert
+            YEAR_TO="$(date -u +%Y)"
+            YEAR_FROM="$((YEAR_TO-2))"
+
+            echo "DART_YEAR_FROM=${YEAR_FROM}" >> $GITHUB_ENV
+            echo "DART_YEAR_TO=${YEAR_TO}" >> $GITHUB_ENV
+            echo "DART_REPRT_CODES=11011,11012,11013,11014" >> $GITHUB_ENV
+
+            echo "RUN_CURATE=true" >> $GITHUB_ENV
+            echo "DART_STANDARD_FULL_RANGE=true" >> $GITHUB_ENV
+            echo "DART_STANDARD_FULL_YEAR_FROM=2015" >> $GITHUB_ENV
+            echo "DART_STANDARD_FULL_YEAR_TO=2026" >> $GITHUB_ENV
+
+            echo "COMMIT_DART_STANDARD=true" >> $GITHUB_ENV
+          else
+            # 수동 실행(workflow_dispatch): inputs 기반
+            YEAR_FROM="${{ github.event.inputs.year_from }}"
+            YEAR_TO="${{ github.event.inputs.year_to }}"
+            CODES="${{ github.event.inputs.reprt_codes }}"
+            MAXW="${{ github.event.inputs.dart_max_workers }}"
+            MININT="${{ github.event.inputs.dart_min_interval_sec }}"
+            BUDGET="${{ github.event.inputs.dart_run_budget }}"
+            CACHEMODE="${{ github.event.inputs.cache_mode }}"
+            NS="${{ github.event.inputs.cache_namespace }}"
+            PRUNE="${{ github.event.inputs.prune_before_cache_save }}"
+            RETAIN="${{ github.event.inputs.retain_years_in_cache }}"
+            MAXMB="${{ github.event.inputs.max_cache_size_mb }}"
+            RUNCUR="${{ github.event.inputs.run_curate }}"
+
+            [ -z "${YEAR_FROM}" ] && YEAR_FROM="2015"
+            [ -z "${YEAR_TO}" ] && YEAR_TO="2017"
+            [ -z "${CODES}" ] && CODES="11011,11012,11013,11014"
+            [ -z "${MAXW}" ] && MAXW="4"
+            [ -z "${MININT}" ] && MININT="0.30"
+            [ -z "${BUDGET}" ] && BUDGET="25000"
+            [ -z "${CACHEMODE}" ] && CACHEMODE="skip"
+            [ -z "${NS}" ] && NS="global"
+            [ -z "${PRUNE}" ] && PRUNE="false"
+            [ -z "${RETAIN}" ] && RETAIN="5"
+            [ -z "${MAXMB}" ] && MAXMB="0"
+            [ -z "${RUNCUR}" ] && RUNCUR="false"
+
+            echo "DART_YEAR_FROM=${YEAR_FROM}" >> $GITHUB_ENV
+            echo "DART_YEAR_TO=${YEAR_TO}" >> $GITHUB_ENV
+            echo "DART_REPRT_CODES=${CODES}" >> $GITHUB_ENV
+
+            echo "DART_MAX_WORKERS=${MAXW}" >> $GITHUB_ENV
+            echo "DART_MIN_INTERVAL_SEC=${MININT}" >> $GITHUB_ENV
+            echo "DART_RUN_BUDGET=${BUDGET}" >> $GITHUB_ENV
+            echo "DART_CACHE_MODE=${CACHEMODE}" >> $GITHUB_ENV
+
+            echo "CACHE_NAMESPACE=${NS}" >> $GITHUB_ENV
+            echo "PRUNE_BEFORE_CACHE_SAVE=${PRUNE}" >> $GITHUB_ENV
+            echo "RETAIN_YEARS_IN_CACHE=${RETAIN}" >> $GITHUB_ENV
+            echo "MAX_CACHE_SIZE_MB=${MAXMB}" >> $GITHUB_ENV
+
+            # manual에서 curate를 돌리는 경우에만 full-range 표준 CSV도 생성하도록 기본값 ON 권장
+            if [ "${RUNCUR}" = "true" ]; then
+              echo "RUN_CURATE=true" >> $GITHUB_ENV
+              echo "DART_STANDARD_FULL_RANGE=true" >> $GITHUB_ENV
+              echo "DART_STANDARD_FULL_YEAR_FROM=2015" >> $GITHUB_ENV
+              echo "DART_STANDARD_FULL_YEAR_TO=2026" >> $GITHUB_ENV
+            else
+              echo "RUN_CURATE=false" >> $GITHUB_ENV
+              echo "DART_STANDARD_FULL_RANGE=false" >> $GITHUB_ENV
+            fi
+
+            echo "COMMIT_DART_STANDARD=false" >> $GITHUB_ENV
+          fi
+
+          echo "[resolved]"
+          echo "  DART_YEAR_FROM=${DART_YEAR_FROM:-unset}"
+          echo "  DART_YEAR_TO=${DART_YEAR_TO:-unset}"
+          echo "  DART_REPRT_CODES=${DART_REPRT_CODES:-unset}"
+          echo "  RUN_CURATE=${RUN_CURATE:-unset}"
+          echo "  DART_STANDARD_FULL_RANGE=${DART_STANDARD_FULL_RANGE:-unset}"
+          echo "  COMMIT_DART_STANDARD=${COMMIT_DART_STANDARD:-unset}"
 
       # ------------------------------------------------------------
       # Restore DART raw cache (누적 목적)
-      # - 저장 key는 매 run마다 유니크(run_id)로 생성
-      # - restore-keys prefix로 가장 최신 캐시를 자동 복원
       # ------------------------------------------------------------
       - name: Restore DART raw cache (actions/cache)
         id: dart_cache_restore
@@ -122,13 +233,11 @@ jobs:
           echo "[cache] namespace=${CACHE_NAMESPACE}"
           ls -lah data/stocks/raw/dart || true
           python - << 'PY'
-          import os
           from pathlib import Path
           raw = Path("data/stocks/raw/dart")
           if not raw.exists():
             print("[cache] raw dir missing")
             raise SystemExit(0)
-          # count ticker dirs
           ticker_dirs = [p for p in raw.iterdir() if p.is_dir() and p.name.isdigit() and len(p.name)==6]
           print(f"[cache] raw_ticker_dirs={len(ticker_dirs):,}")
           PY
@@ -146,63 +255,10 @@ jobs:
           print(df.head(3))
           PY
 
-      - name: "[사전점검] 예상 jobs / 예산 / 안전 추천값 출력"
-        if: always()
-        run: |
-          python - << 'PY'
-          import os
-          from pathlib import Path
-          import pandas as pd
-
-          listings_path = Path("data/stocks/master/listings.parquet")
-          year_from = int(os.getenv("DART_YEAR_FROM","0") or 0)
-          year_to   = int(os.getenv("DART_YEAR_TO","0") or 0)
-          years_cnt = max(0, year_to - year_from + 1)
-
-          codes = [c.strip() for c in os.getenv("DART_REPRT_CODES","").split(",") if c.strip()]
-          codes_cnt = len(codes)
-
-          key1 = (os.getenv("DART_API_KEY","") or "").strip()
-          key2 = (os.getenv("DART_API2_KEY","") or "").strip()
-          keys_cnt = int(bool(key1)) + int(bool(key2))
-          keys_cnt = max(keys_cnt, 1)
-
-          budget_per_key = int(os.getenv("DART_RUN_BUDGET","0") or 0)
-          total_budget = budget_per_key * keys_cnt
-
-          workers = int(os.getenv("DART_MAX_WORKERS","0") or 0)
-          interval = float(os.getenv("DART_MIN_INTERVAL_SEC","0") or 0.0)
-
-          print("[precheck] ===== recommended safe defaults =====")
-          print("[precheck] min_interval_sec: 0.25~0.35 (safer), workers: 3~6 (rate limiter is global)")
-          print("[precheck] budget_per_key: split by (year range / reprt_codes) until expected_jobs <= total_budget")
-          print("[precheck] =======================================")
-
-          print("[precheck] config")
-          print(f"  years={year_from}..{year_to} (count={years_cnt})")
-          print(f"  reprt_codes={codes} (count={codes_cnt})")
-          print(f"  keys_cnt={keys_cnt} (DART_API_KEY={'Y' if bool(key1) else 'N'}, DART_API2_KEY={'Y' if bool(key2) else 'N'})")
-          print(f"  workers={workers}, min_interval={interval}")
-          print(f"  budget_per_key={budget_per_key:,}, total_budget_estimate={total_budget:,}")
-
-          if not listings_path.exists():
-            print(f"[precheck][WARN] MISSING: {listings_path}")
-            raise SystemExit(0)
-
-          df = pd.read_parquet(listings_path)
-          uniq = df["ticker"].astype(str).nunique() if "ticker" in df.columns else len(df)
-          expected_jobs = uniq * years_cnt * codes_cnt
-          print(f"[precheck] listings unique_tickers={uniq:,}")
-          print(f"[precheck] expected_jobs ~= {expected_jobs:,} (=unique_tickers*years*reprt_codes)")
-          print(f"[precheck] margin(total_budget - expected_jobs) = {total_budget - expected_jobs:,}")
-          if budget_per_key > 0 and expected_jobs > total_budget:
-            print("[precheck][WARN] expected_jobs > total_budget -> 이번 run에서 cap/중단 가능성↑")
-            print("[precheck][HINT] 분할전략: year_from/to 구간을 쪼개거나 reprt_codes를 나눠서 여러 번 실행하세요.")
-          PY
-
       - name: Fetch DART raw cache
         continue-on-error: true
         run: |
+          echo "[dart] range=${DART_YEAR_FROM}..${DART_YEAR_TO} codes=${DART_REPRT_CODES}"
           python src/stocks/fetch_dart_financials.py || echo "⚠️ DART fetch 일부 오류"
 
       - name: Export audit CSV (verify reprt_code/year/status)
@@ -212,102 +268,19 @@ jobs:
           python src/stocks/export_dart_audit_csv.py || echo "⚠️ audit csv 생성 오류"
 
       # ------------------------------------------------------------
-      # Cache size strategy (optional prune + conditional save)
-      # - prune_before_cache_save=true 일 때:
-      #   year_to 기준 최근 N년만 남기고 나머지는 삭제(캐시만 슬림화)
-      # - max_cache_size_mb > 0 일 때:
-      #   크기 초과하면 (prune enabled면 prune) / 아니면 save 스킵
+      # Curate to build standard CSV (schedule forces RUN_CURATE=true)
       # ------------------------------------------------------------
-      - name: Cache size check / optional prune
-        if: always()
+      - name: Curate DART (make dart_standard CSV)
+        if: ${{ env.RUN_CURATE == 'true' }}
         continue-on-error: true
         run: |
-          python - << 'PY'
-          import os, re, shutil
-          from pathlib import Path
+          echo "[curate] running curate_dart.py ..."
+          python src/stocks/curate_dart.py || echo "⚠️ curate_dart 오류"
+          ls -lh docs/stocks/dart_standard_*.csv 2>/dev/null || true
 
-          raw = Path("data/stocks/raw/dart")
-          if not raw.exists():
-            print("[prune] raw dir missing -> skip")
-            raise SystemExit(0)
-
-          def dir_size_bytes(p: Path) -> int:
-            total = 0
-            for fp in p.rglob("*"):
-              if fp.is_file():
-                try:
-                  total += fp.stat().st_size
-                except Exception:
-                  pass
-            return total
-
-          max_mb = int(os.getenv("MAX_CACHE_SIZE_MB","0") or 0)
-          do_prune = (os.getenv("PRUNE_BEFORE_CACHE_SAVE","false").lower() == "true")
-          retain_years = int(os.getenv("RETAIN_YEARS_IN_CACHE","5") or 5)
-          y_to = int(os.getenv("DART_YEAR_TO","0") or 0)
-
-          size0 = dir_size_bytes(raw)
-          print(f"[prune] raw_size_before={size0/1024/1024:.1f} MB")
-
-          need_action = False
-          if max_mb > 0 and (size0/1024/1024) > max_mb:
-            print(f"[prune][WARN] raw cache size exceeds MAX_CACHE_SIZE_MB={max_mb}")
-            need_action = True
-
-          if do_prune and (need_action or True):
-            # prune logic: keep only last N years based on y_to
-            y_keep_from = max(0, y_to - retain_years + 1)
-            print(f"[prune] enabled. keep years {y_keep_from}..{y_to} (retain_years={retain_years})")
-
-            # files are <year>_<reprt>_ALL.json under each ticker dir
-            year_re = re.compile(r"^(\\d{4})_1101[1-4]_ALL\\.json$")
-            removed = 0
-            scanned = 0
-            for td in raw.iterdir():
-              if not (td.is_dir() and td.name.isdigit() and len(td.name)==6):
-                continue
-              for f in td.iterdir():
-                if not f.is_file():
-                  continue
-                m = year_re.match(f.name)
-                if not m:
-                  continue
-                scanned += 1
-                y = int(m.group(1))
-                if y < y_keep_from or y > y_to:
-                  try:
-                    f.unlink()
-                    removed += 1
-                  except Exception:
-                    pass
-
-            print(f"[prune] scanned={scanned:,}, removed={removed:,}")
-
-            # remove empty ticker dirs
-            empty_dirs = 0
-            for td in raw.iterdir():
-              if td.is_dir() and td.name.isdigit() and len(td.name)==6:
-                if not any(td.iterdir()):
-                  try:
-                    td.rmdir()
-                    empty_dirs += 1
-                  except Exception:
-                    pass
-            print(f"[prune] removed empty ticker dirs={empty_dirs:,}")
-
-          size1 = dir_size_bytes(raw)
-          print(f"[prune] raw_size_after={size1/1024/1024:.1f} MB")
-
-          # decide whether to save cache
-          save_ok = True
-          if max_mb > 0 and (size1/1024/1024) > max_mb and not do_prune:
-            save_ok = False
-            print("[prune][WARN] still exceeds max size and prune disabled -> will SKIP cache save")
-
-          Path(".cache_flags").mkdir(exist_ok=True)
-          (Path(".cache_flags")/"SAVE_OK").write_text("1" if save_ok else "0", encoding="utf-8")
-          PY
-
+      # ------------------------------------------------------------
+      # Save DART raw cache
+      # ------------------------------------------------------------
       - name: Save DART raw cache (actions/cache)
         if: always()
         uses: actions/cache/save@v4
@@ -317,131 +290,29 @@ jobs:
           key: dart-raw-v1-${{ github.ref_name }}-${{ env.CACHE_NAMESPACE }}-${{ github.run_id }}
 
       # ------------------------------------------------------------
-      # Verify (coverage & integrity)
+      # Commit dart_standard CSV on schedule (so panel mart sees it via checkout)
       # ------------------------------------------------------------
-      - name: "[검증] Verify DART backfill coverage & integrity (2019~2026)"
-        if: always()
-        continue-on-error: true
-        env:
-          DART_VERIFY_YEAR_FROM: "2019"
-          DART_VERIFY_YEAR_TO: "2026"
-          DART_VERIFY_REPRT_CODES: "11011,11012,11013,11014"
-          DART_VERIFY_OUT_DIR: "docs/stocks"
-          DART_VERIFY_EXPECT_MODE: "corp_mapped_or_raw"
-        run: |
-          python src/stocks/verify_dart_backfill.py || echo "⚠️ DART backfill 검증 일부 오류"
-          echo "=== verify outputs ==="
-          ls -lh docs/stocks/dart_verify_*_2019_2026.* 2>/dev/null || true
-
-      # ------------------------------------------------------------
-      # (3) 자동 리포팅: 연도×reprt_code 커버리지 표 생성
-      # - verify_details_*.csv 기반
-      # - md 파일로 저장 + 로그에도 출력
-      # ------------------------------------------------------------
-      - name: "[리포트] Coverage table by year x reprt_code"
-        if: always()
+      - name: Commit & push dart_standard CSV (schedule)
+        if: ${{ env.COMMIT_DART_STANDARD == 'true' }}
         continue-on-error: true
         run: |
-          python - << 'PY'
-          import pandas as pd
-          from pathlib import Path
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
 
-          details = Path("docs/stocks/dart_verify_details_2019_2026.csv")
-          if not details.exists():
-            print("[coverage] missing details csv -> skip")
-            raise SystemExit(0)
+          # full-range standard CSV (used by panel)
+          git add docs/stocks/dart_standard_*.csv || true
 
-          df = pd.read_csv(details)
-          # expected rows = expected_tickers * years * codes
-          # coverage per (year, reprt_code): file_exists ratio + status breakdown
-          df["file_exists"] = df["file_exists"].astype(bool)
-          df["year"] = pd.to_numeric(df["year"], errors="coerce")
-          df["reprt_code"] = df["reprt_code"].astype(str)
+          git diff --cached --quiet && echo "No dart_standard changes" && exit 0
+          git commit -m "dart: update dart_standard CSV (monthly scheduled)"
+          git push
 
-          g = df.groupby(["year","reprt_code"]).agg(
-            expected=("ticker","count"),
-            exist=("file_exists","sum"),
-            json_ok=("json_ok","sum"),
-            meta_ok=("meta_ok","sum"),
-          ).reset_index()
-
-          g["missing"] = g["expected"] - g["exist"]
-          g["exist_rate"] = (g["exist"] / g["expected"]).fillna(0.0)
-
-          # pivot for quick view
-          pivot = g.pivot(index="year", columns="reprt_code", values="exist_rate").fillna(0.0)
-          pivot_cnt = g.pivot(index="year", columns="reprt_code", values="exist").fillna(0).astype(int)
-
-          out = Path("docs/stocks/dart_verify_coverage_2019_2026.md")
-          lines = []
-          lines.append("# DART Coverage Report (2019..2026)")
-          lines.append("")
-          lines.append("## Coverage rate (exist/expected) by year x reprt_code")
-          lines.append("")
-          lines.append(pivot.applymap(lambda x: f"{x*100:.1f}%").to_markdown())
-          lines.append("")
-          lines.append("## Exists count by year x reprt_code")
-          lines.append("")
-          lines.append(pivot_cnt.to_markdown())
-          lines.append("")
-          lines.append("## Notes")
-          lines.append("- exist_rate는 raw JSON 파일 존재 여부 기준입니다.")
-          lines.append("- status=013(데이터 없음)은 file_exists=True로 잡힙니다(정상 응답 저장).")
-          out.write_text("\n".join(lines), encoding="utf-8")
-
-          print(f"[coverage] wrote -> {out}")
-          print("\n".join(lines[:40]))
-          PY
-
-      - name: Upload DART verify artifacts (retention 90d)
+      - name: Upload standard CSV artifact (retention 90d)
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: dart-verify-2019-2026
+          name: dart-standard-csv
           path: |
-            docs/stocks/dart_verify_details_2019_2026.csv
-            docs/stocks/dart_verify_issues_2019_2026.csv
-            docs/stocks/dart_verify_summary_2019_2026.txt
-            docs/stocks/dart_verify_coverage_2019_2026.md
-          retention-days: 90
-          if-no-files-found: warn
-
-      - name: (Optional) Curate to parquet/csv
-        if: ${{ inputs.run_curate }}
-        continue-on-error: true
-        run: |
-          python src/stocks/curate_dart.py || echo "⚠️ curate_dart 오류"
-
-      - name: Compress raw dart cache
-        if: always()
-        continue-on-error: true
-        run: |
-          tar -czf dart_raw_${{ inputs.year_from }}_${{ inputs.year_to }}.tar.gz data/stocks/raw/dart 2>/dev/null || true
-          ls -lh dart_raw_${{ inputs.year_from }}_${{ inputs.year_to }}.tar.gz 2>/dev/null || true
-
-      - name: Upload raw dart artifact (retention 90d)
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: dart-raw-${{ inputs.year_from }}-${{ inputs.year_to }}
-          path: dart_raw_${{ inputs.year_from }}_${{ inputs.year_to }}.tar.gz
-          retention-days: 90
-          if-no-files-found: warn
-
-      - name: Upload audit artifact (retention 90d)
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: dart-audit-${{ inputs.year_from }}-${{ inputs.year_to }}
-          path: docs/stocks/dart_audit_${{ inputs.year_from }}_${{ inputs.year_to }}.csv
-          retention-days: 90
-          if-no-files-found: warn
-
-      - name: Upload standard curated CSV (if created)
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: dart-standard-${{ inputs.year_from }}-${{ inputs.year_to }}
-          path: docs/stocks/dart_standard_${{ inputs.year_from }}_${{ inputs.year_to }}.csv
+            docs/stocks/dart_standard_*.csv
           retention-days: 90
           if-no-files-found: warn
