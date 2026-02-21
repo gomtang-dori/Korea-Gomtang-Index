@@ -1,0 +1,20 @@
+{
+  "range": {
+    "start": "20150101",
+    "end": "20260221"
+  },
+  "counts": {
+    "ok": 100,
+    "skip": 0,
+    "no_data": 0,
+    "error": 0,
+    "done": 100,
+    "total": 100
+  },
+  "elapsed_sec": 1505,
+  "utc": "2026-02-21T18:19:00Z",
+  "throttle_sec": 0.2,
+  "workers": 3,
+  "save_format": "parquet",
+  "out_dir": "/home/runner/work/Korea-Gomtang-Index/Korea-Gomtang-Index/data/stocks/raw/krx_flows"
+}

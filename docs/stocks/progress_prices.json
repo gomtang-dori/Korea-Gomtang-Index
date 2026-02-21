@@ -1,0 +1,19 @@
+{
+  "range": {
+    "start": "20200101",
+    "end": "20260221"
+  },
+  "counts": {
+    "ok": 100,
+    "skip": 0,
+    "no_data": 0,
+    "error": 0,
+    "done": 100,
+    "total": 100
+  },
+  "elapsed_sec": 9,
+  "utc": "2026-02-21T17:53:51Z",
+  "throttle_sec": 0.06,
+  "workers": 10,
+  "out_dir": "/home/runner/work/Korea-Gomtang-Index/Korea-Gomtang-Index/data/stocks/raw/prices"
+}
