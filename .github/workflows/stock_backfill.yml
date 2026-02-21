@@ -1,4 +1,4 @@
-name: Stock Backfill (Recent5Y chunked + stable + cache raw/curated)
+name: Stock Backfill RAW (Matrix 2022-2026) + Merge + Cache (max-parallel=2)
 
 on:
   workflow_dispatch:
@@ -8,72 +8,70 @@ on:
         type: boolean
         default: false
       skip_flows:
-        description: "Skip flows data fetch"
+        description: "Skip KRX flows fetch"
         type: boolean
         default: false
       skip_fundamentals:
-        description: "Skip fundamentals data fetch"
+        description: "Skip fundamentals fetch"
         type: boolean
         default: false
+
       skip_dart:
-        description: "Skip DART data fetch (recommended: true; DART separate backfill)"
+        description: "Skip DART fetch (recommended true; DART separate backfill)"
         type: boolean
         default: true
+
       clean_derived:
-        description: "Delete derived outputs (curated/analysis/docs) before curations"
+        description: "Delete derived outputs (curated/analysis/docs) before curations (recommended false for RAW backfill)"
         type: boolean
-        default: true
-      # 캐시 만들기 목적이면 리포트/CSV export는 끄는게 안전(시간 초과 방지)
-      skip_heavy_outputs:
-        description: "Skip heavy steps (render reports / big CSV exports) to avoid timeout"
-        type: boolean
-        default: true
-      # 수동으로 범위를 고정하고 싶을 때만 사용(기본은 자동 recent5y)
-      range_mode:
-        description: "recent5y(auto) or custom"
-        type: choice
-        options: [recent5y, custom]
-        default: recent5y
-      year_from:
-        description: "custom mode only (YYYY)"
-        required: false
-        default: ""
-      year_to:
-        description: "custom mode only (YYYY)"
-        required: false
-        default: ""
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: stock-backfill-raw-matrix-${{ github.ref_name }}
+  cancel-in-progress: false
 
 jobs:
-  backfill:
+  # ------------------------------------------------------------
+  # (A) 연도별 RAW 생성 job (서로 다른 폴더에만 씀 -> 파일 충돌 방지)
+  # ------------------------------------------------------------
+  backfill_year:
     runs-on: ubuntu-latest
     timeout-minutes: 330
+
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix:
+        year: [2022, 2023, 2024, 2025, 2026]
 
     env:
       PYTHONPATH: src
       SAMPLE_MODE: "false"
 
-      # cache namespace (원하면 올려서 캐시 리셋)
       STOCKS_BACKFILL_CACHE_NS: "v1"
 
-      # ---------- 안정 세팅(핵심) ----------
+      # ---------- 안정 세팅 ----------
       # prices
       MAX_WORKERS: "20"
       PRICE_APPEND_IF_EXISTS: "true"
       PRICE_RETRY: "3"
       PRICE_NO_DATA_RETRY: "1"
       PRICE_NO_DATA_SLEEP_BASE: "3.0"
-      PRICE_THROTTLE_SEC: "0.06"   # 가격은 호출량 많아서 너무 높이면 느림. 막히면 0.10~0.20으로
+      PRICE_THROTTLE_SEC: "0.06"
 
       # flows
-      MAX_WORKERS_FLOWS: "3"
+      MAX_WORKERS_FLOWS: "6"
       KRX_FLOWS_SAVE_FORMAT: "parquet"
       KRX_RETRY: "3"
       KRX_NO_DATA_RETRY: "1"
       KRX_NO_DATA_SLEEP_BASE: "4.0"
-      KRX_THROTTLE_SEC: "0.20"     # 막히면 0.25~0.35
+      KRX_THROTTLE_SEC: "0.13"
       FLOW_APPEND_IF_EXISTS: "true"
 
-      # flows retry2 (no-data tickers only) - 유지
+      # flows retry2
       MAX_WORKERS_FLOWS_RETRY: "3"
       KRX_THROTTLE_SEC_RETRY2: "0.25"
       KRX_NO_DATA_RETRY_RETRY2: "3"
@@ -82,7 +80,7 @@ jobs:
 
       # fundamentals
       MAX_WORKERS_FUNDAMENTALS: "8"
-      FUND_CHUNK_YEARS: "1"        # 연도 분할 실행이므로 내부 chunk는 1년이 가장 단순
+      FUND_CHUNK_YEARS: "1"
       FUND_SAVE_FORMAT: "parquet"
       FUND_RETRY: "3"
       FUND_EMPTY_RETRY: "2"
@@ -92,10 +90,7 @@ jobs:
       FUND_THROTTLE_SEC: "0.08"
       FUND_APPEND_IF_EXISTS: "true"
 
-      # progress/heartbeat (모니터링)
       HEARTBEAT_SEC: "60"
-
-      # DART (별도 backfill이면 여기선 스킵 권장)
       DART_API_KEY: ${{ secrets.DART_API_KEY }}
 
     steps:
@@ -107,17 +102,16 @@ jobs:
 
       - name: Install dependencies
         run: |
-          pip install pandas pyarrow pykrx requests plotly tabulate tqdm
+          pip install pandas pyarrow pykrx requests tabulate tqdm
 
-      - name: Restore cache (stocks raw + curated)
-        id: stocks_cache_restore
+      # seed: 이전 run 캐시가 있으면 그걸 바탕으로 SKIP/append가 더 잘 작동
+      - name: Restore cache (seed)
+        id: cache_restore
         uses: actions/cache/restore@v4
         with:
           path: |
-            data/stocks/raw/prices
-            data/stocks/raw/krx_flows
-            data/stocks/raw/fundamentals
-            data/stocks/raw/dart
+            data/stocks/master
+            data/stocks/raw
             data/stocks/curated
             docs/stocks/dart_standard_*.csv
           key: stocks-backfill-${{ env.STOCKS_BACKFILL_CACHE_NS }}-${{ github.ref_name }}-${{ github.run_id }}
@@ -128,255 +122,283 @@ jobs:
       - name: Cache precheck summary
         if: always()
         run: |
-          echo "[cache] hit? -> ${{ steps.stocks_cache_restore.outputs.cache-hit }}"
+          echo "[cache] hit? -> ${{ steps.cache_restore.outputs.cache-hit }}"
           python - <<'PY'
           from pathlib import Path
-
           def count_files(p: Path, pattern: str):
             if not p.exists(): return 0
             return len(list(p.glob(pattern)))
-
           def count_rglob(p: Path, suffix: str):
             if not p.exists(): return 0
             return sum(1 for x in p.rglob(f"*{suffix}") if x.is_file())
-
-          print("=== precheck raw/curated ===")
+          print("=== precheck ===")
           print("[raw] prices csv files      =", count_files(Path("data/stocks/raw/prices"), "*.csv"))
           print("[raw] krx_flows parquet     =", count_files(Path("data/stocks/raw/krx_flows"), "*.parquet"))
           print("[raw] fundamentals parquet  =", count_files(Path("data/stocks/raw/fundamentals"), "*.parquet"))
-          print("[raw] dart json count       =", count_rglob(Path("data/stocks/raw/dart"), ".json"))
-          print("[curated] flows_daily       =", count_rglob(Path("data/stocks/curated"), "flows_daily.parquet"))
           print("[curated] fundamentals_daily=", count_rglob(Path("data/stocks/curated"), "fundamentals_daily.parquet"))
-          print("[docs] dart_standard csv    =", count_files(Path("docs/stocks"), "dart_standard_*.csv"))
-          print("================================")
+          print("================")
           PY
-          du -sh data/stocks/raw 2>/dev/null || true
-          du -sh data/stocks/curated 2>/dev/null || true
 
-      - name: Resolve year range (recent5y auto OR custom)
-        run: |
-          set -euxo pipefail
-          MODE="${{ inputs.range_mode }}"
-          if [ "$MODE" = "custom" ] && [ -n "${{ inputs.year_from }}" ] && [ -n "${{ inputs.year_to }}" ]; then
-            YEAR_FROM="${{ inputs.year_from }}"
-            YEAR_TO="${{ inputs.year_to }}"
-          else
-            YEAR_TO="$(date -u +%Y)"
-            YEAR_FROM="$((YEAR_TO-4))"
-          fi
-          echo "YEAR_FROM=$YEAR_FROM" >> $GITHUB_ENV
-          echo "YEAR_TO=$YEAR_TO" >> $GITHUB_ENV
-          echo "Resolved range: $YEAR_FROM ~ $YEAR_TO (mode=$MODE)"
-
-      - name: Init RUN TAG (for marker)
-        run: |
-          echo "RUN_TAG=${GITHUB_RUN_ID}_${GITHUB_RUN_ATTEMPT}" >> $GITHUB_ENV
-          echo "RUN_TAG=$RUN_TAG"
-
-      - name: "[cleanup] Backup existing derived outputs (curated/analysis/docs)"
-        if: ${{ inputs.clean_derived }}
-        continue-on-error: true
-        run: |
-          echo "=== Pre-clean backup (derived outputs) ==="
-          tar -czf pre_clean_derived_backup.tar.gz \
-            data/stocks/curated \
-            data/stocks/analysis \
-            docs/stocks \
-            2>/dev/null || true
-          ls -lh pre_clean_derived_backup.tar.gz 2>/dev/null || true
-
-      - name: "[cleanup] Upload pre-clean backup artifact"
-        if: ${{ always() && inputs.clean_derived }}
-        uses: actions/upload-artifact@v4
-        with:
-          name: pre-clean-derived-backup
-          path: pre_clean_derived_backup.tar.gz
-          retention-days: 7
-          if-no-files-found: warn
-
-      - name: "[cleanup] Remove derived outputs to rebuild cleanly"
+      - name: "[cleanup] Remove derived outputs (optional)"
         if: ${{ inputs.clean_derived }}
         run: |
           rm -rf data/stocks/curated || true
           rm -rf data/stocks/analysis || true
           rm -rf docs/stocks || true
           mkdir -p data/stocks/curated data/stocks/analysis docs/stocks
-          echo "OK: derived outputs cleaned & dirs recreated"
+          echo "OK: derived outputs cleaned"
 
-      - name: "[marker] Write run marker"
-        if: always()
-        run: |
-          mkdir -p docs/stocks
-          cat > docs/stocks/_run_marker.txt <<EOF
-          run_tag=${RUN_TAG}
-          run_id=${GITHUB_RUN_ID}
-          run_attempt=${GITHUB_RUN_ATTEMPT}
-          utc=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
-          range_year_from=${YEAR_FROM}
-          range_year_to=${YEAR_TO}
-          EOF
-          cat docs/stocks/_run_marker.txt
-
-      - name: "[1/12] Fetch listings"
+      - name: Fetch listings
         continue-on-error: true
         run: |
           python -u src/stocks/fetch_listings.py || true
 
-      - name: "[2/12] Fetch prices (recent5y, year-chunked, stable)"
+      - name: Resolve year window for this job
+        run: |
+          set -euxo pipefail
+          Y="${{ matrix.year }}"
+          echo "YEAR=$Y" >> $GITHUB_ENV
+          echo "START_DATE=${Y}0101" >> $GITHUB_ENV
+          echo "END_DATE=${Y}1231" >> $GITHUB_ENV
+          echo "This job year=$Y range=${Y}0101~${Y}1231"
+
+      - name: Prepare year-partitioned raw folders
+        run: |
+          set -euxo pipefail
+          mkdir -p data/stocks/raw_year/prices/${YEAR}
+          mkdir -p data/stocks/raw_year/krx_flows/${YEAR}
+          mkdir -p data/stocks/raw_year/fundamentals/${YEAR}
+          mkdir -p docs/stocks
+
+      - name: "Fetch prices (year=${{ matrix.year }})"
         if: ${{ !inputs.skip_prices }}
         continue-on-error: true
         env:
-          INCREMENTAL_MODE: "false"
-          PROGRESS_JSON: "docs/stocks/progress_prices.json"
+          PROGRESS_JSON: docs/stocks/progress_prices_${{ matrix.year }}.json
+          PRICES_RAW_DIR: data/stocks/raw_year/prices/${{ matrix.year }}
         run: |
           set -euxo pipefail
-          for Y in $(seq $YEAR_FROM $YEAR_TO); do
-            echo "::group::prices $Y"
-            export START_DATE="${Y}0101"
-            export END_DATE="${Y}1231"
-            python -u src/stocks/fetch_prices.py || true
-            echo "::endgroup::"
-          done
-          cat docs/stocks/progress_prices.json || true
+          python -u src/stocks/fetch_prices.py || true
+          cat "${PROGRESS_JSON}" || true
 
-      - name: "[3/12] Fetch KRX flows (recent5y, year-chunked + retry2, stable)"
+      - name: "Fetch KRX flows (year=${{ matrix.year }})"
         if: ${{ !inputs.skip_flows }}
         continue-on-error: true
         env:
-          INCREMENTAL_MODE: "false"
-          PROGRESS_JSON: "docs/stocks/progress_flows.json"
+          PROGRESS_JSON: docs/stocks/progress_flows_${{ matrix.year }}.json
+          FLOWS_RAW_DIR: data/stocks/raw_year/krx_flows/${{ matrix.year }}
+          RETRY2_INPUT_FILE: data/stocks/raw_year/krx_flows/${{ matrix.year }}/_no_data_tickers.txt
         run: |
           set -euxo pipefail
-          for Y in $(seq $YEAR_FROM $YEAR_TO); do
-            echo "::group::flows $Y (main)"
-            export START_DATE="${Y}0101"
-            export END_DATE="${Y}1231"
-            python -u src/stocks/fetch_krx_flows.py || true
-            echo "::endgroup::"
+          python -u src/stocks/fetch_krx_flows.py || true
+          python -u src/stocks/fetch_krx_flows_retry_nodata.py || true
+          cat "${PROGRESS_JSON}" || true
 
-            echo "::group::flows $Y (retry2 no-data only)"
-            # retry2도 같은 기간으로 (script가 END_DATE 존중하도록 패치되어 있어야 함)
-            export START_DATE="${Y}0101"
-            export END_DATE="${Y}1231"
-            python -u src/stocks/fetch_krx_flows_retry_nodata.py || true
-            echo "::endgroup::"
-          done
-          cat docs/stocks/progress_flows.json || true
-
-      - name: "[4/12] Fetch fundamentals (recent5y, year-chunked, stable)"
+      - name: "Fetch fundamentals (year=${{ matrix.year }})"
         if: ${{ !inputs.skip_fundamentals }}
         continue-on-error: true
         env:
-          INCREMENTAL_MODE: "false"
-          PROGRESS_JSON: "docs/stocks/progress_fundamentals.json"
+          PROGRESS_JSON: docs/stocks/progress_fund_${{ matrix.year }}.json
+          FUND_RAW_DIR: data/stocks/raw_year/fundamentals/${{ matrix.year }}
         run: |
           set -euxo pipefail
-          for Y in $(seq $YEAR_FROM $YEAR_TO); do
-            echo "::group::fundamentals $Y"
-            export START_DATE="${Y}0101"
-            export END_DATE="${Y}1231"
-            python -u src/stocks/fetch_fundamentals.py || true
-            echo "::endgroup::"
-          done
-          cat docs/stocks/progress_fundamentals.json || true
+          python -u src/stocks/fetch_fundamentals.py || true
+          cat "${PROGRESS_JSON}" || true
 
-      - name: "[5/12] Fetch DART financials (optional)"
-        if: ${{ !inputs.skip_dart }}
-        continue-on-error: true
-        run: |
-          python -u src/stocks/fetch_dart_financials.py || true
-
-      - name: "[mid-save] Raw data backup"
-        continue-on-error: true
-        run: |
-          du -sh data/stocks/ || true
-          tar -czf raw_data_backup.tar.gz data/stocks/raw/ || true
-
-      - name: "[mid-save] Upload raw-data-backup"
+      - name: Upload year raw artifacts
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: raw-data-backup
-          path: raw_data_backup.tar.gz
-          retention-days: 7
-          if-no-files-found: warn
-
-      - name: "Upload progress snapshots"
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: backfill-progress
+          name: raw-year-${{ matrix.year }}
           path: |
-            docs/stocks/progress_prices.json
-            docs/stocks/progress_flows.json
-            docs/stocks/progress_fundamentals.json
-            docs/stocks/_run_marker.txt
+            data/stocks/raw_year/prices/${{ matrix.year }}
+            data/stocks/raw_year/krx_flows/${{ matrix.year }}
+            data/stocks/raw_year/fundamentals/${{ matrix.year }}
+            docs/stocks/progress_prices_${{ matrix.year }}.json
+            docs/stocks/progress_flows_${{ matrix.year }}.json
+            docs/stocks/progress_fund_${{ matrix.year }}.json
           retention-days: 30
           if-no-files-found: warn
 
-      # ---- Curations / features ----
-      - name: "[6/12] Curate flows"
-        continue-on-error: true
-        run: |
-          python -u src/stocks/curate_flows.py || true
+  # ------------------------------------------------------------
+  # (B) merge job 1개: 연도별 결과를 canonical(raw/)로 합치고 cache 저장
+  # ------------------------------------------------------------
+  merge_and_cache:
+    runs-on: ubuntu-latest
+    timeout-minutes: 330
+    needs: [backfill_year]
 
-      - name: "[7/12] Curate fundamentals"
-        continue-on-error: true
-        run: |
-          python -u src/stocks/curate_fundamentals.py || true
+    env:
+      PYTHONPATH: src
+      STOCKS_BACKFILL_CACHE_NS: "v1"
 
-      - name: "[8/12] Curate financials (DART-derived) (optional)"
-        if: ${{ !inputs.skip_dart }}
-        continue-on-error: true
-        run: |
-          python -u src/stocks/curate_financials.py || true
+    steps:
+      - uses: actions/checkout@v4
 
-      - name: "[9/12] Compute features"
-        continue-on-error: true
-        run: |
-          python -u src/stocks/compute_features.py || true
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
 
-      # ---- Heavy outputs (optional) ----
-      - name: "[10/12] Render reports (heavy)"
-        if: ${{ !inputs.skip_heavy_outputs }}
-        continue-on-error: true
+      - name: Install dependencies
         run: |
-          python -u src/stocks/render_stock_report.py || true
+          pip install pandas pyarrow tqdm
 
-      - name: "[11/12] Export CSV summaries (heavy)"
-        if: ${{ !inputs.skip_heavy_outputs }}
-        continue-on-error: true
+      - name: Restore cache (seed canonical raw)
+        id: cache_restore
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            data/stocks/master
+            data/stocks/raw
+            data/stocks/curated
+            docs/stocks/dart_standard_*.csv
+          key: stocks-backfill-${{ env.STOCKS_BACKFILL_CACHE_NS }}-${{ github.ref_name }}-${{ github.run_id }}
+          restore-keys: |
+            stocks-backfill-${{ env.STOCKS_BACKFILL_CACHE_NS }}-${{ github.ref_name }}-
+            stocks-backfill-${{ env.STOCKS_BACKFILL_CACHE_NS }}-
+
+      - name: Download all year artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: /tmp/raw_year_artifacts
+
+      - name: List downloaded artifacts
         run: |
-          python -u src/stocks/export_data_summary.py || true
+          set -euxo pipefail
+          ls -lah /tmp/raw_year_artifacts || true
+          find /tmp/raw_year_artifacts -maxdepth 4 -type d | head -80
 
-      - name: "[12/12] Export raw data to CSV (very heavy)"
-        if: ${{ !inputs.skip_heavy_outputs }}
-        continue-on-error: true
+      - name: Merge year-partitioned raw -> canonical raw
         run: |
-          python -u src/stocks/export_raw_to_csv.py || true
+          set -euxo pipefail
+          mkdir -p data/stocks/raw/prices data/stocks/raw/krx_flows data/stocks/raw/fundamentals
+          python - <<'PY'
+          from pathlib import Path
+          import pandas as pd
 
-      - name: Save cache (stocks raw + curated)
+          ART_ROOT = Path("/tmp/raw_year_artifacts")
+          PRICES_CAN = Path("data/stocks/raw/prices")
+          FLOWS_CAN  = Path("data/stocks/raw/krx_flows")
+          FUND_CAN   = Path("data/stocks/raw/fundamentals")
+
+          YEARS = [2022, 2023, 2024, 2025, 2026]
+
+          def iter_year_dirs(kind: str):
+            for y in YEARS:
+              pattern = f"raw-year-{y}/**/data/stocks/raw_year/{kind}/{y}"
+              for h in ART_ROOT.glob(pattern):
+                if h.is_dir():
+                  yield y, h
+
+          def read_csv_safe(p: Path):
+            try:
+              df = pd.read_csv(p, encoding="utf-8-sig")
+              if "date" in df.columns:
+                df["date"] = pd.to_datetime(df["date"])
+              return df
+            except Exception:
+              return None
+
+          def read_parquet_safe(p: Path):
+            try:
+              df = pd.read_parquet(p)
+              if "date" in df.columns:
+                df["date"] = pd.to_datetime(df["date"])
+              return df
+            except Exception:
+              return None
+
+          def merge_prices():
+            by_ticker = {}
+            for _, d in iter_year_dirs("prices"):
+              for p in d.glob("*.csv"):
+                by_ticker.setdefault(p.stem, []).append(p)
+            print("[merge] prices tickers:", len(by_ticker))
+
+            for i, (t, files) in enumerate(by_ticker.items(), 1):
+              frames = []
+              can_path = PRICES_CAN / f"{t}.csv"
+              if can_path.exists():
+                old = read_csv_safe(can_path)
+                if old is not None and not old.empty:
+                  frames.append(old)
+
+              for f in sorted(files):
+                df = read_csv_safe(f)
+                if df is not None and not df.empty:
+                  frames.append(df)
+
+              if not frames:
+                continue
+
+              out = pd.concat(frames, ignore_index=True)
+              if "date" in out.columns:
+                out = out.drop_duplicates(subset=["date"], keep="last").sort_values("date")
+
+              can_path.parent.mkdir(parents=True, exist_ok=True)
+              out.to_csv(can_path, index=False, encoding="utf-8-sig")
+
+              if i <= 10 or i % 400 == 0:
+                print(f"[merge][prices] {i}/{len(by_ticker)} {t} rows={len(out)}")
+
+          def merge_parquet(kind: str, can_dir: Path):
+            by_ticker = {}
+            for _, d in iter_year_dirs(kind):
+              for p in d.glob("*.parquet"):
+                by_ticker.setdefault(p.stem, []).append(p)
+            print(f"[merge] {kind} tickers:", len(by_ticker))
+
+            for i, (t, files) in enumerate(by_ticker.items(), 1):
+              frames = []
+              can_path = can_dir / f"{t}.parquet"
+              if can_path.exists():
+                old = read_parquet_safe(can_path)
+                if old is not None and not old.empty:
+                  frames.append(old)
+
+              for f in sorted(files):
+                df = read_parquet_safe(f)
+                if df is not None and not df.empty:
+                  frames.append(df)
+
+              if not frames:
+                continue
+
+              out = pd.concat(frames, ignore_index=True)
+              if "date" in out.columns:
+                out = out.drop_duplicates(subset=["date"], keep="last").sort_values("date")
+
+              can_path.parent.mkdir(parents=True, exist_ok=True)
+              out.to_parquet(can_path, index=False)
+
+              if i <= 10 or i % 400 == 0:
+                print(f"[merge][{kind}] {i}/{len(by_ticker)} {t} rows={len(out)}")
+
+          merge_prices()
+          merge_parquet("krx_flows", FLOWS_CAN)
+          merge_parquet("fundamentals", FUND_CAN)
+
+          print("[merge] done")
+          print("prices files:", len(list(PRICES_CAN.glob("*.csv"))))
+          print("flows files :", len(list(FLOWS_CAN.glob("*.parquet"))))
+          print("fund files  :", len(list(FUND_CAN.glob("*.parquet"))))
+          PY
+
+      - name: Post-merge sanity counts
+        run: |
+          set -euxo pipefail
+          echo "prices: $(ls data/stocks/raw/prices/*.csv 2>/dev/null | wc -l)"
+          echo "flows : $(ls data/stocks/raw/krx_flows/*.parquet 2>/dev/null | wc -l)"
+          echo "fund  : $(ls data/stocks/raw/fundamentals/*.parquet 2>/dev/null | wc -l)"
+          du -sh data/stocks/raw 2>/dev/null || true
+
+      - name: Save cache (canonical raw + curated)
         if: always()
         uses: actions/cache/save@v4
         with:
           path: |
-            data/stocks/raw/prices
-            data/stocks/raw/krx_flows
-            data/stocks/raw/fundamentals
-            data/stocks/raw/dart
+            data/stocks/master
+            data/stocks/raw
             data/stocks/curated
             docs/stocks/dart_standard_*.csv
           key: stocks-backfill-${{ env.STOCKS_BACKFILL_CACHE_NS }}-${{ github.ref_name }}-${{ github.run_id }}
-
-      - name: Summary (always)
-        if: always()
-        run: |
-          echo "=== DONE summary ==="
-          echo "range: $YEAR_FROM ~ $YEAR_TO"
-          echo "prices files: $(ls data/stocks/raw/prices/ 2>/dev/null | wc -l)"
-          echo "flows files(parquet): $(ls data/stocks/raw/krx_flows/*.parquet 2>/dev/null | wc -l)"
-          echo "fundamentals files(parquet): $(ls data/stocks/raw/fundamentals/*.parquet 2>/dev/null | wc -l)"
-          echo "curated flows: $(find data/stocks/curated -name flows_daily.parquet 2>/dev/null | wc -l)"
-          echo "curated fundamentals: $(find data/stocks/curated -name fundamentals_daily.parquet 2>/dev/null | wc -l)"
-          du -sh data/stocks/raw 2>/dev/null || true
-          du -sh data/stocks/curated 2>/dev/null || true
