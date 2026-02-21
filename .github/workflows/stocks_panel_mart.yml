@@ -39,9 +39,8 @@ on:
         default: "2026"
 
   schedule:
-    # 평일(월~금) 07:30 KST = (전날) 22:30 UTC
-    - cron: "30 22 * * 0-4"
-
+    # Saturday 13:00 KST = Saturday 04:00 UTC
+    - cron: "0 4 * * 6"
 jobs:
   build_panel:
     runs-on: ubuntu-latest
