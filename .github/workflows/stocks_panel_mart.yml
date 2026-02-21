@@ -81,7 +81,7 @@ jobs:
       # ============================================================
       # (1) Prefer restoring cache produced by stock_backfill.yml
       # ============================================================
-      - name: Restore cache (prefer: stocks-backfill raw + curated)
+      - name: Restore cache (prefer stocks-backfill raw + curated)
         id: cache_restore_backfill
         uses: actions/cache/restore@v4
         with:
