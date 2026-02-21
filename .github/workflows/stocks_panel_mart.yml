@@ -1,4 +1,4 @@
-name: Stocks Panel Mart (prefer backfill cache -> panel build + backfill status)
+name: Stocks Panel Mart (weekday 07:30 KST, cache-based panel + backfill status)
 
 on:
   workflow_dispatch:
@@ -11,6 +11,12 @@ on:
         description: "Sample size when sample_mode=true"
         type: string
         default: "200"
+
+      # optional: run curations (flows/fundamentals/dart)
+      run_curations:
+        description: "Run curations (true/false). Default false for scheduled runs."
+        type: string
+        default: "false"
 
       # panel build controls
       panel_start_date:
@@ -32,32 +38,35 @@ on:
         type: string
         default: "2026"
 
+  schedule:
+    # 평일(월~금) 07:30 KST = (전날) 22:30 UTC
+    - cron: "30 22 * * 0-4"
+
 jobs:
   build_panel:
     runs-on: ubuntu-latest
     timeout-minutes: 360
+
     env:
       PYTHONPATH: src
 
-      # panel_mart cache namespace (bump to reset)
+      # cache namespaces (bump to reset)
       STOCKS_PANEL_CACHE_NS: "v1"
-
-      # backfill cache namespace (MUST match stock_backfill.yml)
-      # cache key prefix: stocks-backfill-${STOCKS_BACKFILL_CACHE_NS}-...
       STOCKS_BACKFILL_CACHE_NS: "v1"
 
-      # listings
-      SAMPLE_MODE: ${{ inputs.sample_mode }}
-      SAMPLE_SIZE: ${{ inputs.sample_size }}
+      # safe defaults for schedule (inputs는 schedule 이벤트에서 비어있을 수 있음)
+      SAMPLE_MODE: ${{ github.event.inputs.sample_mode || 'false' }}
+      SAMPLE_SIZE: ${{ github.event.inputs.sample_size || '200' }}
+      RUN_CURATIONS: ${{ github.event.inputs.run_curations || 'false' }}
 
-      # DART curate -> full-range standard csv
+      # DART curate -> full-range standard csv (curate를 돌릴 때만 의미)
       DART_STANDARD_FULL_RANGE: "true"
-      DART_STANDARD_FULL_YEAR_FROM: ${{ inputs.dart_standard_full_from }}
-      DART_STANDARD_FULL_YEAR_TO: ${{ inputs.dart_standard_full_to }}
+      DART_STANDARD_FULL_YEAR_FROM: ${{ github.event.inputs.dart_standard_full_from || '2015' }}
+      DART_STANDARD_FULL_YEAR_TO: ${{ github.event.inputs.dart_standard_full_to || '2026' }}
 
       # panel clamp
-      PANEL_START_DATE: ${{ inputs.panel_start_date }}
-      PANEL_END_DATE: ${{ inputs.panel_end_date }}
+      PANEL_START_DATE: ${{ github.event.inputs.panel_start_date || '' }}
+      PANEL_END_DATE: ${{ github.event.inputs.panel_end_date || '' }}
 
       # output paths
       PANEL_OUT_PARQUET: data/stocks/mart/panel_daily.parquet
@@ -74,14 +83,13 @@ jobs:
       - name: Install dependencies
         run: |
           pip install --quiet --no-input -U pip
-          # minimal deps for this workflow + tabulate (required by pandas.to_markdown)
           pip install --quiet --no-input pandas pyarrow requests pykrx tabulate
           python -c "import tabulate; print('tabulate=', tabulate.__version__)"
 
       # ============================================================
       # (1) Prefer restoring cache produced by stock_backfill.yml
       # ============================================================
-      - name: Restore cache (prefer stocks-backfill raw + curated)
+      - name: Restore cache (prefer: stocks-backfill)
         id: cache_restore_backfill
         uses: actions/cache/restore@v4
         with:
@@ -91,15 +99,16 @@ jobs:
             data/stocks/raw/fundamentals
             data/stocks/raw/dart
             data/stocks/curated
+            docs/stocks/dart_standard_*.csv
           key: stocks-backfill-${{ env.STOCKS_BACKFILL_CACHE_NS }}-${{ github.ref_name }}-${{ github.run_id }}
           restore-keys: |
             stocks-backfill-${{ env.STOCKS_BACKFILL_CACHE_NS }}-${{ github.ref_name }}-
             stocks-backfill-${{ env.STOCKS_BACKFILL_CACHE_NS }}-
 
       # ============================================================
-      # (2) Fallback: restore panel_mart's own cache (if backfill cache miss)
+      # (2) Fallback: restore panel_mart cache
       # ============================================================
-      - name: Restore cache (fallback stocks-panel-mart raw + curated)
+      - name: Restore cache (fallback: stocks-panel-mart)
         if: ${{ steps.cache_restore_backfill.outputs.cache-hit != 'true' }}
         id: cache_restore_panel
         uses: actions/cache/restore@v4
@@ -110,12 +119,13 @@ jobs:
             data/stocks/raw/fundamentals
             data/stocks/raw/dart
             data/stocks/curated
+            docs/stocks/dart_standard_*.csv
           key: stocks-panel-mart-${{ env.STOCKS_PANEL_CACHE_NS }}-${{ github.ref_name }}-${{ github.run_id }}
           restore-keys: |
             stocks-panel-mart-${{ env.STOCKS_PANEL_CACHE_NS }}-${{ github.ref_name }}-
             stocks-panel-mart-${{ env.STOCKS_PANEL_CACHE_NS }}-
 
-      - name: Cache precheck summary (raw/curated coverage)
+      - name: Cache precheck summary
         if: always()
         run: |
           echo "[cache] backfill hit? -> ${{ steps.cache_restore_backfill.outputs.cache-hit }}"
@@ -133,6 +143,7 @@ jobs:
           fund   = Path("data/stocks/raw/fundamentals")
           dart   = Path("data/stocks/raw/dart")
           curated= Path("data/stocks/curated")
+          docs   = Path("docs/stocks")
 
           print("[precheck] prices_csv_files =", count_files(prices, ".csv"))
           print("[precheck] flows_parquet_files =", count_files(flows, ".parquet"))
@@ -142,6 +153,7 @@ jobs:
           if curated.exists():
             print("[precheck] curated_flows_daily_parquet =", count_files(curated, "flows_daily.parquet"))
             print("[precheck] curated_fund_daily_parquet =", count_files(curated, "fundamentals_daily.parquet"))
+          print("[precheck] dart_standard_csv =", count_files(docs, "dart_standard_"))
           PY
 
       - name: Fetch listings (KOSPI+KOSDAQ)
@@ -154,24 +166,15 @@ jobs:
           print(df.head(3).to_string(index=False))
           PY
 
-      # NOTE:
-      # - This workflow is cache-based; it does NOT fetch prices/flows/fundamentals by default.
-      # - If cache is empty, curate/build_panel may still run but coverage will be low.
-
-      - name: Curate flows (raw -> curated)
+      # ============================================================
+      # Curations: scheduled runs에서는 기본 OFF (cache의 curated 사용)
+      # ============================================================
+      - name: Curate (flows/fundamentals/dart) - optional
+        if: ${{ env.RUN_CURATIONS == 'true' }}
         continue-on-error: true
         run: |
           python src/stocks/curate_flows.py || echo "⚠ curate_flows error"
-
-      - name: Curate fundamentals (raw -> curated)
-        continue-on-error: true
-        run: |
           python src/stocks/curate_fundamentals.py || echo "⚠ curate_fundamentals error"
-
-      - name: Curate DART (raw -> curated long + standard csv)
-        continue-on-error: true
-        run: |
-          # curate_dart는 raw json cache가 있을 때만 의미가 있습니다.
           python src/stocks/curate_dart.py || echo "⚠ curate_dart error"
           ls -lh docs/stocks/dart_standard_*.csv 2>/dev/null || true
 
@@ -185,7 +188,7 @@ jobs:
           python src/stocks/report_backfill_status.py
           ls -lh docs/stocks/backfill_status.*
 
-      - name: Save cache (panel_mart raw + curated)
+      - name: Save cache (panel_mart)
         if: always()
         uses: actions/cache/save@v4
         with:
@@ -195,6 +198,7 @@ jobs:
             data/stocks/raw/fundamentals
             data/stocks/raw/dart
             data/stocks/curated
+            docs/stocks/dart_standard_*.csv
           key: stocks-panel-mart-${{ env.STOCKS_PANEL_CACHE_NS }}-${{ github.ref_name }}-${{ github.run_id }}
 
       - name: Upload panel + reports (artifact)
