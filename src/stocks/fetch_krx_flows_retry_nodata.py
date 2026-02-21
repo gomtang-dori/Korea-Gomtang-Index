@@ -1,30 +1,15 @@
 #!/usr/bin/env python3
 """
-KRX flows 2차 재시도 전용 스크립트
+KRX flows retry2 (no data tickers only)
 - data/stocks/raw/krx_flows/_no_data_tickers.txt 를 읽어서 해당 티커만 재시도
-- 성공하면 raw/krx_flows/<ticker>.(parquet|csv) 생성/갱신
-- 결과 파일:
-  - _no_data_tickers_retry2.txt  (2차에도 no data)
-  - _error_tickers_retry2.txt    (2차에서 error)
-  - _ok_tickers_retry2.txt       (2차에서 OK)
-  - _retry2_summary.txt
 
-환경변수(기본 fetch_krx_flows.py와 최대한 호환)
-- INCREMENTAL_MODE: true/false (기본 false)
-- INCREMENTAL_DAYS: (기본 5)
-- START_DATE: (기본 20150101)
-- KRX_FLOWS_SAVE_FORMAT: csv|parquet (기본 parquet 권장)
-- KRX_RETRY: 예외 재시도 횟수 (기본 3)
+개선
+- END_DATE env 존중 (연도 분할 chunk마다 동일 기간으로 retry2 가능)
 
-Retry2 전용
-- MAX_WORKERS_FLOWS_RETRY: 병렬 worker (기본 3)  <-- 안전하게 낮게
-- KRX_NO_DATA_RETRY_RETRY2: no data 재시도 횟수 (기본 3)
-- KRX_NO_DATA_SLEEP_BASE_RETRY2: no data 재시도 대기 base (기본 5.0초)
-- KRX_THROTTLE_SEC_RETRY2: 요청 간 최소 간격(초) (기본 0.2초)  <-- 차단 방지용 권장
-- RETRY2_OVERWRITE_IF_EXISTS: true면 기존 파일이 있어도 다시 덮어씀(기본 false)
-
-옵션
-- RETRY2_INPUT_FILE: 기본 _no_data_tickers.txt 대신 다른 입력 파일 사용 가능
+env
+- START_DATE: YYYYMMDD
+- END_DATE: YYYYMMDD (default today)
+(그 외는 기존 스크립트와 동일)
 """
 
 import os
@@ -39,16 +24,15 @@ import pandas as pd
 from pykrx import stock
 
 
-# ----------------------
-# Config
-# ----------------------
 PROJECT_ROOT = Path.cwd()
 
 INCREMENTAL_MODE = os.getenv("INCREMENTAL_MODE", "false").lower() == "true"
 INCREMENTAL_DAYS = int(os.getenv("INCREMENTAL_DAYS", "5"))
-START_DATE = os.getenv("START_DATE", "20150101")
 
-SAVE_FORMAT = os.getenv("KRX_FLOWS_SAVE_FORMAT", "parquet").lower()   # retry2는 parquet 권장
+START_DATE = os.getenv("START_DATE", "20150101")
+END_DATE = os.getenv("END_DATE", datetime.now().strftime("%Y%m%d"))
+
+SAVE_FORMAT = os.getenv("KRX_FLOWS_SAVE_FORMAT", "parquet").lower()
 RETRY = int(os.getenv("KRX_RETRY", "3"))
 
 MAX_WORKERS_RETRY2 = int(os.getenv("MAX_WORKERS_FLOWS_RETRY", "3"))
@@ -56,7 +40,7 @@ MAX_WORKERS_RETRY2 = int(os.getenv("MAX_WORKERS_FLOWS_RETRY", "3"))
 NO_DATA_RETRY_RETRY2 = int(os.getenv("KRX_NO_DATA_RETRY_RETRY2", "3"))
 NO_DATA_SLEEP_BASE_RETRY2 = float(os.getenv("KRX_NO_DATA_SLEEP_BASE_RETRY2", "5.0"))
 
-KRX_THROTTLE_SEC_RETRY2 = float(os.getenv("KRX_THROTTLE_SEC_RETRY2", "0.2").strip() or "0.2")
+KRX_THROTTLE_SEC_RETRY2 = float(os.getenv("KRX_THROTTLE_SEC_RETRY2", "0.25").strip() or "0.25")
 
 RETRY2_OVERWRITE_IF_EXISTS = os.getenv("RETRY2_OVERWRITE_IF_EXISTS", "false").lower() == "true"
 
@@ -66,13 +50,11 @@ RETRY2_INPUT_FILE = os.getenv(
 )
 
 OUT_DIR = PROJECT_ROOT / "data/stocks/raw/krx_flows"
+OUT_DIR.mkdir(parents=True, exist_ok=True)
 
 ONS = ["순매수", "매수", "매도"]
 
 
-# ----------------------
-# Throttle (global)
-# ----------------------
 class GlobalThrottle:
     def __init__(self, min_interval_sec: float):
         self.min_interval_sec = float(min_interval_sec)
@@ -95,7 +77,7 @@ throttle = GlobalThrottle(KRX_THROTTLE_SEC_RETRY2)
 
 
 def _date_range():
-    end_date = datetime.now().strftime("%Y%m%d")
+    end_date = END_DATE
     if INCREMENTAL_MODE:
         start_date = (datetime.now() - timedelta(days=INCREMENTAL_DAYS)).strftime("%Y%m%d")
     else:
@@ -141,7 +123,6 @@ def _load_existing(out_base: Path) -> pd.DataFrame:
     p_csv = out_base.with_suffix(".csv")
     if not p_parq.exists() and not p_csv.exists():
         return pd.DataFrame()
-
     try:
         if p_parq.exists():
             df_old = pd.read_parquet(p_parq)
@@ -177,8 +158,6 @@ def _fetch_with_retry(fetch_fn, *args, **kwargs) -> pd.DataFrame:
 
 def _fetch_frames_for_ticker(ticker: str, start_date: str, end_date: str) -> list:
     frames = []
-
-    # 금액(value)
     for on in ONS:
         df = _fetch_with_retry(
             stock.get_market_trading_value_by_date,
@@ -190,7 +169,6 @@ def _fetch_frames_for_ticker(ticker: str, start_date: str, end_date: str) -> lis
             suffix = {"순매수": "value_net", "매수": "value_buy", "매도": "value_sell"}[on]
             frames.append(_rename_with_suffix(df, suffix))
 
-    # 수량(volume)
     for on in ONS:
         df = _fetch_with_retry(
             stock.get_market_trading_volume_by_date,
@@ -208,19 +186,16 @@ def _fetch_frames_for_ticker(ticker: str, start_date: str, end_date: str) -> lis
 def fetch_retry2_one(ticker: str, start_date: str, end_date: str) -> str:
     out_base = _out_base(ticker)
 
-    # 이미 파일이 존재하고, overwrite가 false이면 스킵(단, 기존이 빈 파일/깨진 파일일 수 있으면 overwrite true 추천)
     if _exists_any(out_base) and not RETRY2_OVERWRITE_IF_EXISTS:
-        # 그래도 실제 row가 0이면 재시도하도록 처리
         df_old = _load_existing(out_base)
+        # 기존이 정상적으로 차 있으면 스킵
         if not df_old.empty and len(df_old) > 10:
             return f"{ticker}: exists -> skip"
-        # old가 비정상으로 보이면 계속 진행
 
     try:
         frames = _fetch_frames_for_ticker(ticker, start_date, end_date)
 
         if not frames:
-            # 2차 no data 재시도 (ticker only)
             for n in range(1, NO_DATA_RETRY_RETRY2 + 1):
                 sleep_s = NO_DATA_SLEEP_BASE_RETRY2 * n + random.random() * 2.0
                 time.sleep(sleep_s)
@@ -238,7 +213,6 @@ def fetch_retry2_one(ticker: str, start_date: str, end_date: str) -> str:
         if df_all is None or df_all.empty:
             return f"{ticker}: no data"
 
-        # 증분 모드면 기존과 합치기
         if INCREMENTAL_MODE:
             df_old = _load_existing(out_base)
             if not df_old.empty:
@@ -267,19 +241,11 @@ def _write_list(path: Path, items: list):
 
 def main():
     print("[fetch_krx_flows_retry_nodata] start")
-    print(f"  CWD={PROJECT_ROOT}")
-    print(f"  INCREMENTAL_MODE={INCREMENTAL_MODE}, INCREMENTAL_DAYS={INCREMENTAL_DAYS}")
-    print(f"  START_DATE={START_DATE}, SAVE_FORMAT={SAVE_FORMAT}, RETRY={RETRY}")
-    print(f"  workers={MAX_WORKERS_RETRY2}, throttle={KRX_THROTTLE_SEC_RETRY2}s")
-    print(f"  no_data_retry_retry2={NO_DATA_RETRY_RETRY2}, no_data_sleep_base_retry2={NO_DATA_SLEEP_BASE_RETRY2}")
-    print(f"  overwrite_if_exists={RETRY2_OVERWRITE_IF_EXISTS}")
-    print(f"  input_file={RETRY2_INPUT_FILE}")
-
-    OUT_DIR.mkdir(parents=True, exist_ok=True)
+    print(f"  START_DATE={START_DATE}, END_DATE={END_DATE}")
+    print(f"  workers={MAX_WORKERS_RETRY2}, throttle={KRX_THROTTLE_SEC_RETRY2}")
 
     in_path = Path(RETRY2_INPUT_FILE)
-    tickers = _read_tickers_from_file(in_path)
-    tickers = sorted(set([str(t).strip() for t in tickers if str(t).strip()]))
+    tickers = sorted(set(_read_tickers_from_file(in_path)))
 
     if not tickers:
         print("  input tickers empty -> nothing to do")
@@ -288,13 +254,10 @@ def main():
     start_date, end_date = _date_range()
     print(f"  range: {start_date} ~ {end_date} | retry tickers={len(tickers)}")
 
-    ok_tickers = []
-    no_data_tickers = []
-    error_tickers = []
+    ok_tickers, no_data_tickers, error_tickers = [], [], []
 
     with ThreadPoolExecutor(max_workers=MAX_WORKERS_RETRY2) as ex:
         futures = {ex.submit(fetch_retry2_one, t, start_date, end_date): t for t in tickers}
-
         for i, fut in enumerate(as_completed(futures), 1):
             msg = fut.result()
             t = futures[fut]
@@ -309,7 +272,6 @@ def main():
             if i <= 20 or i % 50 == 0:
                 print(f"  [{i}/{len(tickers)}] {msg}")
 
-    # outputs
     _write_list(OUT_DIR / "_ok_tickers_retry2.txt", ok_tickers)
     _write_list(OUT_DIR / "_no_data_tickers_retry2.txt", no_data_tickers)
     _write_list(OUT_DIR / "_error_tickers_retry2.txt", error_tickers)
@@ -329,10 +291,6 @@ def main():
 
     print("[fetch_krx_flows_retry_nodata] DONE")
     print(summary.strip())
-    print(f"  wrote: {OUT_DIR / '_ok_tickers_retry2.txt'}")
-    print(f"  wrote: {OUT_DIR / '_no_data_tickers_retry2.txt'}")
-    print(f"  wrote: {OUT_DIR / '_error_tickers_retry2.txt'}")
-    print(f"  wrote: {OUT_DIR / '_retry2_summary.txt'}")
 
 
 if __name__ == "__main__":
