@@ -99,7 +99,7 @@ jobs:
       # ============================================================
       # (2) Fallback: restore panel_mart's own cache (if backfill cache miss)
       # ============================================================
-      - name: Restore cache (fallback: stocks-panel-mart raw + curated)
+      - name: Restore cache (fallback stocks-panel-mart raw + curated)
         if: ${{ steps.cache_restore_backfill.outputs.cache-hit != 'true' }}
         id: cache_restore_panel
         uses: actions/cache/restore@v4
