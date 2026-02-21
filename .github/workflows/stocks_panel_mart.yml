@@ -38,15 +38,18 @@ jobs:
     timeout-minutes: 360
     env:
       PYTHONPATH: src
-
-      # panel_mart cache namespace (bump to reset)
+      # cache namespace (so you can reset cache by bumping this)
       STOCKS_PANEL_CACHE_NS: "v1"
-
-      # backfill cache namespace (MUST match stock_backfill.yml)
-      # cache key prefix: stocks-backfill-${STOCKS_BACKFILL_CACHE_NS}-...
+      
+      # IMPORTANT: must match stock_backfill.yml cache namespace
+      # (the cache key prefix is: stocks-backfill-${STOCKS_BACKFILL_CACHE_NS}-...)
       STOCKS_BACKFILL_CACHE_NS: "v1"
 
+      # NOTE: This workflow assumes raw/curated are provided via cache.
+      # If cache is empty, curate/build_panel will still run, but coverage will be low.
+      # (fetch_prices / fetch_krx_flows / fetch_fundamentals should be handled by a separate daily job.)
       # listings
+      
       SAMPLE_MODE: ${{ inputs.sample_mode }}
       SAMPLE_SIZE: ${{ inputs.sample_size }}
 
@@ -81,7 +84,8 @@ jobs:
       # ============================================================
       # (1) Prefer restoring cache produced by stock_backfill.yml
       # ============================================================
-      - name: Restore cache (prefer: stocks-backfill raw + curated)
+
+      - name: Restore cache (prefer- stocks-backfill raw + curated)
         id: cache_restore_backfill
         uses: actions/cache/restore@v4
         with:
@@ -122,7 +126,6 @@ jobs:
           echo "[cache] panel hit?    -> ${{ steps.cache_restore_panel.outputs.cache-hit }}"
           python - <<'PY'
           from pathlib import Path
-
           def count_files(p: Path, suffix: str):
             if not p.exists():
               return 0
@@ -131,19 +134,34 @@ jobs:
           prices = Path("data/stocks/raw/prices")
           flows  = Path("data/stocks/raw/krx_flows")
           fund   = Path("data/stocks/raw/fundamentals")
-          dart   = Path("data/stocks/raw/dart")
+          dart   = Path("data/stocks/raw/dart")          
           curated= Path("data/stocks/curated")
 
           print("[precheck] prices_csv_files =", count_files(prices, ".csv"))
           print("[precheck] flows_parquet_files =", count_files(flows, ".parquet"))
           print("[precheck] fundamentals_parquet_files =", count_files(fund, ".parquet"))
-          print("[precheck] dart_json_files (rglob) =", count_files(dart, ".json"))
+          print("[precheck] dart_json_files (rglob) =", count_files(dart, ".json"))          
+          # curated has nested ticker folders; just show whether folder exists + a few counts
           print("[precheck] curated_exists =", curated.exists())
           if curated.exists():
+            # sample counts
             print("[precheck] curated_flows_daily_parquet =", count_files(curated, "flows_daily.parquet"))
             print("[precheck] curated_fund_daily_parquet =", count_files(curated, "fundamentals_daily.parquet"))
           PY
-
+          
+      - name: Restore stocks raw/curated cache
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            data/stocks/raw/prices
+            data/stocks/raw/krx_flows
+            data/stocks/raw/fundamentals
+            data/stocks/curated
+          key: stocks-panel-mart-v1-${{ github.ref_name }}-${{ github.run_id }}
+          restore-keys: |
+            stocks-panel-mart-v1-${{ github.ref_name }}-
+            stocks-panel-mart-v1-
+          
       - name: Fetch listings (KOSPI+KOSDAQ)
         run: |
           python src/stocks/fetch_listings.py
@@ -154,26 +172,43 @@ jobs:
           print(df.head(3).to_string(index=False))
           PY
 
-      # NOTE:
-      # - This workflow is cache-based; it does NOT fetch prices/flows/fundamentals by default.
-      # - If cache is empty, curate/build_panel may still run but coverage will be low.
+      # (선택) prices/flows/fundamentals 수집 워크플로우가 별도로 존재한다면 여기서 호출하지 않고,
+      # 이 워크플로우는 "cache 기반"으로 raw/curated를 사용해 panel + 리포트만 생성합니다.
+      # cache가 비어있다면 curate/build_panel은 실행되지만 커버리지는 낮을 수 있습니다.      
+      # 이미 raw/curated 가 존재(또는 cache restore)한다고 가정합니다.
+      # 필요한 경우, 아래 3개 스텝을 별도 워크플로우(또는 이 워크플로우에 옵션으로) 추가하면 됩니다.
+      # - python src/stocks/fetch_prices.py
+      # - python src/stocks/fetch_krx_flows.py
+      # - python src/stocks/fetch_fundamentals.py
 
       - name: Curate flows (raw -> curated)
         continue-on-error: true
         run: |
-          python src/stocks/curate_flows.py || echo "⚠ curate_flows error"
+          python src/stocks/curate_flows.py || echo "⚠️ curate_flows error"
 
       - name: Curate fundamentals (raw -> curated)
         continue-on-error: true
         run: |
-          python src/stocks/curate_fundamentals.py || echo "⚠ curate_fundamentals error"
+          python src/stocks/curate_fundamentals.py || echo "⚠️ curate_fundamentals error"
 
       - name: Curate DART (raw -> curated long + standard csv)
         continue-on-error: true
         run: |
           # curate_dart는 raw json cache가 있을 때만 의미가 있습니다.
-          python src/stocks/curate_dart.py || echo "⚠ curate_dart error"
+          python src/stocks/curate_dart.py || echo "⚠️ curate_dart error"
           ls -lh docs/stocks/dart_standard_*.csv 2>/dev/null || true
+          
+      - name: Save stocks raw/curated cache
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            data/stocks/raw/prices
+            data/stocks/raw/krx_flows
+            data/stocks/raw/fundamentals
+            data/stocks/curated
+          key: stocks-panel-mart-v1-${{ github.ref_name }}-${{ github.run_id }}
+
 
       - name: Build merged 1-file panel parquet
         run: |
@@ -185,7 +220,7 @@ jobs:
           python src/stocks/report_backfill_status.py
           ls -lh docs/stocks/backfill_status.*
 
-      - name: Save cache (panel_mart raw + curated)
+      - name: Save cache (raw + curated)
         if: always()
         uses: actions/cache/save@v4
         with:
@@ -193,7 +228,6 @@ jobs:
             data/stocks/raw/prices
             data/stocks/raw/krx_flows
             data/stocks/raw/fundamentals
-            data/stocks/raw/dart
             data/stocks/curated
           key: stocks-panel-mart-${{ env.STOCKS_PANEL_CACHE_NS }}-${{ github.ref_name }}-${{ github.run_id }}
 
