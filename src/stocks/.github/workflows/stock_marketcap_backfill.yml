@@ -1,0 +1,107 @@
+name: Stock MarketCap Backfill (By Date -> Curated)
+
+on:
+  workflow_dispatch:
+    inputs:
+      start_date:
+        description: "Start date (YYYYMMDD)"
+        type: string
+        default: "20220101"
+      end_date:
+        description: "End date (YYYYMMDD)"
+        type: string
+        default: "20261231"
+      throttle_sec:
+        description: "Throttle seconds between PyKRX calls"
+        type: string
+        default: "0.20"
+      overwrite:
+        description: "Overwrite existing raw daily files (true/false)"
+        type: string
+        default: "false"
+
+permissions:
+  contents: read
+
+jobs:
+  backfill_marketcap:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+
+    env:
+      PYTHONPATH: src
+
+      MARKETCAP_MODE: "range"
+      MARKETCAP_START_DATE: ${{ inputs.start_date }}
+      MARKETCAP_END_DATE: ${{ inputs.end_date }}
+      MARKETCAP_THROTTLE_SEC: ${{ inputs.throttle_sec }}
+      MARKETCAP_OVERWRITE: ${{ inputs.overwrite }}
+
+      MARKETCAP_OUT_DIR: "data/stocks/raw/market_cap_by_date"
+      MARKETCAP_COMPRESSION: "zstd"
+
+      MARKETCAP_RAW_DIR: "data/stocks/raw/market_cap_by_date"
+      MARKETCAP_CURATED_ROOT: "data/stocks/curated"
+      MARKETCAP_CURATE_OVERWRITE: "false"
+
+      # cache namespace (bump to reset)
+      MARKETCAP_CACHE_NS: "v1"
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+
+      - name: Install dependencies
+        run: |
+          pip install --quiet --no-input -U pip
+          pip install --quiet --no-input pandas pyarrow pykrx
+
+      - name: Restore cache (marketcap)
+        id: cache_restore
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            data/stocks/raw/market_cap_by_date
+            data/stocks/curated
+          key: marketcap-${{ env.MARKETCAP_CACHE_NS }}-${{ github.ref_name }}-${{ github.run_id }}
+          restore-keys: |
+            marketcap-${{ env.MARKETCAP_CACHE_NS }}-${{ github.ref_name }}-
+            marketcap-${{ env.MARKETCAP_CACHE_NS }}-
+
+      - name: Fetch market cap by date (range)
+        run: |
+          python src/stocks/fetch_market_cap_by_date.py
+          ls -lah data/stocks/raw/market_cap_by_date | head -50
+
+      - name: Curate market cap (per ticker)
+        run: |
+          python src/stocks/curate_market_cap.py
+          python - <<'PY'
+          from pathlib import Path
+          p = Path("data/stocks/curated")
+          cnt = sum(1 for x in p.rglob("market_cap_daily.parquet"))
+          print("[curated] market_cap_daily.parquet files:", cnt)
+          PY
+
+      - name: Save cache (marketcap)
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            data/stocks/raw/market_cap_by_date
+            data/stocks/curated
+          key: marketcap-${{ env.MARKETCAP_CACHE_NS }}-${{ github.ref_name }}-${{ github.run_id }}
+
+      - name: Upload artifacts (raw + sample curated)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: marketcap-backfill
+          path: |
+            data/stocks/raw/market_cap_by_date
+            data/stocks/curated
+          retention-days: 30
+          if-no-files-found: warn
