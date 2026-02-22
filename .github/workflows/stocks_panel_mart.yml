@@ -113,6 +113,41 @@ jobs:
             stocks-panel-mart-${{ env.STOCKS_PANEL_CACHE_NS }}-${{ github.ref_name }}-
             stocks-panel-mart-${{ env.STOCKS_PANEL_CACHE_NS }}-
 
+      - name: Restore cache (marketcap-curated bundle)
+        id: cache_restore_marketcap_curated
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            data/stocks/cache/marketcap_curated
+          key: marketcap-curated-v1-${{ github.ref_name }}-${{ github.run_id }}
+          restore-keys: |
+            marketcap-curated-v1-${{ github.ref_name }}-
+            marketcap-curated-v1-
+
+      - name: Apply marketcap-curated bundle -> data/stocks/curated
+        if: always()
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import shutil
+
+          bundle = Path("data/stocks/cache/marketcap_curated")
+          dst_root = Path("data/stocks/curated")
+          if not bundle.exists():
+            print("[marketcap-bundle] bundle not found:", bundle)
+            raise SystemExit(0)
+
+          n = 0
+          for p in bundle.rglob("market_cap_daily.parquet"):
+            rel = p.relative_to(bundle)
+            dst = dst_root / rel
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(p, dst)
+            n += 1
+          print(f"[marketcap-bundle] applied_files={n}")
+          PY
+
+
       - name: Fetch listings (KOSPI+KOSDAQ)
         run: |
           python src/stocks/fetch_listings.py
