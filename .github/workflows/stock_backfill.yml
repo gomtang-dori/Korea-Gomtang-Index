@@ -3,6 +3,26 @@ name: Stock Backfill RAW (Matrix 2022-2026) + Merge + Cache (max-parallel=2)
 on:
   workflow_dispatch:
     inputs:
+      cache_namespace:
+        description: "Cache namespace (bump to reset poisoned cache, e.g. v1 -> v2)"
+        type: string
+        default: "v2"
+
+      min_price_files:
+        description: "Fail-fast threshold for price CSV count (e.g. 2500)"
+        type: string
+        default: "2500"
+
+      min_flow_files:
+        description: "Fail-fast threshold for flow parquet count (e.g. 2000)"
+        type: string
+        default: "2000"
+
+      min_fund_files:
+        description: "Fail-fast threshold for fundamentals parquet count (e.g. 2000)"
+        type: string
+        default: "2000"
+
       skip_prices:
         description: "Skip price data fetch"
         type: boolean
@@ -51,7 +71,7 @@ jobs:
       PYTHONPATH: src
       SAMPLE_MODE: "false"
 
-      STOCKS_BACKFILL_CACHE_NS: "v1"
+      STOCKS_BACKFILL_CACHE_NS: ${{ inputs.cache_namespace }}
 
       # ---------- 안정 세팅 ----------
       # prices
@@ -230,7 +250,7 @@ jobs:
 
     env:
       PYTHONPATH: src
-      STOCKS_BACKFILL_CACHE_NS: "v1"
+      STOCKS_BACKFILL_CACHE_NS: ${{ inputs.cache_namespace }}
 
     steps:
       - uses: actions/checkout@v4
@@ -384,16 +404,51 @@ jobs:
           print("fund files  :", len(list(FUND_CAN.glob("*.parquet"))))
           PY
 
-      - name: Post-merge sanity counts
+      - name: Post-merge sanity gate (fail-fast to prevent cache poisoning)
+        id: sanity
         run: |
-          set -euxo pipefail
+          set -euo pipefail
           echo "prices: $(ls data/stocks/raw/prices/*.csv 2>/dev/null | wc -l)"
           echo "flows : $(ls data/stocks/raw/krx_flows/*.parquet 2>/dev/null | wc -l)"
           echo "fund  : $(ls data/stocks/raw/fundamentals/*.parquet 2>/dev/null | wc -l)"
-          du -sh data/stocks/raw 2>/dev/null || true
+          python - <<'PY'
+          import os
+          from pathlib import Path
 
-      - name: Save cache (canonical raw + curated)
-        if: always()
+          def cnt(glob_pat: str):
+            return len(list(Path(".").glob(glob_pat)))
+
+          n_price = cnt("data/stocks/raw/prices/*.csv")
+          n_flow  = cnt("data/stocks/raw/krx_flows/*.parquet")
+          n_fund  = cnt("data/stocks/raw/fundamentals/*.parquet")
+
+          min_price = int(os.environ.get("MIN_PRICE_FILES", "2500"))
+          min_flow  = int(os.environ.get("MIN_FLOW_FILES", "2000"))
+          min_fund  = int(os.environ.get("MIN_FUND_FILES", "2000"))
+
+          print(f"[sanity] price_files={n_price} (min={min_price})")
+          print(f"[sanity] flow_files ={n_flow} (min={min_flow})")
+          print(f"[sanity] fund_files ={n_fund} (min={min_fund})")
+
+          # prices는 패널의 '필수'라 강하게 가드
+          if n_price < min_price:
+            raise SystemExit("[sanity] TOO_FEW_PRICES -> STOP (do NOT save cache)")
+
+          # flows/fund는 상황에 따라 낮을 수 있어도 되지만, 너무 낮으면 운영상 문제가 크므로 가드(원하면 완화 가능)
+          if n_flow < min_flow:
+            raise SystemExit("[sanity] TOO_FEW_FLOWS -> STOP (do NOT save cache)")
+          if n_fund < min_fund:
+            raise SystemExit("[sanity] TOO_FEW_FUND -> STOP (do NOT save cache)")
+
+          print("[sanity] OK")
+          PY
+        env:
+          MIN_PRICE_FILES: ${{ inputs.min_price_files }}
+          MIN_FLOW_FILES: ${{ inputs.min_flow_files }}
+          MIN_FUND_FILES: ${{ inputs.min_fund_files }}
+
+      - name: Save cache (canonical raw + curated)  ✅ only when sanity OK
+        if: ${{ success() && steps.sanity.outcome == 'success' }}
         uses: actions/cache/save@v4
         with:
           path: |
@@ -402,3 +457,13 @@ jobs:
             data/stocks/curated
             docs/stocks/dart_standard_*.csv
           key: stocks-backfill-${{ env.STOCKS_BACKFILL_CACHE_NS }}-${{ github.ref_name }}-${{ github.run_id }}
+
+      - name: Upload canonical raw counts (artifact)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: canonical-raw-counts
+          path: |
+            data/stocks/raw
+          retention-days: 7
+          if-no-files-found: warn
