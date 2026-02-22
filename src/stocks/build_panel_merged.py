@@ -40,24 +40,12 @@ DART_STANDARD_CSV = PROJECT_ROOT / f"docs/stocks/dart_standard_{DART_FULL_FROM}_
 
 COMPRESSION = os.getenv("PANEL_PARQUET_COMPRESSION", "zstd")  # zstd/snappy
 
-
-def _read_prices_csv(path: Path) -> pd.DataFrame:
-    df = pd.read_csv(path, encoding="utf-8-sig")
-    if "date" not in df.columns:
-        df.rename(columns={df.columns[0]: "date"}, inplace=True)
-    df["date"] = pd.to_datetime(df["date"], errors="coerce")
-    for c in ["open", "high", "low", "close", "volume"]:
-        if c not in df.columns:
-            df[c] = np.nan
-        df[c] = pd.to_numeric(df[c], errors="coerce")
-    df = df.dropna(subset=["date"]).sort_values("date").reset_index(drop=True)
-    return df
 import re
 
 def _normalize_date_series(s: pd.Series) -> pd.Series:
     x = s.astype(str).str.strip()
 
-    # case A) YYYY-MMDD  (e.g., 2026-0220)  -> YYYY-MM-DD
+    # case A) YYYY-MMDD (예: 2026-0220) -> YYYY-MM-DD
     m = x.str.match(r"^\d{4}-\d{4}$", na=False)
     if m.any():
         tmp = x[m].str.replace("-", "", regex=False)  # YYYYMMDD
@@ -72,6 +60,8 @@ def _normalize_date_series(s: pd.Series) -> pd.Series:
 
 def _read_prices_csv(path: Path) -> pd.DataFrame:
     df = pd.read_csv(path, encoding="utf-8-sig")
+
+    # date 컬럼명 정규화
     if "date" not in df.columns:
         df.rename(columns={df.columns[0]: "date"}, inplace=True)
 
@@ -79,7 +69,15 @@ def _read_prices_csv(path: Path) -> pd.DataFrame:
     df["date"] = _normalize_date_series(df["date"])
     df["date"] = pd.to_datetime(df["date"], errors="coerce")
 
-    # ... 나머지 기존 로직 동일 ...
+    # 가격 컬럼 표준화 + 숫자 변환
+    for c in ["open", "high", "low", "close", "volume"]:
+        if c not in df.columns:
+            df[c] = np.nan
+        df[c] = pd.to_numeric(df[c], errors="coerce")
+
+    df = df.dropna(subset=["date"]).sort_values("date").reset_index(drop=True)
+    return df
+
 
 def _read_parquet_if_exists(p: Path) -> pd.DataFrame:
     if not p.exists():
