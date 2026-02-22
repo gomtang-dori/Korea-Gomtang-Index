@@ -80,14 +80,15 @@ def main():
         out_dir.mkdir(parents=True, exist_ok=True)
         out_path = out_dir / "market_cap_daily.parquet"
 
+        new_part = g[["date", "market_cap", "shares", "value"]].drop_duplicates(subset=["date"], keep="last").sort_values("date")
+
         if out_path.exists() and not OVERWRITE:
-            # append / upsert
             old = pd.read_parquet(out_path)
             old["date"] = pd.to_datetime(old["date"], errors="coerce")
-            merged = pd.concat([old, g[["date", "market_cap", "shares", "value"]]], ignore_index=True)
+            merged = pd.concat([old, new_part], ignore_index=True)
             merged = merged.dropna(subset=["date"]).drop_duplicates(subset=["date"], keep="last").sort_values("date")
         else:
-            merged = g[["date", "market_cap", "shares", "value"]].drop_duplicates(subset=["date"], keep="last").sort_values("date")
+            merged = new_part
 
         merged.to_parquet(out_path, index=False)
         ok += 1
