@@ -7,17 +7,26 @@ Build merged 1-file stock panel parquet:
 - prices (daily OHLCV CSV per ticker)
 - flows_daily.parquet (curated)
 - fundamentals_daily.parquet (curated)
-- DART standard summary CSV (year, reprt_code, revenue/op/net/equity/roe) -> asof join to daily
+- market_cap_daily.parquet (curated)
+- WICS map (master)
+- DART standard summary CSV (optional) -> asof join to daily
 
 Output:
 - data/stocks/mart/panel_daily.parquet  (single file)
+
+Env:
+- PANEL_OUT_PARQUET (default data/stocks/mart/panel_daily.parquet)
+- PANEL_START_DATE / PANEL_END_DATE (optional clamp, YYYY-MM-DD)
+- DART_STANDARD_FULL_YEAR_FROM / TO -> docs/stocks/dart_standard_{from}_{to}.csv
+- PANEL_PARQUET_COMPRESSION (default zstd)
 """
 
 import os
+import re
 from pathlib import Path
-import pandas as pd
-import numpy as np
 
+import numpy as np
+import pandas as pd
 import pyarrow as pa
 import pyarrow.parquet as pq
 
@@ -27,6 +36,7 @@ PROJECT_ROOT = Path.cwd()
 MASTER = PROJECT_ROOT / "data/stocks/master/listings.parquet"
 PRICES_DIR = PROJECT_ROOT / "data/stocks/raw/prices"
 CURATED_DIR = PROJECT_ROOT / "data/stocks/curated"
+WICS_MAP_PATH = PROJECT_ROOT / "data/stocks/master/wics_map.parquet"
 
 OUT_PARQUET = Path(os.getenv("PANEL_OUT_PARQUET", "data/stocks/mart/panel_daily.parquet"))
 OUT_PARQUET.parent.mkdir(parents=True, exist_ok=True)
@@ -38,38 +48,29 @@ DART_FULL_FROM = int(os.getenv("DART_STANDARD_FULL_YEAR_FROM", "2015"))
 DART_FULL_TO = int(os.getenv("DART_STANDARD_FULL_YEAR_TO", "2026"))
 DART_STANDARD_CSV = PROJECT_ROOT / f"docs/stocks/dart_standard_{DART_FULL_FROM}_{DART_FULL_TO}.csv"
 
-COMPRESSION = os.getenv("PANEL_PARQUET_COMPRESSION", "zstd")  # zstd/snappy
+COMPRESSION = os.getenv("PANEL_PARQUET_COMPRESSION", "zstd")
 
-import re
 
 def _normalize_date_series(s: pd.Series) -> pd.Series:
     x = s.astype(str).str.strip()
-
-    # case A) YYYY-MMDD (예: 2026-0220) -> YYYY-MM-DD
     m = x.str.match(r"^\d{4}-\d{4}$", na=False)
     if m.any():
-        tmp = x[m].str.replace("-", "", regex=False)  # YYYYMMDD
+        tmp = x[m].str.replace("-", "", regex=False)
         x.loc[m] = tmp.str.slice(0, 4) + "-" + tmp.str.slice(4, 6) + "-" + tmp.str.slice(6, 8)
-
-    # case B) YYYYMMDD -> YYYY-MM-DD
     m = x.str.match(r"^\d{8}$", na=False)
     if m.any():
         x.loc[m] = x[m].str.slice(0, 4) + "-" + x[m].str.slice(4, 6) + "-" + x[m].str.slice(6, 8)
-
     return x
+
 
 def _read_prices_csv(path: Path) -> pd.DataFrame:
     df = pd.read_csv(path, encoding="utf-8-sig")
-
-    # date 컬럼명 정규화
     if "date" not in df.columns:
         df.rename(columns={df.columns[0]: "date"}, inplace=True)
 
-    # ✅ robust date parsing
     df["date"] = _normalize_date_series(df["date"])
     df["date"] = pd.to_datetime(df["date"], errors="coerce")
 
-    # 가격 컬럼 표준화 + 숫자 변환
     for c in ["open", "high", "low", "close", "volume"]:
         if c not in df.columns:
             df[c] = np.nan
@@ -83,6 +84,8 @@ def _read_parquet_if_exists(p: Path) -> pd.DataFrame:
     if not p.exists():
         return pd.DataFrame()
     df = pd.read_parquet(p)
+    if df is None or df.empty:
+        return pd.DataFrame()
     if "date" in df.columns:
         df["date"] = pd.to_datetime(df["date"], errors="coerce")
         df = df.dropna(subset=["date"]).sort_values("date").reset_index(drop=True)
@@ -90,11 +93,6 @@ def _read_parquet_if_exists(p: Path) -> pd.DataFrame:
 
 
 def _dart_report_end_date(year: int, reprt_code: str) -> pd.Timestamp:
-    # Simple mapping (business-year 기준):
-    # 11011: annual -> 12/31
-    # 11012: Q1 -> 03/31
-    # 11013: half -> 06/30
-    # 11014: Q3 -> 09/30
     rc = str(reprt_code)
     if rc == "11011":
         mmdd = (12, 31)
@@ -115,15 +113,13 @@ def _load_dart_standard() -> pd.DataFrame:
 
     df = pd.read_csv(DART_STANDARD_CSV, encoding="utf-8-sig")
     need = {"ticker", "year", "reprt_code", "revenue", "operating_income", "net_income", "equity", "roe"}
-    miss = need - set(df.columns)
-    if miss:
-        print(f"[panel][WARN] DART standard missing cols: {miss} in {DART_STANDARD_CSV}")
+    if not need.issubset(set(df.columns)):
+        print(f"[panel][WARN] DART standard missing cols in {DART_STANDARD_CSV}")
         return pd.DataFrame()
 
     df["ticker"] = df["ticker"].astype(str).str.zfill(6)
     df["year"] = pd.to_numeric(df["year"], errors="coerce")
     df["reprt_code"] = df["reprt_code"].astype(str)
-
     for c in ["revenue", "operating_income", "net_income", "equity", "roe"]:
         df[c] = pd.to_numeric(df[c], errors="coerce")
 
@@ -134,6 +130,23 @@ def _load_dart_standard() -> pd.DataFrame:
     ]
     df = df.dropna(subset=["asof_date"]).sort_values(["ticker", "asof_date", "reprt_code"]).reset_index(drop=True)
     return df
+
+
+def _load_wics_map() -> pd.DataFrame:
+    if not WICS_MAP_PATH.exists():
+        print(f"[panel][WARN] WICS map missing: {WICS_MAP_PATH}")
+        return pd.DataFrame()
+    w = pd.read_parquet(WICS_MAP_PATH).copy()
+    if w.empty:
+        print(f"[panel][WARN] WICS map empty: {WICS_MAP_PATH}")
+        return pd.DataFrame()
+    w["ticker"] = w["ticker"].astype(str).str.zfill(6)
+    for c in ["wics_major", "wics_mid"]:
+        if c not in w.columns:
+            w[c] = pd.NA
+    w = w[["ticker", "wics_major", "wics_mid"]].drop_duplicates(subset=["ticker"], keep="last")
+    print(f"[panel] WICS loaded: rows={len(w):,} file={WICS_MAP_PATH}")
+    return w
 
 
 def _clamp_dates(df: pd.DataFrame) -> pd.DataFrame:
@@ -156,27 +169,26 @@ def main():
     listings["name"] = listings.get("name", "").astype(str)
     listings["market"] = listings.get("market", "").astype(str)
 
+    wics = _load_wics_map()
+
     dart_std = _load_dart_standard()
     has_dart = not dart_std.empty
     if has_dart:
         print(f"[panel] DART standard loaded: rows={len(dart_std):,} file={DART_STANDARD_CSV}")
     else:
-        print(f"[panel][WARN] DART standard not found/empty -> will build panel without DART columns: {DART_STANDARD_CSV}")
+        print(f"[panel][WARN] DART standard not found/empty -> build panel without DART: {DART_STANDARD_CSV}")
 
     writer = None
     total_rows = 0
     tickers_written = 0
     tickers_skipped = 0
 
-    for i, r in listings.iterrows():
+    for _, r in listings.iterrows():
         ticker = r["ticker"]
-        name = r.get("name", "")
-        market = r.get("market", "")
+        name = r["name"]
+        market = r["market"]
 
         prices_path = PRICES_DIR / f"{ticker}.csv"
-        flows_path = CURATED_DIR / ticker / "flows_daily.parquet"
-        fund_path = CURATED_DIR / ticker / "fundamentals_daily.parquet"
-
         if not prices_path.exists():
             tickers_skipped += 1
             continue
@@ -191,26 +203,48 @@ def main():
             df = df_p.copy()
 
             # Merge flows (curated)
-            df_f = _read_parquet_if_exists(flows_path)
+            df_f = _read_parquet_if_exists(CURATED_DIR / ticker / "flows_daily.parquet")
             if not df_f.empty:
                 df = df.merge(df_f, on="date", how="left")
 
             # Merge fundamentals (curated)
-            df_u = _read_parquet_if_exists(fund_path)
+            df_u = _read_parquet_if_exists(CURATED_DIR / ticker / "fundamentals_daily.parquet")
             if not df_u.empty:
-                keep = [c for c in df_u.columns if c in ["date", "bps", "per", "pbr", "eps", "div", "dps"]]
+                keep = [c for c in ["date", "bps", "per", "pbr", "eps", "div", "dps"] if c in df_u.columns]
                 if "date" not in keep:
                     keep = ["date"]
                 df = df.merge(df_u[keep], on="date", how="left")
 
-            # Merge DART standard by asof join (last report <= date)
+            # Merge market cap (curated)
+            df["market_cap"] = pd.NA
+            df["shares"] = pd.NA
+            df["value"] = pd.NA
+            df_mc = _read_parquet_if_exists(CURATED_DIR / ticker / "market_cap_daily.parquet")
+            if not df_mc.empty:
+                keep_mc = [c for c in ["date", "market_cap", "shares", "value"] if c in df_mc.columns]
+                if "date" in keep_mc and len(keep_mc) > 1:
+                    df_mc = df_mc[keep_mc].drop_duplicates(subset=["date"], keep="last").sort_values("date")
+                    df = df.merge(df_mc, on="date", how="left", suffixes=("", "_mc"))
+                    for c in ["market_cap", "shares", "value"]:
+                        if f"{c}_mc" in df.columns and c in df.columns:
+                            df[c] = df[c].combine_first(df[f"{c}_mc"])
+                            df.drop(columns=[f"{c}_mc"], inplace=True)
+
+            # WICS (always create)
+            df["wics_major"] = pd.NA
+            df["wics_mid"] = pd.NA
+            if not wics.empty:
+                ww = wics[wics["ticker"] == ticker]
+                if not ww.empty:
+                    df["wics_major"] = ww["wics_major"].iloc[0]
+                    df["wics_mid"] = ww["wics_mid"].iloc[0]
+
+            # Merge DART standard by asof join
             if has_dart:
                 ds = dart_std[dart_std["ticker"] == ticker].copy()
                 if not ds.empty:
                     ds = ds.sort_values("asof_date")
                     left = df.sort_values("date").copy()
-
-                    # merge_asof expects both keys sorted
                     merged = pd.merge_asof(
                         left,
                         ds[["asof_date", "reprt_code", "revenue", "operating_income", "net_income", "equity", "roe"]].sort_values("asof_date"),
@@ -219,15 +253,18 @@ def main():
                         direction="backward",
                         allow_exact_matches=True,
                     )
-                    merged.rename(columns={
-                        "asof_date": "dart_asof_date",
-                        "reprt_code": "dart_reprt_code",
-                        "revenue": "dart_revenue",
-                        "operating_income": "dart_operating_income",
-                        "net_income": "dart_net_income",
-                        "equity": "dart_equity",
-                        "roe": "dart_roe",
-                    }, inplace=True)
+                    merged.rename(
+                        columns={
+                            "asof_date": "dart_asof_date",
+                            "reprt_code": "dart_reprt_code",
+                            "revenue": "dart_revenue",
+                            "operating_income": "dart_operating_income",
+                            "net_income": "dart_net_income",
+                            "equity": "dart_equity",
+                            "roe": "dart_roe",
+                        },
+                        inplace=True,
+                    )
                     df = merged
 
             # Add master columns
@@ -235,15 +272,20 @@ def main():
             df.insert(1, "name", name)
             df.insert(2, "market", market)
 
-            # Ensure dtypes
             df["date"] = pd.to_datetime(df["date"], errors="coerce")
             df = df.dropna(subset=["date"]).sort_values("date").reset_index(drop=True)
 
-            # Write batch
             table = pa.Table.from_pandas(df, preserve_index=False)
 
             if writer is None:
                 writer = pq.ParquetWriter(str(OUT_PARQUET), table.schema, compression=COMPRESSION)
+
+            if table.schema != writer.schema:
+                for field in writer.schema:
+                    if field.name not in table.column_names:
+                        table = table.append_column(field.name, pa.array([None] * table.num_rows, type=field.type))
+                keep_names = [f.name for f in writer.schema]
+                table = table.select(keep_names)
 
             writer.write_table(table)
             total_rows += len(df)
