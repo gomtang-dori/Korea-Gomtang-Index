@@ -1,0 +1,197 @@
+name: Stock MarketCap Backfill (Yearly cache 2022-2026 + Curate All)
+
+on:
+  workflow_dispatch:
+    inputs:
+      throttle_sec:
+        description: "Throttle seconds between PyKRX calls"
+        type: string
+        default: "0.20"
+      overwrite:
+        description: "Overwrite existing raw daily files (true/false)"
+        type: string
+        default: "false"
+      cache_namespace:
+        description: "Cache namespace (bump to reset, e.g., v1 -> v2)"
+        type: string
+        default: "v1"
+
+permissions:
+  contents: read
+
+jobs:
+  backfill_raw_by_year:
+    name: Backfill RAW marketcap (${{ matrix.year }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix:
+        year: [2022, 2023, 2024, 2025, 2026]
+
+    env:
+      PYTHONPATH: src
+
+      MARKETCAP_MODE: "range"
+      MARKETCAP_START_DATE: "${{ matrix.year }}0101"
+      MARKETCAP_END_DATE: "${{ matrix.year }}1231"
+      MARKETCAP_THROTTLE_SEC: ${{ inputs.throttle_sec }}
+      MARKETCAP_OVERWRITE: ${{ inputs.overwrite }}
+
+      MARKETCAP_OUT_DIR: "data/stocks/raw/market_cap_by_date"
+      MARKETCAP_COMPRESSION: "zstd"
+
+      MARKETCAP_CACHE_NS: ${{ inputs.cache_namespace }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+
+      - name: Install dependencies
+        run: |
+          pip install --quiet --no-input -U pip
+          pip install --quiet --no-input pandas pyarrow pykrx
+
+      # ----------------------------
+      # Restore RAW cache (YEAR namespace)
+      # ----------------------------
+      - name: Restore cache (RAW marketcap, year=${{ matrix.year }})
+        id: cache_restore_raw_year
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            data/stocks/raw/market_cap_by_date
+          key: marketcap-raw-${{ env.MARKETCAP_CACHE_NS }}-${{ github.ref_name }}-${{ matrix.year }}-${{ github.run_id }}
+          restore-keys: |
+            marketcap-raw-${{ env.MARKETCAP_CACHE_NS }}-${{ github.ref_name }}-${{ matrix.year }}-
+            marketcap-raw-${{ env.MARKETCAP_CACHE_NS }}-${{ matrix.year }}-
+
+      - name: Fetch market cap by date (range: year=${{ matrix.year }})
+        run: |
+          python src/stocks/fetch_market_cap_by_date.py
+
+      # ----------------------------
+      # Prune: keep only this year files before saving cache
+      # (important: year cache must contain ONLY that year)
+      # ----------------------------
+      - name: Prune RAW dir (keep only ${{ matrix.year }}*)
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          year = "${{ matrix.year }}"
+          raw = Path("data/stocks/raw/market_cap_by_date")
+          raw.mkdir(parents=True, exist_ok=True)
+          kept = 0
+          removed = 0
+          for p in raw.glob("*.parquet"):
+            if p.name.startswith(year):
+              kept += 1
+            else:
+              p.unlink(missing_ok=True)
+              removed += 1
+          print(f"[prune] year={year} kept={kept} removed={removed}")
+          PY
+          ls -lah data/stocks/raw/market_cap_by_date | head -50
+
+      # ----------------------------
+      # Save RAW cache (YEAR namespace)
+      # ----------------------------
+      - name: Save cache (RAW marketcap, year=${{ matrix.year }})
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            data/stocks/raw/market_cap_by_date
+          key: marketcap-raw-${{ env.MARKETCAP_CACHE_NS }}-${{ github.ref_name }}-${{ matrix.year }}-${{ github.run_id }}
+
+      # ----------------------------
+      # Upload RAW artifact (this run only)
+      # ----------------------------
+      - name: Upload RAW artifact (year=${{ matrix.year }})
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: marketcap-raw-${{ matrix.year }}
+          path: |
+            data/stocks/raw/market_cap_by_date
+          retention-days: 30
+          if-no-files-found: warn
+
+
+  curate_all_years:
+    name: Curate marketcap (merge all years -> per ticker)
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    needs: [backfill_raw_by_year]
+
+    env:
+      PYTHONPATH: src
+      MARKETCAP_RAW_DIR: "data/stocks/raw/market_cap_by_date"
+      MARKETCAP_CURATED_ROOT: "data/stocks/curated"
+      MARKETCAP_CURATE_OVERWRITE: "false"
+      MARKETCAP_CACHE_NS: ${{ inputs.cache_namespace }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+
+      - name: Install dependencies
+        run: |
+          pip install --quiet --no-input -U pip
+          pip install --quiet --no-input pandas pyarrow
+
+      # Download all year artifacts and merge into one raw dir
+      - name: Download RAW artifacts (2022-2026) and merge
+        uses: actions/download-artifact@v4
+        with:
+          pattern: marketcap-raw-*
+          path: data/stocks/raw/market_cap_by_date
+          merge-multiple: true
+
+      - name: Raw sanity check
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          raw = Path("data/stocks/raw/market_cap_by_date")
+          files = sorted([p.name for p in raw.glob("*.parquet")])
+          print("[raw] parquet files:", len(files))
+          print("[raw] first10:", files[:10])
+          print("[raw] last10:", files[-10:])
+          PY
+
+      - name: Curate market cap (per ticker, all years combined)
+        run: |
+          python src/stocks/curate_market_cap.py
+          python - <<'PY'
+          from pathlib import Path
+          curated = Path("data/stocks/curated")
+          cnt = sum(1 for x in curated.rglob("market_cap_daily.parquet"))
+          print("[curated] market_cap_daily.parquet files:", cnt)
+          PY
+
+      # Cache only curated (optional but useful)
+      - name: Save cache (CURATED marketcap combined)
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            data/stocks/curated
+          key: marketcap-curated-${{ env.MARKETCAP_CACHE_NS }}-${{ github.ref_name }}-${{ github.run_id }}
+
+      - name: Upload summary artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: marketcap-curate-summary
+          path: |
+            data/stocks/raw/market_cap_by_date
+          retention-days: 30
+          if-no-files-found: warn
