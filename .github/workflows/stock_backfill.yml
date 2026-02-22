@@ -73,12 +73,12 @@ jobs:
       PRICE_THROTTLE_SEC: "0.06"
 
       # flows
-      MAX_WORKERS_FLOWS: "7"
+      MAX_WORKERS_FLOWS: "8"
       KRX_FLOWS_SAVE_FORMAT: "parquet"
       KRX_RETRY: "3"
       KRX_NO_DATA_RETRY: "1"
       KRX_NO_DATA_SLEEP_BASE: "4.0"
-      KRX_THROTTLE_SEC: "0.13"
+      KRX_THROTTLE_SEC: "0.12"
       FLOW_APPEND_IF_EXISTS: "true"
 
       # fundamentals
