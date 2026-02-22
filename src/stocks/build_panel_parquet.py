@@ -66,6 +66,36 @@ def _read_prices(ticker: str) -> pd.DataFrame:
             df[c] = pd.NA
     return df[["date", "open", "high", "low", "close", "volume"]].copy()
 
+import re
+
+def _normalize_date_series(s: pd.Series) -> pd.Series:
+    x = s.astype(str).str.strip()
+
+    # case A) YYYY-MMDD  (e.g., 2026-0220)  -> YYYY-MM-DD
+    m = x.str.match(r"^\d{4}-\d{4}$", na=False)
+    if m.any():
+        tmp = x[m].str.replace("-", "", regex=False)  # YYYYMMDD
+        x.loc[m] = tmp.str.slice(0, 4) + "-" + tmp.str.slice(4, 6) + "-" + tmp.str.slice(6, 8)
+
+    # case B) YYYYMMDD -> YYYY-MM-DD
+    m = x.str.match(r"^\d{8}$", na=False)
+    if m.any():
+        x.loc[m] = x[m].str.slice(0, 4) + "-" + x[m].str.slice(4, 6) + "-" + x[m].str.slice(6, 8)
+
+    return x
+
+def _read_prices_csv(path: Path) -> pd.DataFrame:
+    df = pd.read_csv(path, encoding="utf-8-sig")
+    if "date" not in df.columns:
+        df.rename(columns={df.columns[0]: "date"}, inplace=True)
+
+    # ✅ robust date parsing
+    df["date"] = _normalize_date_series(df["date"])
+    df["date"] = pd.to_datetime(df["date"], errors="coerce")
+
+    # ... 나머지 기존 로직 동일 ...
+
+
 def _read_parquet_if_exists(p: Path) -> pd.DataFrame:
     if not p.exists():
         return pd.DataFrame()
