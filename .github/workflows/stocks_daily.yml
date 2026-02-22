@@ -13,6 +13,7 @@ on:
 permissions:
   contents: write
   issues: write
+  actions: write
 
 concurrency:
   group: stocks-daily-${{ github.ref_name }}
@@ -27,33 +28,26 @@ jobs:
       INCREMENTAL_MODE: "true"
       INCREMENTAL_DAYS: ${{ inputs.incremental_days || '10' }}
 
-      # ✅ namespaces (bump to reset poisoned cache)
       STOCKS_BACKFILL_CACHE_NS: "v2"
       STOCKS_DAILY_CACHE_NS: "v2"
 
-      # sanity thresholds (as requested)
       MIN_PRICE_FILES: "2500"
       MIN_FLOWS_CURATED_FILES: "2000"
       MIN_FUND_CURATED_FILES: "2000"
 
-      # 안정 세팅(보수적으로)
       MAX_WORKERS: "10"
       MAX_WORKERS_FLOWS: "3"
       MAX_WORKERS_FUNDAMENTALS: "6"
       KRX_THROTTLE_SEC: "0.15"
 
-      # curate 옵션
       FLOW_INCLUDE_BUYSELL: "true"
 
-      # panel build
       PANEL_SCOPE: "5y"
       DART_STD_PATH: "docs/stocks/dart_standard_2015_2026.csv"
       PANEL_PARQUET_COMPRESSION: "zstd"
       PANEL_DAILY_PATH: "data/stocks/mart/panel_daily.parquet"
-
       PANEL_COL_CHECK_TXT: "docs/stocks/panel_cols_check.txt"
 
-      # marketcap recent update (daily)
       MARKETCAP_MODE: "recent"
       MARKETCAP_TRADING_DAYS: "15"
       MARKETCAP_MAX_BACKTRACK_DAYS: "40"
@@ -83,13 +77,8 @@ jobs:
       - name: Install dependencies
         run: |
           pip install --quiet --no-input -U pip
-          # ✅ openpyxl 포함 (WICS 엑셀 읽기)
           pip install --quiet --no-input pandas pyarrow requests pykrx tabulate openpyxl
-          python -c "import openpyxl; print('openpyxl=', openpyxl.__version__)"
 
-      # ------------------------------------------------------------
-      # 캐시 복원 (backfill -> daily)
-      # ------------------------------------------------------------
       - name: Restore cache (prefer backfill)
         id: cache_restore_backfill
         uses: actions/cache/restore@v4
@@ -125,9 +114,6 @@ jobs:
             stocks-daily-${{ env.STOCKS_DAILY_CACHE_NS }}-${{ github.ref_name }}-
             stocks-daily-${{ env.STOCKS_DAILY_CACHE_NS }}-
 
-      # ------------------------------------------------------------
-      # ✅ 반드시: marketcap-curated bundle restore + apply
-      # ------------------------------------------------------------
       - name: Restore cache (marketcap-curated bundle)
         id: cache_restore_marketcap_curated
         uses: actions/cache/restore@v4
@@ -145,13 +131,11 @@ jobs:
           python - <<'PY'
           from pathlib import Path
           import shutil
-
           bundle = Path("data/stocks/cache/marketcap_curated")
           dst_root = Path("data/stocks/curated")
           if not bundle.exists():
             print("[marketcap-bundle] bundle not found (first run is OK):", bundle)
             raise SystemExit(0)
-
           n = 0
           for p in bundle.rglob("market_cap_daily.parquet"):
             rel = p.relative_to(bundle)
@@ -176,48 +160,39 @@ jobs:
           def count_rglob(p: Path, name: str):
             if not p.exists(): return 0
             return sum(1 for _ in p.rglob(name))
-
           print("[precheck] raw prices csv files =", count_glob(Path("data/stocks/raw/prices"), "*.csv"))
           print("[precheck] curated flows_daily =", count_rglob(Path("data/stocks/curated"), "flows_daily.parquet"))
           print("[precheck] curated fundamentals_daily =", count_rglob(Path("data/stocks/curated"), "fundamentals_daily.parquet"))
           print("[precheck] curated market_cap_daily =", count_rglob(Path("data/stocks/curated"), "market_cap_daily.parquet"))
           PY
 
-      # ✅ Fail-fast gate: 캐시 복원이 망가졌으면 daily는 진행하지 않음(오염 방지)
       - name: Sanity gate (prices/flows/fund coverage)
         id: sanity
         run: |
           python - <<'PY'
           import os
           from pathlib import Path
-
           def count_glob(p: Path, pat: str):
             if not p.exists(): return 0
             return len(list(p.glob(pat)))
-
           def count_rglob(p: Path, name: str):
             if not p.exists(): return 0
             return sum(1 for _ in p.rglob(name))
-
           n_price = count_glob(Path("data/stocks/raw/prices"), "*.csv")
           n_flows_cur = count_rglob(Path("data/stocks/curated"), "flows_daily.parquet")
           n_fund_cur  = count_rglob(Path("data/stocks/curated"), "fundamentals_daily.parquet")
-
           min_price = int(os.environ["MIN_PRICE_FILES"])
           min_flows = int(os.environ["MIN_FLOWS_CURATED_FILES"])
           min_fund  = int(os.environ["MIN_FUND_CURATED_FILES"])
-
           print(f"[sanity] price_csv_files={n_price} (min={min_price})")
           print(f"[sanity] flows_curated_files={n_flows_cur} (min={min_flows})")
           print(f"[sanity] fund_curated_files={n_fund_cur} (min={min_fund})")
-
           if n_price < min_price:
             raise SystemExit("[sanity] TOO_FEW_PRICES -> STOP (run stock_backfill v2)")
           if n_flows_cur < min_flows:
-            raise SystemExit("[sanity] TOO_FEW_FLOWS_CURATED -> STOP (run curate/backfill v2)")
+            raise SystemExit("[sanity] TOO_FEW_FLOWS_CURATED -> STOP (run stock_backfill v2)")
           if n_fund_cur < min_fund:
-            raise SystemExit("[sanity] TOO_FEW_FUND_CURATED -> STOP (run curate/backfill v2)")
-
+            raise SystemExit("[sanity] TOO_FEW_FUND_CURATED -> STOP (run stock_backfill v2)")
           print("[sanity] OK")
           PY
 
@@ -256,13 +231,11 @@ jobs:
           python - <<'PY'
           from pathlib import Path
           import shutil
-
           src_root = Path("data/stocks/curated")
           out_root = Path("data/stocks/cache/marketcap_curated")
           if out_root.exists():
             shutil.rmtree(out_root)
           out_root.mkdir(parents=True, exist_ok=True)
-
           n = 0
           for p in src_root.rglob("market_cap_daily.parquet"):
             rel = p.relative_to(src_root)
@@ -309,45 +282,6 @@ jobs:
         run: |
           python src/stocks/check_panel_cols.py "${PANEL_DAILY_PATH}" | tee "${PANEL_COL_CHECK_TXT}"
 
-      - name: Create GitHub Issue when panel column check fails
-        if: failure()
-        uses: actions/github-script@v7
-        with:
-          script: |
-            const fs = require("fs");
-            const path = process.env.PANEL_COL_CHECK_TXT || "docs/stocks/panel_cols_check.txt";
-            let log = "";
-            try { log = fs.readFileSync(path, "utf8"); } catch (e) { log = "(no panel_cols_check.txt found)"; }
-            log = log.slice(0, 6000);
-
-            const runUrl = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
-            await github.rest.issues.create({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              title: `panel_daily 컬럼 체크 실패: ${context.workflow} #${context.runNumber}`,
-              body: `Run: ${runUrl}\n\n` + "```text\n" + log + "\n```\n",
-              labels: ["data-quality", "panel", "automation"]
-            });
-
-      - name: Upload panel column check log (artifact, retention 30d)
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: panel-cols-check
-          path: |
-            ${{ env.PANEL_COL_CHECK_TXT }}
-          retention-days: 30
-          if-no-files-found: warn
-
-      - name: Compute features
-        run: python src/stocks/compute_features.py
-
-      - name: Render stock report
-        run: python src/stocks/render_stock_report.py
-
-      - name: Export summary CSVs
-        run: python src/stocks/export_data_summary.py
-
       - name: Save cache (prices/flows/fund/marketcap/raw+curated/analysis) ✅ only when sanity OK
         if: ${{ success() && steps.sanity.outcome == 'success' }}
         uses: actions/cache/save@v4
@@ -368,7 +302,6 @@ jobs:
           set -euo pipefail
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-
           git add docs/stocks || true
           git diff --cached --quiet && echo "No docs changes" && exit 0
           git commit -m "stocks daily: update docs"
