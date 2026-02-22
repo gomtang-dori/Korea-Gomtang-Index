@@ -162,7 +162,17 @@ jobs:
         run: |
           python src/stocks/build_panel_parquet.py
           ls -lh "${PANEL_DAILY_PATH}" || true
-        # panel 생성 스크립트 참고 [Source](https://raw.githubusercontent.com/gomtang-dori/Korea-Gomtang-Index/main/src/stocks/build_panel_parquet.py)
+
+      # ✅ daily에서도 panel parquet를 아티팩트로 업로드 (30일 보관)
+      - name: Upload panel_daily.parquet (artifact, retention 30d)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: panel-daily-parquet
+          path: |
+            ${{ env.PANEL_DAILY_PATH }}
+          retention-days: 30
+          if-no-files-found: warn
 
       # health check도 panel_daily를 검사하도록 PANEL_PATH 지정
       - name: Verify panel health (5y, file=panel_daily)
@@ -170,7 +180,6 @@ jobs:
           PANEL_SCOPE: "5y"
           PANEL_PATH: ${{ env.PANEL_DAILY_PATH }}
         run: python src/stocks/verify_panel_health.py
-        # verify 스크립트 참고 [Source](https://raw.githubusercontent.com/gomtang-dori/Korea-Gomtang-Index/main/src/stocks/verify_panel_health.py)
 
       # ------------------------------------------------------------
       # Panel column check (auto-generate script + run)
@@ -253,7 +262,7 @@ jobs:
             const path = process.env.PANEL_COL_CHECK_TXT || "docs/stocks/panel_cols_check.txt";
             let log = "";
             try { log = fs.readFileSync(path, "utf8"); } catch (e) { log = "(no panel_cols_check.txt found)"; }
-            log = log.slice(0, 6000); // 너무 길면 잘라서 이슈 본문 제한 방지
+            log = log.slice(0, 6000);
 
             const runUrl = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
             const title = `panel_daily 컬럼 체크 실패: ${context.workflow} #${context.runNumber}`;
@@ -277,7 +286,7 @@ jobs:
               labels: ["data-quality", "panel", "automation"]
             });
 
-      - name: Upload panel column check log (artifact)
+      - name: Upload panel column check log (artifact, retention 30d)
         if: always()
         uses: actions/upload-artifact@v4
         with:
@@ -311,14 +320,18 @@ jobs:
             docs/stocks/dart_standard_*.csv
           key: stocks-daily-v1-${{ github.ref_name }}-${{ github.run_id }}
 
-      - name: Commit & push (panel_daily + docs)
+      # ✅ docs만 커밋 (panel_daily.parquet는 커밋하지 않음)
+      - name: Commit & push (docs only)
         run: |
+          set -euo pipefail
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
-          git add "${PANEL_DAILY_PATH}" || true
           git add docs/stocks || true
 
-          git diff --cached --quiet && echo "No changes" && exit 0
-          git commit -m "stocks daily: update panel_daily + docs"
+          # 안전장치: 혹시 패널이 stage에 올라가면 제거
+          git restore --staged "${PANEL_DAILY_PATH}" 2>/dev/null || true
+
+          git diff --cached --quiet && echo "No docs changes" && exit 0
+          git commit -m "stocks daily: update docs"
           git push
