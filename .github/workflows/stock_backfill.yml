@@ -113,12 +113,18 @@ jobs:
         with:
           path: |
             data/stocks/master
-            data/stocks/raw
+            data/stocks/raw/prices
+            data/stocks/raw/krx_flows
+            data/stocks/raw/fundamentals
+            data/stocks/raw/market_cap_by_date
+            data/stocks/raw/dart
             data/stocks/curated
+            docs/stocks/dart_standard_*.csv
           key: stocks-backfill-${{ env.STOCKS_BACKFILL_CACHE_NS }}-${{ github.ref_name }}-${{ github.run_id }}
           restore-keys: |
             stocks-backfill-${{ env.STOCKS_BACKFILL_CACHE_NS }}-${{ github.ref_name }}-
             stocks-backfill-${{ env.STOCKS_BACKFILL_CACHE_NS }}-
+
 
       - name: "[cleanup] Remove derived outputs (optional)"
         if: ${{ inputs.clean_derived }}
@@ -230,8 +236,14 @@ jobs:
         with:
           path: |
             data/stocks/master
-            data/stocks/raw
+            data/stocks/raw/prices
+            data/stocks/raw/krx_flows
+            data/stocks/raw/fundamentals
+            data/stocks/raw/market_cap_by_date
+            data/stocks/raw/dart
             data/stocks/curated
+            docs/stocks/dart_standard_*.csv
+
           key: stocks-backfill-${{ env.STOCKS_BACKFILL_CACHE_NS }}-${{ github.ref_name }}-${{ github.run_id }}
           restore-keys: |
             stocks-backfill-${{ env.STOCKS_BACKFILL_CACHE_NS }}-${{ github.ref_name }}-
@@ -416,6 +428,11 @@ jobs:
         with:
           path: |
             data/stocks/master
-            data/stocks/raw
+            data/stocks/raw/prices
+            data/stocks/raw/krx_flows
+            data/stocks/raw/fundamentals
+            data/stocks/raw/market_cap_by_date
+            data/stocks/raw/dart
             data/stocks/curated
+            docs/stocks/dart_standard_*.csv
           key: stocks-backfill-${{ env.STOCKS_BACKFILL_CACHE_NS }}-${{ github.ref_name }}-${{ github.run_id }}
