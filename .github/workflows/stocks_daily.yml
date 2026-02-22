@@ -64,6 +64,13 @@ jobs:
         with:
           lfs: true
 
+      - name: Ensure cache directories exist (core)
+        run: |
+          mkdir -p data/stocks/master
+          mkdir -p data/stocks/raw/prices data/stocks/raw/krx_flows data/stocks/raw/fundamentals
+          mkdir -p data/stocks/curated
+          mkdir -p docs/stocks
+
       - name: Install git-lfs
         run: |
           sudo apt-get update -qq
@@ -79,35 +86,33 @@ jobs:
           pip install --quiet --no-input -U pip
           pip install --quiet --no-input pandas pyarrow requests pykrx tabulate openpyxl
 
-      - name: Restore cache (prefer backfill)
+      - name: Restore cache (prefer backfill)  # ✅ core paths unified
         id: cache_restore_backfill
         uses: actions/cache/restore@v4
         with:
           path: |
+            data/stocks/master
             data/stocks/raw/prices
             data/stocks/raw/krx_flows
             data/stocks/raw/fundamentals
-            data/stocks/raw/market_cap_by_date
             data/stocks/curated
-            data/stocks/analysis
             docs/stocks/dart_standard_*.csv
           key: stocks-backfill-${{ env.STOCKS_BACKFILL_CACHE_NS }}-${{ github.ref_name }}-${{ github.run_id }}
           restore-keys: |
             stocks-backfill-${{ env.STOCKS_BACKFILL_CACHE_NS }}-${{ github.ref_name }}-
             stocks-backfill-${{ env.STOCKS_BACKFILL_CACHE_NS }}-
 
-      - name: Restore cache (fallback daily)
+      - name: Restore cache (fallback daily)  # ✅ core paths unified
         if: ${{ steps.cache_restore_backfill.outputs.cache-hit != 'true' }}
         id: cache_restore_daily
         uses: actions/cache/restore@v4
         with:
           path: |
+            data/stocks/master
             data/stocks/raw/prices
             data/stocks/raw/krx_flows
             data/stocks/raw/fundamentals
-            data/stocks/raw/market_cap_by_date
             data/stocks/curated
-            data/stocks/analysis
             docs/stocks/dart_standard_*.csv
           key: stocks-daily-${{ env.STOCKS_DAILY_CACHE_NS }}-${{ github.ref_name }}-${{ github.run_id }}
           restore-keys: |
@@ -163,7 +168,6 @@ jobs:
           print("[precheck] raw prices csv files =", count_glob(Path("data/stocks/raw/prices"), "*.csv"))
           print("[precheck] curated flows_daily =", count_rglob(Path("data/stocks/curated"), "flows_daily.parquet"))
           print("[precheck] curated fundamentals_daily =", count_rglob(Path("data/stocks/curated"), "fundamentals_daily.parquet"))
-          print("[precheck] curated market_cap_daily =", count_rglob(Path("data/stocks/curated"), "market_cap_daily.parquet"))
           PY
 
       - name: Sanity gate (prices/flows/fund coverage)
@@ -172,27 +176,34 @@ jobs:
           python - <<'PY'
           import os
           from pathlib import Path
+
           def count_glob(p: Path, pat: str):
             if not p.exists(): return 0
             return len(list(p.glob(pat)))
+
           def count_rglob(p: Path, name: str):
             if not p.exists(): return 0
             return sum(1 for _ in p.rglob(name))
+
           n_price = count_glob(Path("data/stocks/raw/prices"), "*.csv")
           n_flows_cur = count_rglob(Path("data/stocks/curated"), "flows_daily.parquet")
           n_fund_cur  = count_rglob(Path("data/stocks/curated"), "fundamentals_daily.parquet")
+
           min_price = int(os.environ["MIN_PRICE_FILES"])
           min_flows = int(os.environ["MIN_FLOWS_CURATED_FILES"])
           min_fund  = int(os.environ["MIN_FUND_CURATED_FILES"])
+
           print(f"[sanity] price_csv_files={n_price} (min={min_price})")
           print(f"[sanity] flows_curated_files={n_flows_cur} (min={min_flows})")
           print(f"[sanity] fund_curated_files={n_fund_cur} (min={min_fund})")
+
           if n_price < min_price:
             raise SystemExit("[sanity] TOO_FEW_PRICES -> STOP (run stock_backfill v2)")
           if n_flows_cur < min_flows:
             raise SystemExit("[sanity] TOO_FEW_FLOWS_CURATED -> STOP (run stock_backfill v2)")
           if n_fund_cur < min_fund:
             raise SystemExit("[sanity] TOO_FEW_FUND_CURATED -> STOP (run stock_backfill v2)")
+
           print("[sanity] OK")
           PY
 
@@ -282,17 +293,16 @@ jobs:
         run: |
           python src/stocks/check_panel_cols.py "${PANEL_DAILY_PATH}" | tee "${PANEL_COL_CHECK_TXT}"
 
-      - name: Save cache (prices/flows/fund/marketcap/raw+curated/analysis) ✅ only when sanity OK
+      - name: Save cache (daily core) ✅ only when sanity OK  # ✅ core paths unified
         if: ${{ success() && steps.sanity.outcome == 'success' }}
         uses: actions/cache/save@v4
         with:
           path: |
+            data/stocks/master
             data/stocks/raw/prices
             data/stocks/raw/krx_flows
             data/stocks/raw/fundamentals
-            data/stocks/raw/market_cap_by_date
             data/stocks/curated
-            data/stocks/analysis
             docs/stocks/dart_standard_*.csv
           key: stocks-daily-${{ env.STOCKS_DAILY_CACHE_NS }}-${{ github.ref_name }}-${{ github.run_id }}
 
