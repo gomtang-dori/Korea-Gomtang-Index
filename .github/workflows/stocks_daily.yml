@@ -15,7 +15,6 @@ permissions:
   contents: write
   issues: write
 
-# 동시에 여러 번 돌아가며 커밋/캐시 충돌 나는 것을 방지
 concurrency:
   group: stocks-daily-${{ github.ref_name }}
   cancel-in-progress: true
@@ -29,25 +28,28 @@ jobs:
       INCREMENTAL_MODE: "true"
       INCREMENTAL_DAYS: ${{ inputs.incremental_days || '10' }}
 
-      # 안정 설정(보수적으로)
       MAX_WORKERS: "10"
       MAX_WORKERS_FLOWS: "3"
       MAX_WORKERS_FUNDAMENTALS: "6"
       KRX_THROTTLE_SEC: "0.15"
 
-      # curate 옵션(스크립트 기본값도 존재)
       FLOW_INCLUDE_BUYSELL: "true"
 
-      # panel build
       PANEL_SCOPE: "5y"
       DART_STD_PATH: "docs/stocks/dart_standard_2015_2026.csv"
       PANEL_PARQUET_COMPRESSION: "zstd"
 
-      # 단일 패널 파일
       PANEL_DAILY_PATH: "data/stocks/mart/panel_daily.parquet"
-
-      # panel column-check output
       PANEL_COL_CHECK_TXT: "docs/stocks/panel_cols_check.txt"
+
+      # marketcap recent update
+      MARKETCAP_MODE: "recent"
+      MARKETCAP_TRADING_DAYS: "15"
+      MARKETCAP_MAX_BACKTRACK_DAYS: "40"
+      MARKETCAP_THROTTLE_SEC: "0.20"
+      MARKETCAP_OVERWRITE: "false"
+      MARKETCAP_OUT_DIR: "data/stocks/raw/market_cap_by_date"
+      MARKETCAP_COMPRESSION: "zstd"
 
     steps:
       - uses: actions/checkout@v4
@@ -69,9 +71,6 @@ jobs:
           pip install --quiet --no-input -U pip
           pip install --quiet --no-input pandas pyarrow requests pykrx tabulate
 
-      # ------------------------------------------------------------
-      # 캐시 복원 (우선 backfill 캐시 → 없으면 daily 캐시)
-      # ------------------------------------------------------------
       - name: Restore cache (prefer backfill)
         id: cache_restore_backfill
         uses: actions/cache/restore@v4
@@ -80,6 +79,7 @@ jobs:
             data/stocks/raw/prices
             data/stocks/raw/krx_flows
             data/stocks/raw/fundamentals
+            data/stocks/raw/market_cap_by_date
             data/stocks/curated
             data/stocks/analysis
             docs/stocks/dart_standard_*.csv
@@ -99,6 +99,7 @@ jobs:
             data/stocks/raw/prices
             data/stocks/raw/krx_flows
             data/stocks/raw/fundamentals
+            data/stocks/raw/market_cap_by_date
             data/stocks/curated
             data/stocks/analysis
             docs/stocks/dart_standard_*.csv
@@ -106,30 +107,6 @@ jobs:
           restore-keys: |
             stocks-daily-v1-${{ github.ref_name }}-
             stocks-daily-v1-
-
-      - name: Cache precheck summary
-        if: always()
-        run: |
-          echo "[cache] backfill hit? -> ${{ steps.cache_restore_backfill.outputs.cache-hit }}"
-          echo "[cache] daily hit?    -> ${{ steps.cache_restore_daily.outputs.cache-hit }}"
-          python - <<'PY'
-          from pathlib import Path
-          def count_files(p: Path, glob_pat: str):
-            if not p.exists():
-              return 0
-            return sum(1 for _ in p.rglob(glob_pat))
-          prices = Path("data/stocks/raw/prices")
-          flows  = Path("data/stocks/raw/krx_flows")
-          fund   = Path("data/stocks/raw/fundamentals")
-          curated= Path("data/stocks/curated")
-          docs   = Path("docs/stocks")
-          print("[precheck] prices_csv_files =", count_files(prices, "*.csv"))
-          print("[precheck] flows_parquet_files =", count_files(flows, "*.parquet"))
-          print("[precheck] fundamentals_parquet_files =", count_files(fund, "*.parquet"))
-          print("[precheck] curated_flows_daily =", count_files(curated, "flows_daily.parquet"))
-          print("[precheck] curated_fundamentals_daily =", count_files(curated, "fundamentals_daily.parquet"))
-          print("[precheck] dart_standard_csv =", count_files(docs, "dart_standard_*.csv"))
-          PY
 
       - name: Fetch listings (master)
         env:
@@ -151,10 +128,15 @@ jobs:
       - name: Curate fundamentals
         run: python src/stocks/curate_fundamentals.py
 
-      # ------------------------------------------------------------
-      # 단일 패널 생성: panel_daily.parquet 로 통일 (내용은 5y 스코프 유지)
-      # build_panel_parquet.py 는 PANEL_OUT_PATH로 출력 경로 override 가능
-      # ------------------------------------------------------------
+      - name: Build WICS map (wics_map.parquet)
+        run: python src/stocks/build_wics_map.py
+
+      - name: Fetch market cap by date (recent)
+        run: python src/stocks/fetch_market_cap_by_date.py
+
+      - name: Curate market cap (per ticker)
+        run: python src/stocks/curate_market_cap.py
+
       - name: Build panel parquet (5y scope -> panel_daily.parquet)
         env:
           PANEL_SCOPE: "5y"
@@ -163,7 +145,6 @@ jobs:
           python src/stocks/build_panel_parquet.py
           ls -lh "${PANEL_DAILY_PATH}" || true
 
-      # ✅ daily에서도 panel parquet를 아티팩트로 업로드 (30일 보관)
       - name: Upload panel_daily.parquet (artifact, retention 30d)
         if: always()
         uses: actions/upload-artifact@v4
@@ -174,82 +155,13 @@ jobs:
           retention-days: 30
           if-no-files-found: warn
 
-      # health check도 panel_daily를 검사하도록 PANEL_PATH 지정
       - name: Verify panel health (5y, file=panel_daily)
         env:
           PANEL_SCOPE: "5y"
           PANEL_PATH: ${{ env.PANEL_DAILY_PATH }}
         run: python src/stocks/verify_panel_health.py
 
-      # ------------------------------------------------------------
-      # Panel column check (auto-generate script + run)
-      # - FUND/FLOW: 항상 필수 (없거나 ALL_NAN이면 FAIL)
-      # - DART: dart_standard CSV가 "존재할 때만" 필수(없으면 SKIP 처리)
-      # ------------------------------------------------------------
-      - name: Write check_panel_cols.py
-        run: |
-          mkdir -p src/stocks docs/stocks
-          cat > src/stocks/check_panel_cols.py << 'PY'
-          #!/usr/bin/env python3
-          import os, sys, pandas as pd
-          import pyarrow.parquet as pq
-
-          p = sys.argv[1] if len(sys.argv) > 1 else "data/stocks/mart/panel_daily.parquet"
-          out_txt = os.getenv("PANEL_COL_CHECK_TXT", "docs/stocks/panel_cols_check.txt")
-          dart_std = os.getenv("DART_STD_PATH", "docs/stocks/dart_standard_2015_2026.csv")
-
-          req = {
-            "DART": ["dart_revenue","dart_operating_income","dart_net_income","dart_equity","dart_roe"],
-            "FUND": ["bps","per","pbr","eps","div","dps"],
-            "FLOW": ["foreign_value_net","inst_value_net","pension_value_net","fininv_value_net"],
-          }
-
-          pf = pq.ParquetFile(p)
-          schema = set(pf.schema.names)
-          want = sum(req.values(), [])
-          have = [c for c in want if c in schema]
-          df = pd.read_parquet(p, columns=have) if have else pd.DataFrame()
-
-          dart_required = os.path.exists(dart_std) and os.path.getsize(dart_std) > 0
-          lines = []
-          lines.append(f"[panel-check] file={p}")
-          lines.append(f"[panel-check] rows={pf.metadata.num_rows:,} cols={len(schema):,}")
-          lines.append(f"[panel-check] dart_required={dart_required} (dart_std={dart_std})")
-
-          bad = []
-          for g, cols in req.items():
-            lines.append("")
-            lines.append(f"== {g} ==")
-            for c in cols:
-              if c not in schema:
-                lines.append(f"- {c}: MISSING")
-                if g != "DART" or dart_required:
-                  bad.append((g, c, "MISSING"))
-                continue
-              s = df[c]
-              nn = int(s.notna().sum())
-              allna = (nn == 0)
-              pct = (nn / len(df) * 100) if len(df) else 0.0
-              lines.append(f"- {c}: OK  nonnull={nn:,} ({pct:.1f}%)  all_nan={allna}")
-              if allna and (g != "DART" or dart_required):
-                bad.append((g, c, "ALL_NAN"))
-
-          os.makedirs(os.path.dirname(out_txt), exist_ok=True)
-          with open(out_txt, "w", encoding="utf-8") as f:
-            f.write("\n".join(lines) + "\n")
-
-          print("\n".join(lines))
-          if bad:
-            print("\n[panel-check] FAIL:", bad)
-            sys.exit(1)
-          print("\n[panel-check] PASS")
-          PY
-          chmod +x src/stocks/check_panel_cols.py
-
-      - name: Check panel_daily columns (required cols & not-all-NaN)
-        env:
-          PANEL_COL_CHECK_TXT: ${{ env.PANEL_COL_CHECK_TXT }}
-          DART_STD_PATH: ${{ env.DART_STD_PATH }}
+      - name: Check panel_daily columns
         run: |
           python src/stocks/check_panel_cols.py "${PANEL_DAILY_PATH}" | tee "${PANEL_COL_CHECK_TXT}"
 
@@ -263,26 +175,14 @@ jobs:
             let log = "";
             try { log = fs.readFileSync(path, "utf8"); } catch (e) { log = "(no panel_cols_check.txt found)"; }
             log = log.slice(0, 6000);
-
             const runUrl = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
-            const title = `panel_daily 컬럼 체크 실패: ${context.workflow} #${context.runNumber}`;
-            const body =
-              `Run: ${runUrl}\n\n` +
-              `panel_daily.parquet 컬럼 체크에서 (컬럼 누락 또는 전체 NaN) 문제가 감지되었습니다.\n\n` +
-              `---\n` +
-              `체크 로그(앞부분):\n` +
-              "```text\n" + log + "\n```\n" +
-              `---\n` +
-              `권장 점검:\n` +
-              `- raw prices 존재 여부 (없으면 ticker 자체가 패널에서 빠짐)\n` +
-              `- curated flows/fundamentals 존재 여부 (없으면 값이 NaN이거나 컬럼 자체가 누락될 수 있음)\n` +
-              `- DART 표준 CSV(docs/stocks/dart_standard_2015_2026.csv) 존재 여부\n`;
-
             await github.rest.issues.create({
               owner: context.repo.owner,
               repo: context.repo.repo,
-              title,
-              body,
+              title: `panel_daily 컬럼 체크 실패: ${context.workflow} #${context.runNumber}`,
+              body:
+                `Run: ${runUrl}\n\n` +
+                "```text\n" + log + "\n```\n",
               labels: ["data-quality", "panel", "automation"]
             });
 
@@ -296,7 +196,6 @@ jobs:
           retention-days: 30
           if-no-files-found: warn
 
-      # 아래부터는 기존 daily 후처리 파이프라인
       - name: Compute features
         run: python src/stocks/compute_features.py
 
@@ -306,8 +205,7 @@ jobs:
       - name: Export summary CSVs
         run: python src/stocks/export_data_summary.py
 
-      # 캐시 저장(실패하더라도 항상)
-      - name: Save cache (prices/flows/fund/curated/analysis)
+      - name: Save cache (prices/flows/fund/marketcap/curated/analysis)
         if: always()
         uses: actions/cache/save@v4
         with:
@@ -315,12 +213,12 @@ jobs:
             data/stocks/raw/prices
             data/stocks/raw/krx_flows
             data/stocks/raw/fundamentals
+            data/stocks/raw/market_cap_by_date
             data/stocks/curated
             data/stocks/analysis
             docs/stocks/dart_standard_*.csv
           key: stocks-daily-v1-${{ github.ref_name }}-${{ github.run_id }}
 
-      # ✅ docs만 커밋 (panel_daily.parquet는 커밋하지 않음)
       - name: Commit & push (docs only)
         run: |
           set -euo pipefail
@@ -328,10 +226,6 @@ jobs:
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
           git add docs/stocks || true
-
-          # 안전장치: 혹시 패널이 stage에 올라가면 제거
-          git restore --staged "${PANEL_DAILY_PATH}" 2>/dev/null || true
-
           git diff --cached --quiet && echo "No docs changes" && exit 0
           git commit -m "stocks daily: update docs"
           git push
