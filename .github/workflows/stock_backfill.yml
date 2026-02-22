@@ -61,7 +61,6 @@ jobs:
     env:
       PYTHONPATH: src
       SAMPLE_MODE: "false"
-
       STOCKS_BACKFILL_CACHE_NS: ${{ inputs.cache_namespace }}
 
       # prices
@@ -98,6 +97,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Ensure cache directories exist (core)
+        run: |
+          mkdir -p data/stocks/master
+          mkdir -p data/stocks/raw/prices data/stocks/raw/krx_flows data/stocks/raw/fundamentals
+          mkdir -p data/stocks/curated
+          mkdir -p docs/stocks
+
       - uses: actions/setup-python@v5
         with:
           python-version: "3.10"
@@ -107,7 +113,7 @@ jobs:
           pip install --quiet --no-input -U pip
           pip install --quiet --no-input pandas pyarrow pykrx requests tabulate tqdm
 
-      - name: Restore cache (seed)
+      - name: Restore cache (seed)  # ✅ core paths unified
         id: cache_restore
         uses: actions/cache/restore@v4
         with:
@@ -116,15 +122,12 @@ jobs:
             data/stocks/raw/prices
             data/stocks/raw/krx_flows
             data/stocks/raw/fundamentals
-            data/stocks/raw/market_cap_by_date
-            data/stocks/raw/dart
             data/stocks/curated
             docs/stocks/dart_standard_*.csv
           key: stocks-backfill-${{ env.STOCKS_BACKFILL_CACHE_NS }}-${{ github.ref_name }}-${{ github.run_id }}
           restore-keys: |
             stocks-backfill-${{ env.STOCKS_BACKFILL_CACHE_NS }}-${{ github.ref_name }}-
             stocks-backfill-${{ env.STOCKS_BACKFILL_CACHE_NS }}-
-
 
       - name: "[cleanup] Remove derived outputs (optional)"
         if: ${{ inputs.clean_derived }}
@@ -221,6 +224,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Ensure cache directories exist (core)
+        run: |
+          mkdir -p data/stocks/master
+          mkdir -p data/stocks/raw/prices data/stocks/raw/krx_flows data/stocks/raw/fundamentals
+          mkdir -p data/stocks/curated
+          mkdir -p docs/stocks
+
       - uses: actions/setup-python@v5
         with:
           python-version: "3.10"
@@ -230,7 +240,7 @@ jobs:
           pip install --quiet --no-input -U pip
           pip install --quiet --no-input pandas pyarrow tabulate tqdm
 
-      - name: Restore cache (seed canonical raw/curated)
+      - name: Restore cache (seed canonical raw/curated)  # ✅ core paths unified
         id: cache_restore
         uses: actions/cache/restore@v4
         with:
@@ -239,11 +249,8 @@ jobs:
             data/stocks/raw/prices
             data/stocks/raw/krx_flows
             data/stocks/raw/fundamentals
-            data/stocks/raw/market_cap_by_date
-            data/stocks/raw/dart
             data/stocks/curated
             docs/stocks/dart_standard_*.csv
-
           key: stocks-backfill-${{ env.STOCKS_BACKFILL_CACHE_NS }}-${{ github.ref_name }}-${{ github.run_id }}
           restore-keys: |
             stocks-backfill-${{ env.STOCKS_BACKFILL_CACHE_NS }}-${{ github.ref_name }}-
@@ -270,7 +277,6 @@ jobs:
           YEARS = [2022, 2023, 2024, 2025, 2026]
 
           def iter_year_dirs(kind: str):
-            # actions/download-artifact 구조에 맞춰 광범위 탐색
             for y in YEARS:
               pattern = f"raw-year-{y}/**/data/stocks/raw_year/{kind}/{y}"
               for h in ART_ROOT.glob(pattern):
@@ -371,7 +377,6 @@ jobs:
           print("fund files  :", len(list(FUND_CAN.glob("*.parquet"))))
           PY
 
-      # ✅ backfill에서 curated 생성(패널 마트/데일리 sanity 통과를 위해 필수)
       - name: Curate flows & fundamentals (build curated for v2 cache)
         run: |
           python src/stocks/curate_flows.py
@@ -422,7 +427,7 @@ jobs:
           print("[sanity] OK")
           PY
 
-      - name: Save cache (canonical raw + curated) ✅ only when sanity OK
+      - name: Save cache (canonical raw + curated) ✅ only when sanity OK  # ✅ core paths unified
         if: ${{ success() && steps.sanity.outcome == 'success' }}
         uses: actions/cache/save@v4
         with:
@@ -431,8 +436,6 @@ jobs:
             data/stocks/raw/prices
             data/stocks/raw/krx_flows
             data/stocks/raw/fundamentals
-            data/stocks/raw/market_cap_by_date
-            data/stocks/raw/dart
             data/stocks/curated
             docs/stocks/dart_standard_*.csv
           key: stocks-backfill-${{ env.STOCKS_BACKFILL_CACHE_NS }}-${{ github.ref_name }}-${{ github.run_id }}
