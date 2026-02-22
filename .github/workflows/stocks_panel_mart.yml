@@ -47,23 +47,32 @@ jobs:
     env:
       PYTHONPATH: src
 
+      # cache namespaces (bump to reset)
       STOCKS_PANEL_CACHE_NS: "v1"
       STOCKS_BACKFILL_CACHE_NS: "v1"
+      MARKETCAP_CACHE_NS: "v1"
 
+      # inputs
       SAMPLE_MODE: ${{ github.event.inputs.sample_mode || 'false' }}
       SAMPLE_SIZE: ${{ github.event.inputs.sample_size || '200' }}
       RUN_CURATIONS: ${{ github.event.inputs.run_curations || 'false' }}
 
+      # DART curate -> full-range standard csv (curate를 돌릴 때만 의미)
       DART_STANDARD_FULL_RANGE: "true"
       DART_STANDARD_FULL_YEAR_FROM: ${{ github.event.inputs.dart_standard_full_from || '2015' }}
       DART_STANDARD_FULL_YEAR_TO: ${{ github.event.inputs.dart_standard_full_to || '2026' }}
 
+      # panel clamp
       PANEL_START_DATE: ${{ github.event.inputs.panel_start_date || '' }}
       PANEL_END_DATE: ${{ github.event.inputs.panel_end_date || '' }}
 
+      # output paths
       PANEL_OUT_PARQUET: data/stocks/mart/panel_daily.parquet
       BACKFILL_STATUS_CSV: docs/stocks/backfill_status.csv
       BACKFILL_STATUS_MD: docs/stocks/backfill_status.md
+
+      # marketcap curated bundle
+      MARKETCAP_CURATED_BUNDLE_DIR: data/stocks/cache/marketcap_curated
 
     steps:
       - uses: actions/checkout@v4
@@ -78,6 +87,9 @@ jobs:
           pip install --quiet --no-input pandas pyarrow requests pykrx tabulate
           python -c "import tabulate; print('tabulate=', tabulate.__version__)"
 
+      # ============================================================
+      # (1) Prefer restoring cache produced by stock_backfill.yml
+      # ============================================================
       - name: Restore cache (prefer stocks-backfill)
         id: cache_restore_backfill
         uses: actions/cache/restore@v4
@@ -95,6 +107,9 @@ jobs:
             stocks-backfill-${{ env.STOCKS_BACKFILL_CACHE_NS }}-${{ github.ref_name }}-
             stocks-backfill-${{ env.STOCKS_BACKFILL_CACHE_NS }}-
 
+      # ============================================================
+      # (2) Fallback: restore panel_mart cache
+      # ============================================================
       - name: Restore cache (fallback stocks-panel-mart)
         if: ${{ steps.cache_restore_backfill.outputs.cache-hit != 'true' }}
         id: cache_restore_panel
@@ -113,16 +128,21 @@ jobs:
             stocks-panel-mart-${{ env.STOCKS_PANEL_CACHE_NS }}-${{ github.ref_name }}-
             stocks-panel-mart-${{ env.STOCKS_PANEL_CACHE_NS }}-
 
+      # ============================================================
+      # (3) MUST: Restore marketcap-curated bundle cache + apply to curated
+      # - This ensures market_cap_daily.parquet exists under data/stocks/curated/{ticker}/
+      # - If missing, RUN_CURATIONS=true can regenerate from raw (if raw exists)
+      # ============================================================
       - name: Restore cache (marketcap-curated bundle)
         id: cache_restore_marketcap_curated
         uses: actions/cache/restore@v4
         with:
           path: |
-            data/stocks/cache/marketcap_curated
-          key: marketcap-curated-v1-${{ github.ref_name }}-${{ github.run_id }}
+            ${{ env.MARKETCAP_CURATED_BUNDLE_DIR }}
+          key: marketcap-curated-${{ env.MARKETCAP_CACHE_NS }}-${{ github.ref_name }}-${{ github.run_id }}
           restore-keys: |
-            marketcap-curated-v1-${{ github.ref_name }}-
-            marketcap-curated-v1-
+            marketcap-curated-${{ env.MARKETCAP_CACHE_NS }}-${{ github.ref_name }}-
+            marketcap-curated-${{ env.MARKETCAP_CACHE_NS }}-
 
       - name: Apply marketcap-curated bundle -> data/stocks/curated
         if: always()
@@ -133,20 +153,40 @@ jobs:
 
           bundle = Path("data/stocks/cache/marketcap_curated")
           dst_root = Path("data/stocks/curated")
+
           if not bundle.exists():
-            print("[marketcap-bundle] bundle not found:", bundle)
+            print("[marketcap-bundle] bundle not found (OK if first run / will rely on RUN_CURATIONS=true):", bundle)
             raise SystemExit(0)
 
           n = 0
           for p in bundle.rglob("market_cap_daily.parquet"):
-            rel = p.relative_to(bundle)
+            rel = p.relative_to(bundle)  # {ticker}/market_cap_daily.parquet
             dst = dst_root / rel
             dst.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(p, dst)
             n += 1
+
           print(f"[marketcap-bundle] applied_files={n}")
           PY
 
+      - name: Cache precheck summary
+        if: always()
+        run: |
+          echo "[cache] backfill hit? -> ${{ steps.cache_restore_backfill.outputs.cache-hit }}"
+          echo "[cache] panel hit?    -> ${{ steps.cache_restore_panel.outputs.cache-hit }}"
+          echo "[cache] marketcap-curated hit? -> ${{ steps.cache_restore_marketcap_curated.outputs.cache-hit }}"
+          python - <<'PY'
+          from pathlib import Path
+          def count_files(p: Path, glob_pat: str):
+            if not p.exists():
+              return 0
+            return sum(1 for _ in p.rglob(glob_pat))
+
+          print("[precheck] raw marketcap_by_date =", count_files(Path("data/stocks/raw/market_cap_by_date"), "*.parquet"))
+          print("[precheck] curated market_cap_daily =", count_files(Path("data/stocks/curated"), "market_cap_daily.parquet"))
+          print("[precheck] curated flows_daily =", count_files(Path("data/stocks/curated"), "flows_daily.parquet"))
+          print("[precheck] curated fundamentals_daily =", count_files(Path("data/stocks/curated"), "fundamentals_daily.parquet"))
+          PY
 
       - name: Fetch listings (KOSPI+KOSDAQ)
         run: |
@@ -161,6 +201,11 @@ jobs:
       - name: Build WICS map (wics_map.parquet)
         run: python src/stocks/build_wics_map.py
 
+      # ============================================================
+      # Optional curations
+      # - If RUN_CURATIONS=true, we refresh curated flows/fundamentals/dart/marketcap from raw
+      # - This does NOT conflict with the marketcap bundle apply above; it can only improve/overwrite
+      # ============================================================
       - name: Curate (flows/fundamentals/dart/marketcap) - optional
         if: ${{ env.RUN_CURATIONS == 'true' }}
         continue-on-error: true
