@@ -26,12 +26,19 @@ PEG_WINDOWS_DEFAULT = [20, 40]
 
 
 def _winsorize_by_date(s: pd.Series, ql: float, qh: float) -> pd.Series:
+  # NOTE: ql/qh are within [0,1]
     if s.dropna().empty:
         return s
     lo = s.quantile(ql)
     hi = s.quantile(qh)
     return s.clip(lo, hi)
 
+def _min_periods(window: int, target: int) -> int:
+    """
+    Pandas rolling constraint: min_periods must be <= window.
+    Also min_periods must be >= 1.
+    """
+    return max(1, min(int(window), int(target)))
 
 def _safe_log1p(x: pd.Series) -> pd.Series:
     return np.log1p(x.clip(lower=0))
@@ -129,14 +136,16 @@ def main():
         df[f"logret_{w}d"] = np.log(df["close"]) - np.log(g["close"].shift(w))
 
         # moving average / gap
-        ma = g["close"].rolling(w, min_periods=max(2, w // 3)).mean().reset_index(level=0, drop=True)
+        mp = _min_periods(w, max(2, w // 3))
+        ma = g["close"].rolling(w, min_periods=mp).mean().reset_index(level=0, drop=True)      
         df[f"ma_{w}d"] = ma
         df[f"ma_gap_{w}d"] = df["close"] / ma - 1.0
 
     # Volatility based on ret_1d
     for w in windows:
-        df[f"vol_{w}d"] = g["ret_1d"].rolling(w, min_periods=max(5, w // 2)).std().reset_index(level=0, drop=True)
-
+        mp = _min_periods(w, max(5, w // 2))
+        df[f"vol_{w}d"] = g["ret_1d"].rolling(w, min_periods=mp).std().reset_index(level=0, drop=True)
+      
     # Liquidity features
     df["log_value"] = _safe_log1p(df["value"])
     if "volume" in df.columns:
@@ -146,14 +155,17 @@ def main():
 
     # value rolling sums/means for normalization & filter
     for w in windows:
-        df[f"value_{w}d_sum"] = g["value"].rolling(w, min_periods=max(5, w // 2)).sum().reset_index(level=0, drop=True)
-        df[f"value_{w}d_mean"] = g["value"].rolling(w, min_periods=max(5, w // 2)).mean().reset_index(level=0, drop=True)
-
+        mp = _min_periods(w, max(5, w // 2))
+        df[f"value_{w}d_sum"] = g["value"].rolling(w, min_periods=mp).sum().reset_index(level=0, drop=True)
+        df[f"value_{w}d_mean"] = g["value"].rolling(w, min_periods=mp).mean().reset_index(level=0, drop=True)
+  
     # turnover
     if "shares" in df.columns and "volume" in df.columns:
         df["turnover_1d"] = df["volume"] / df["shares"]
         for w in windows:
-            df[f"turnover_{w}d_mean"] = g["turnover_1d"].rolling(w, min_periods=max(5, w // 2)).mean().reset_index(level=0, drop=True)
+            mp = _min_periods(w, max(5, w // 2))
+            df[f"turnover_{w}d_mean"] = g["turnover_1d"].rolling(w, min_periods=mp).mean().reset_index(level=0, drop=True)
+  
     else:
         df["turnover_1d"] = np.nan
         for w in windows:
@@ -162,15 +174,18 @@ def main():
     # Amihud
     df["amihud_1d"] = (df["ret_1d"].abs() / df["value"]).replace([np.inf, -np.inf], np.nan)
     for w in windows:
-        df[f"amihud_{w}d"] = g["amihud_1d"].rolling(w, min_periods=max(5, w // 2)).mean().reset_index(level=0, drop=True)
-
+        mp = _min_periods(w, max(5, w // 2))
+        df[f"amihud_{w}d"] = g["amihud_1d"].rolling(w, min_periods=mp).mean().reset_index(level=0, drop=True)
+      
     # Flows: compute rolling sums & normalized flows (independent of curate windows)
     flow_investors = ["foreign", "inst", "pension", "fininv"]
     for inv in flow_investors:
         base = f"{inv}_value_net"
         if base in df.columns:
             for w in windows:
-                df[f"{inv}_value_net_{w}d_sum"] = g[base].rolling(w, min_periods=max(5, w // 2)).sum().reset_index(level=0, drop=True)
+                mp = _min_periods(w, max(5, w // 2))
+                df[f"{inv}_value_net_{w}d_sum"] = g[base].rolling(w, min_periods=mp).sum().reset_index(level=0, drop=True)              
+              
                 # normalized by value sum
                 df[f"{inv}_net_to_value_{w}d"] = df[f"{inv}_value_net_{w}d_sum"] / df[f"value_{w}d_sum"]
         else:
