@@ -1,0 +1,12 @@
+{
+  "period": "2025-01-01~2026-12-31",
+  "top_k_each_market": 5,
+  "holding_days": 20,
+  "roundtrip_cost": 0.003,
+  "trades": 2750,
+  "avg_ret_net": 0.046730228915570236,
+  "med_ret_net": -0.0015333182562246583,
+  "hit_up20_rate": 0.20036363636363635,
+  "hit_pos_rate": 0.46545454545454545,
+  "cum_ret_net_entry_day": 29759.493755949276
+}
