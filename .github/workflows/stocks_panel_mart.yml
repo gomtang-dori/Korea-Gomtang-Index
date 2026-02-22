@@ -47,17 +47,22 @@ jobs:
     env:
       PYTHONPATH: src
 
-      # cache namespaces (bump to reset)
-      STOCKS_PANEL_CACHE_NS: "v1"
-      STOCKS_BACKFILL_CACHE_NS: "v1"
+      # ✅ cache namespaces (bump to reset poisoned cache)
+      STOCKS_PANEL_CACHE_NS: "v2"
+      STOCKS_BACKFILL_CACHE_NS: "v2"
       MARKETCAP_CACHE_NS: "v1"
+
+      # sanity thresholds (as requested)
+      MIN_PRICE_FILES: "2500"
+      MIN_FLOWS_CURATED_FILES: "2000"
+      MIN_FUND_CURATED_FILES: "2000"
 
       # inputs
       SAMPLE_MODE: ${{ github.event.inputs.sample_mode || 'false' }}
       SAMPLE_SIZE: ${{ github.event.inputs.sample_size || '200' }}
       RUN_CURATIONS: ${{ github.event.inputs.run_curations || 'false' }}
 
-      # DART curate -> full-range standard csv (curate를 돌릴 때만 의미)
+      # DART full-range standard csv (curate를 돌릴 때만 의미)
       DART_STANDARD_FULL_RANGE: "true"
       DART_STANDARD_FULL_YEAR_FROM: ${{ github.event.inputs.dart_standard_full_from || '2015' }}
       DART_STANDARD_FULL_YEAR_TO: ${{ github.event.inputs.dart_standard_full_to || '2026' }}
@@ -85,12 +90,9 @@ jobs:
         run: |
           pip install --quiet --no-input -U pip
           pip install --quiet --no-input pandas pyarrow requests pykrx tabulate openpyxl
-          python -c "import tabulate; print('tabulate=', tabulate.__version__)"
           python -c "import openpyxl; print('openpyxl=', openpyxl.__version__)"
 
-      # ============================================================
       # (1) Prefer restoring cache produced by stock_backfill.yml
-      # ============================================================
       - name: Restore cache (prefer stocks-backfill)
         id: cache_restore_backfill
         uses: actions/cache/restore@v4
@@ -108,9 +110,7 @@ jobs:
             stocks-backfill-${{ env.STOCKS_BACKFILL_CACHE_NS }}-${{ github.ref_name }}-
             stocks-backfill-${{ env.STOCKS_BACKFILL_CACHE_NS }}-
 
-      # ============================================================
       # (2) Fallback: restore panel_mart cache
-      # ============================================================
       - name: Restore cache (fallback stocks-panel-mart)
         if: ${{ steps.cache_restore_backfill.outputs.cache-hit != 'true' }}
         id: cache_restore_panel
@@ -129,9 +129,7 @@ jobs:
             stocks-panel-mart-${{ env.STOCKS_PANEL_CACHE_NS }}-${{ github.ref_name }}-
             stocks-panel-mart-${{ env.STOCKS_PANEL_CACHE_NS }}-
 
-      # ============================================================
       # (3) MUST: Restore marketcap-curated bundle cache + apply to curated
-      # ============================================================
       - name: Restore cache (marketcap-curated bundle)
         id: cache_restore_marketcap_curated
         uses: actions/cache/restore@v4
@@ -154,7 +152,7 @@ jobs:
           dst_root = Path("data/stocks/curated")
 
           if not bundle.exists():
-            print("[marketcap-bundle] bundle not found (OK if first run / will rely on RUN_CURATIONS=true):", bundle)
+            print("[marketcap-bundle] bundle not found:", bundle)
             raise SystemExit(0)
 
           n = 0
@@ -176,15 +174,59 @@ jobs:
           echo "[cache] marketcap-curated hit? -> ${{ steps.cache_restore_marketcap_curated.outputs.cache-hit }}"
           python - <<'PY'
           from pathlib import Path
-          def count_files(p: Path, glob_pat: str):
-            if not p.exists():
-              return 0
-            return sum(1 for _ in p.rglob(glob_pat))
 
-          print("[precheck] raw marketcap_by_date =", count_files(Path("data/stocks/raw/market_cap_by_date"), "*.parquet"))
-          print("[precheck] curated market_cap_daily =", count_files(Path("data/stocks/curated"), "market_cap_daily.parquet"))
-          print("[precheck] curated flows_daily =", count_files(Path("data/stocks/curated"), "flows_daily.parquet"))
-          print("[precheck] curated fundamentals_daily =", count_files(Path("data/stocks/curated"), "fundamentals_daily.parquet"))
+          def count_glob(p: Path, pat: str):
+            if not p.exists(): return 0
+            return len(list(p.glob(pat)))
+
+          def count_rglob(p: Path, name: str):
+            if not p.exists(): return 0
+            return sum(1 for _ in p.rglob(name))
+
+          print("[precheck] raw prices csv files =", count_glob(Path("data/stocks/raw/prices"), "*.csv"))
+          print("[precheck] raw krx_flows parquet =", count_glob(Path("data/stocks/raw/krx_flows"), "*.parquet"))
+          print("[precheck] raw fundamentals parquet =", count_glob(Path("data/stocks/raw/fundamentals"), "*.parquet"))
+          print("[precheck] curated flows_daily =", count_rglob(Path("data/stocks/curated"), "flows_daily.parquet"))
+          print("[precheck] curated fundamentals_daily =", count_rglob(Path("data/stocks/curated"), "fundamentals_daily.parquet"))
+          print("[precheck] curated market_cap_daily =", count_rglob(Path("data/stocks/curated"), "market_cap_daily.parquet"))
+          PY
+
+      # ✅ Fail-fast gate (prevents tiny panel + prevents cache poisoning)
+      - name: Sanity gate (prices/flows/fund coverage)
+        id: sanity
+        run: |
+          python - <<'PY'
+          import os
+          from pathlib import Path
+
+          def count_glob(p: Path, pat: str):
+            if not p.exists(): return 0
+            return len(list(p.glob(pat)))
+
+          def count_rglob(p: Path, name: str):
+            if not p.exists(): return 0
+            return sum(1 for _ in p.rglob(name))
+
+          n_price = count_glob(Path("data/stocks/raw/prices"), "*.csv")
+          n_flows_cur = count_rglob(Path("data/stocks/curated"), "flows_daily.parquet")
+          n_fund_cur  = count_rglob(Path("data/stocks/curated"), "fundamentals_daily.parquet")
+
+          min_price = int(os.environ["MIN_PRICE_FILES"])
+          min_flows = int(os.environ["MIN_FLOWS_CURATED_FILES"])
+          min_fund  = int(os.environ["MIN_FUND_CURATED_FILES"])
+
+          print(f"[sanity] price_csv_files={n_price} (min={min_price})")
+          print(f"[sanity] flows_curated_files={n_flows_cur} (min={min_flows})")
+          print(f"[sanity] fund_curated_files={n_fund_cur} (min={min_fund})")
+
+          if n_price < min_price:
+            raise SystemExit("[sanity] TOO_FEW_PRICES -> STOP (run stock_backfill v2)")
+          if n_flows_cur < min_flows:
+            raise SystemExit("[sanity] TOO_FEW_FLOWS_CURATED -> STOP (curate missing or cache poisoned)")
+          if n_fund_cur < min_fund:
+            raise SystemExit("[sanity] TOO_FEW_FUND_CURATED -> STOP (curate missing or cache poisoned)")
+
+          print("[sanity] OK")
           PY
 
       - name: Fetch listings (KOSPI+KOSDAQ)
@@ -200,9 +242,6 @@ jobs:
       - name: Build WICS map (wics_map.parquet)
         run: python src/stocks/build_wics_map.py
 
-      # ============================================================
-      # Optional curations
-      # ============================================================
       - name: Curate (flows/fundamentals/dart/marketcap) - optional
         if: ${{ env.RUN_CURATIONS == 'true' }}
         continue-on-error: true
@@ -223,8 +262,8 @@ jobs:
           python src/stocks/report_backfill_status.py
           ls -lh docs/stocks/backfill_status.*
 
-      - name: Save cache (panel_mart)
-        if: always()
+      - name: Save cache (panel_mart) ✅ only when sanity OK
+        if: ${{ success() && steps.sanity.outcome == 'success' }}
         uses: actions/cache/save@v4
         with:
           path: |
