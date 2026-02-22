@@ -169,9 +169,31 @@ def main():
 
     X = df[feat_cols].copy()
 
-    # simple impute
+    # ---------------- Robust numeric cleaning + impute ----------------
+    # 1) make sure numeric
+    X = X.apply(pd.to_numeric, errors="coerce")
+
+    # 2) replace inf/-inf -> NaN
+    X = X.replace([np.inf, -np.inf], np.nan)
+
+    # 3) median impute, but handle all-NaN columns
     med = X.median(numeric_only=True)
+    # for columns where median is NaN (all-NaN), fill median with 0.0
+    med = med.fillna(0.0)
     X = X.fillna(med)
+
+    # Optional: drop columns that are still all-NaN after coercion (safety)
+    # (should be none after med.fillna(0), but keep for defense)
+    all_nan_cols = X.columns[X.isna().all()].tolist()
+    if all_nan_cols:
+        X = X.drop(columns=all_nan_cols)
+        feat_cols = [c for c in feat_cols if c not in all_nan_cols]
+
+    # Final guard: LogisticRegression cannot take NaN
+    n_na = int(X.isna().sum().sum())
+    if n_na > 0:
+        bad = X.columns[X.isna().any()].tolist()[:20]
+        raise ValueError(f"[train] X still contains NaN: n_na={n_na}, example_cols={bad}")
 
     # time split: train(2022-2023), valid(2024)
     valid_start = pd.to_datetime("2024-01-01")
