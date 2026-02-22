@@ -1,0 +1,247 @@
+name: Stocks ML Weekly (features + rules/model + backtest + reports)
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 5 * * 6"  # 매주 토요일 14:00 KST (UTC 05:00)
+
+permissions:
+  contents: write
+  actions: write
+
+jobs:
+  ml_weekly:
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+
+    env:
+      PYTHONPATH: src
+
+      # cache namespaces
+      STOCKS_BACKFILL_CACHE_NS: "v2"
+      MARKETCAP_CACHE_NS: "v1"
+      ML_MODELS_CACHE_NS: "v1"
+
+      # sanity (same as panel)
+      MIN_PRICE_FILES: "2500"
+      MIN_FLOWS_CURATED_FILES: "2000"
+      MIN_FUND_CURATED_FILES: "2000"
+
+      # universe filter
+      MIN_MKTCAP: "300000000000"     # 3000억
+      MIN_VALUE20: "1000000000"      # 10억
+
+      # ml
+      TOP_K: "5"
+      HOLDING_DAYS: "20"
+      ROUNDTRIP_COST: "0.003"
+
+      MARKETCAP_CURATED_BUNDLE_DIR: "data/stocks/cache/marketcap_curated"
+      PANEL_OUT_PARQUET: "data/stocks/mart/panel_daily.parquet"
+
+      FEATURES_PATH: "data/stocks/features/features_daily.parquet"
+      LABELS_PATH: "data/stocks/features/labels_daily.parquet"
+      MODEL_DIR: "data/stocks/ml_models/up20_20d"
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Ensure directories
+        run: |
+          mkdir -p data/stocks/master
+          mkdir -p data/stocks/raw/prices data/stocks/raw/krx_flows data/stocks/raw/fundamentals
+          mkdir -p data/stocks/curated
+          mkdir -p data/stocks/mart
+          mkdir -p data/stocks/features
+          mkdir -p data/stocks/ml_models
+          mkdir -p docs/stocks/ml docs/stocks/reports
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+
+      - name: Install dependencies
+        run: |
+          pip install --quiet --no-input -U pip
+          pip install --quiet --no-input numpy pandas pyarrow requests pykrx tabulate tqdm openpyxl scikit-learn joblib
+
+      - name: Restore cache (prefer stocks-backfill)
+        id: cache_restore_backfill
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            data/stocks/master
+            data/stocks/raw/prices
+            data/stocks/raw/krx_flows
+            data/stocks/raw/fundamentals
+            data/stocks/curated
+            docs/stocks/dart_standard_*.csv
+          key: stocks-backfill-${{ env.STOCKS_BACKFILL_CACHE_NS }}-${{ github.ref_name }}-${{ github.run_id }}
+          restore-keys: |
+            stocks-backfill-${{ env.STOCKS_BACKFILL_CACHE_NS }}-${{ github.ref_name }}-
+            stocks-backfill-${{ env.STOCKS_BACKFILL_CACHE_NS }}-
+
+      - name: Restore cache (marketcap-curated bundle)
+        id: cache_restore_marketcap_curated
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            ${{ env.MARKETCAP_CURATED_BUNDLE_DIR }}
+          key: marketcap-curated-${{ env.MARKETCAP_CACHE_NS }}-${{ github.ref_name }}-${{ github.run_id }}
+          restore-keys: |
+            marketcap-curated-${{ env.MARKETCAP_CACHE_NS }}-${{ github.ref_name }}-
+            marketcap-curated-${{ env.MARKETCAP_CACHE_NS }}-
+
+      - name: Restore cache (ML models)
+        id: cache_restore_ml
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            data/stocks/ml_models
+          key: stocks-ml-models-${{ env.ML_MODELS_CACHE_NS }}-${{ github.ref_name }}-${{ github.run_id }}
+          restore-keys: |
+            stocks-ml-models-${{ env.ML_MODELS_CACHE_NS }}-${{ github.ref_name }}-
+            stocks-ml-models-${{ env.ML_MODELS_CACHE_NS }}-
+
+      - name: Apply marketcap-curated bundle -> data/stocks/curated
+        if: always()
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import shutil
+          bundle = Path("data/stocks/cache/marketcap_curated")
+          dst_root = Path("data/stocks/curated")
+          if not bundle.exists():
+            print("[marketcap-bundle] bundle not found:", bundle)
+            raise SystemExit(0)
+          n = 0
+          for p in bundle.rglob("market_cap_daily.parquet"):
+            rel = p.relative_to(bundle)
+            dst = dst_root / rel
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(p, dst)
+            n += 1
+          print(f"[marketcap-bundle] applied_files={n}")
+          PY
+
+      - name: Sanity gate (raw prices + curated flows/fund)
+        id: sanity
+        run: |
+          python - <<'PY'
+          import os
+          from pathlib import Path
+          def count_glob(p: Path, pat: str):
+            if not p.exists(): return 0
+            return len(list(p.glob(pat)))
+          def count_rglob(p: Path, name: str):
+            if not p.exists(): return 0
+            return sum(1 for _ in p.rglob(name))
+          n_price = count_glob(Path("data/stocks/raw/prices"), "*.csv")
+          n_flows = count_rglob(Path("data/stocks/curated"), "flows_daily.parquet")
+          n_fund  = count_rglob(Path("data/stocks/curated"), "fundamentals_daily.parquet")
+          min_price = int(os.environ["MIN_PRICE_FILES"])
+          min_flows = int(os.environ["MIN_FLOWS_CURATED_FILES"])
+          min_fund  = int(os.environ["MIN_FUND_CURATED_FILES"])
+          print(f"[sanity] price_csv_files={n_price} (min={min_price})")
+          print(f"[sanity] flows_curated_files={n_flows} (min={min_flows})")
+          print(f"[sanity] fund_curated_files={n_fund} (min={min_fund})")
+          if n_price < min_price: raise SystemExit("TOO_FEW_PRICES")
+          if n_flows < min_flows: raise SystemExit("TOO_FEW_FLOWS_CURATED")
+          if n_fund  < min_fund:  raise SystemExit("TOO_FEW_FUND_CURATED")
+          print("[sanity] OK")
+          PY
+
+      - name: Fetch listings (FULL)
+        env:
+          SAMPLE_MODE: "false"
+          SAMPLE_SIZE: "99999"
+        run: python -u src/stocks/fetch_listings.py
+
+      - name: Build WICS map
+        run: python -u src/stocks/build_wics_map.py
+
+      - name: Build merged panel parquet (panel_daily.parquet)
+        run: |
+          python -u src/stocks/build_panel_merged.py
+          ls -lh "${PANEL_OUT_PARQUET}"
+
+      - name: Build ML features/labels (full)
+        run: |
+          python -u src/stocks/build_ml_features.py \
+            --panel_path "${PANEL_OUT_PARQUET}" \
+            --out_features "${FEATURES_PATH}" \
+            --out_labels "${LABELS_PATH}" \
+            --min_mktcap "${MIN_MKTCAP}" \
+            --min_value20 "${MIN_VALUE20}"
+          ls -lh "${FEATURES_PATH}" "${LABELS_PATH}"
+
+      - name: Train rules+model (2022-2024, UP20@20d)
+        run: |
+          python -u src/stocks/train_rules_and_model_2022_2024.py \
+            --features_path "${FEATURES_PATH}" \
+            --labels_path "${LABELS_PATH}" \
+            --out_dir "${MODEL_DIR}" \
+            --top_global_rules 10 \
+            --top_sector_rules 5 \
+            --shrink_K 500
+          ls -lh "${MODEL_DIR}"
+
+      - name: Backtest (2025-2026, TOP5/TOP5, 20d hold, close entry, 0.3% RT cost)
+        run: |
+          python -u src/stocks/backtest_2025_2026_top5_top5.py \
+            --features_path "${FEATURES_PATH}" \
+            --labels_path "${LABELS_PATH}" \
+            --model_dir "${MODEL_DIR}" \
+            --top_k "${TOP_K}" \
+            --holding_days "${HOLDING_DAYS}" \
+            --roundtrip_cost "${ROUNDTRIP_COST}" \
+            --out_dir "docs/stocks/ml"
+          ls -lh docs/stocks/ml
+
+      - name: Render daily TOP5/TOP5 report (latest date)
+        run: |
+          python -u src/stocks/render_daily_top5_report.py \
+            --features_path "${FEATURES_PATH}" \
+            --model_dir "${MODEL_DIR}" \
+            --top_k "${TOP_K}" \
+            --out_html "docs/stocks/reports/daily_top5_top5.html" \
+            --out_csv "docs/stocks/reports/daily_top5_top5.csv"
+          python -u src/stocks/render_top10_deep_report.py \
+            --top_csv "docs/stocks/reports/daily_top5_top5.csv" \
+            --out_html "docs/stocks/reports/top10_deep_report.html"
+          ls -lh docs/stocks/reports
+
+      - name: Save cache (ML models) ✅ only when sanity OK
+        if: ${{ success() && steps.sanity.outcome == 'success' }}
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            data/stocks/ml_models
+          key: stocks-ml-models-${{ env.ML_MODELS_CACHE_NS }}-${{ github.ref_name }}-${{ github.run_id }}
+
+      - name: Upload ML artifacts (reports + model)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: stocks-ml-weekly
+          path: |
+            docs/stocks/ml
+            docs/stocks/reports
+            data/stocks/ml_models/up20_20d/config.json
+            data/stocks/ml_models/up20_20d/train_log.json
+            data/stocks/ml_models/up20_20d/rules_global.json
+            data/stocks/ml_models/up20_20d/rules_sector.json
+            data/stocks/ml_models/up20_20d/base_rate_sector_size_train_2022_2024.csv
+          retention-days: 30
+          if-no-files-found: warn
+
+      - name: Commit & push (docs only)
+        if: ${{ success() && steps.sanity.outcome == 'success' }}
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add docs/stocks || true
+          git diff --cached --quiet && echo "No docs changes" && exit 0
+          git commit -m "stocks ml weekly: update reports"
+          git push
