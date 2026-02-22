@@ -71,7 +71,7 @@ jobs:
             marketcap-raw-${{ env.MARKETCAP_CACHE_NS }}-${{ github.ref_name }}-${{ matrix.year }}-
             marketcap-raw-${{ env.MARKETCAP_CACHE_NS }}-${{ matrix.year }}-
 
-      - name: Fetch market cap by date (range: year=${{ matrix.year }})
+      - name: Fetch market cap by date (range year=${{ matrix.year }})
         run: |
           python src/stocks/fetch_market_cap_by_date.py
 
