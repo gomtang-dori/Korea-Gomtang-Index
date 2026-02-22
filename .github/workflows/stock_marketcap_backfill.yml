@@ -1,4 +1,4 @@
-name: Stock MarketCap Backfill (Yearly cache 2022-2026 + Curate All)
+name: Stock MarketCap Backfill (Yearly RAW cache 2022-2026 + Curate + marketcap-curated cache)
 
 on:
   workflow_dispatch:
@@ -34,6 +34,7 @@ jobs:
     env:
       PYTHONPATH: src
 
+      # fetch script mode
       MARKETCAP_MODE: "range"
       MARKETCAP_START_DATE: "${{ matrix.year }}0101"
       MARKETCAP_END_DATE: "${{ matrix.year }}1231"
@@ -57,9 +58,7 @@ jobs:
           pip install --quiet --no-input -U pip
           pip install --quiet --no-input pandas pyarrow pykrx
 
-      # ----------------------------
-      # Restore RAW cache (YEAR namespace)
-      # ----------------------------
+      # 1) YEAR별 RAW 캐시 복원
       - name: Restore cache (RAW marketcap, year=${{ matrix.year }})
         id: cache_restore_raw_year
         uses: actions/cache/restore@v4
@@ -71,14 +70,12 @@ jobs:
             marketcap-raw-${{ env.MARKETCAP_CACHE_NS }}-${{ github.ref_name }}-${{ matrix.year }}-
             marketcap-raw-${{ env.MARKETCAP_CACHE_NS }}-${{ matrix.year }}-
 
-      - name: Fetch market cap by date (range year=${{ matrix.year }})
+      # 2) 해당 연도 range 수집
+      - name: Fetch market cap by date (range: year=${{ matrix.year }})
         run: |
           python src/stocks/fetch_market_cap_by_date.py
 
-      # ----------------------------
-      # Prune: keep only this year files before saving cache
-      # (important: year cache must contain ONLY that year)
-      # ----------------------------
+      # 3) 캐시 저장 전에 "해당 연도 파일만" 남기기(중요)
       - name: Prune RAW dir (keep only ${{ matrix.year }}*)
         run: |
           python - <<'PY'
@@ -86,6 +83,7 @@ jobs:
           year = "${{ matrix.year }}"
           raw = Path("data/stocks/raw/market_cap_by_date")
           raw.mkdir(parents=True, exist_ok=True)
+
           kept = 0
           removed = 0
           for p in raw.glob("*.parquet"):
@@ -98,9 +96,7 @@ jobs:
           PY
           ls -lah data/stocks/raw/market_cap_by_date | head -50
 
-      # ----------------------------
-      # Save RAW cache (YEAR namespace)
-      # ----------------------------
+      # 4) YEAR별 RAW 캐시 저장
       - name: Save cache (RAW marketcap, year=${{ matrix.year }})
         if: always()
         uses: actions/cache/save@v4
@@ -109,9 +105,7 @@ jobs:
             data/stocks/raw/market_cap_by_date
           key: marketcap-raw-${{ env.MARKETCAP_CACHE_NS }}-${{ github.ref_name }}-${{ matrix.year }}-${{ github.run_id }}
 
-      # ----------------------------
-      # Upload RAW artifact (this run only)
-      # ----------------------------
+      # 5) YEAR별 RAW artifact 업로드(이 run 내 통합 curate용)
       - name: Upload RAW artifact (year=${{ matrix.year }})
         if: always()
         uses: actions/upload-artifact@v4
@@ -122,18 +116,21 @@ jobs:
           retention-days: 30
           if-no-files-found: warn
 
-
   curate_all_years:
-    name: Curate marketcap (merge all years -> per ticker)
+    name: Curate marketcap (all years -> per ticker) + save marketcap-curated cache bundle
     runs-on: ubuntu-latest
     timeout-minutes: 360
     needs: [backfill_raw_by_year]
 
     env:
       PYTHONPATH: src
+
       MARKETCAP_RAW_DIR: "data/stocks/raw/market_cap_by_date"
       MARKETCAP_CURATED_ROOT: "data/stocks/curated"
       MARKETCAP_CURATE_OVERWRITE: "false"
+
+      # marketcap-curated cache bundle 폴더 (작게)
+      MARKETCAP_CURATED_BUNDLE_DIR: "data/stocks/cache/marketcap_curated"
       MARKETCAP_CACHE_NS: ${{ inputs.cache_namespace }}
 
     steps:
@@ -148,7 +145,7 @@ jobs:
           pip install --quiet --no-input -U pip
           pip install --quiet --no-input pandas pyarrow
 
-      # Download all year artifacts and merge into one raw dir
+      # 1) 이번 run의 year별 RAW artifact를 하나로 합치기
       - name: Download RAW artifacts (2022-2026) and merge
         uses: actions/download-artifact@v4
         with:
@@ -167,6 +164,7 @@ jobs:
           print("[raw] last10:", files[-10:])
           PY
 
+      # 2) 통합 curate(전체연도 합본 -> per ticker)
       - name: Curate market cap (per ticker, all years combined)
         run: |
           python src/stocks/curate_market_cap.py
@@ -177,21 +175,48 @@ jobs:
           print("[curated] market_cap_daily.parquet files:", cnt)
           PY
 
-      # Cache only curated (optional but useful)
-      - name: Save cache (CURATED marketcap combined)
+      # 3) marketcap-curated 전용 "번들" 폴더 구성(시총 파일만 복사)
+      - name: Build marketcap curated cache bundle
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import shutil
+
+          src_root = Path("data/stocks/curated")
+          out_root = Path("data/stocks/cache/marketcap_curated")
+          if out_root.exists():
+            shutil.rmtree(out_root)
+          out_root.mkdir(parents=True, exist_ok=True)
+
+          n = 0
+          for p in src_root.rglob("market_cap_daily.parquet"):
+            # p: data/stocks/curated/{ticker}/market_cap_daily.parquet
+            rel = p.relative_to(src_root)
+            dst = out_root / rel
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(p, dst)
+            n += 1
+
+          print(f"[bundle] copied_files={n}")
+          PY
+          ls -lah data/stocks/cache/marketcap_curated | head -50
+
+      # 4) ✅ marketcap-curated 캐시 저장 (작은 번들 폴더만)
+      - name: Save cache (marketcap-curated bundle)
         if: always()
         uses: actions/cache/save@v4
         with:
           path: |
-            data/stocks/curated
+            data/stocks/cache/marketcap_curated
           key: marketcap-curated-${{ env.MARKETCAP_CACHE_NS }}-${{ github.ref_name }}-${{ github.run_id }}
 
-      - name: Upload summary artifact
+      # (선택) artifact도 남김
+      - name: Upload marketcap-curated bundle artifact
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: marketcap-curate-summary
+          name: marketcap-curated-bundle
           path: |
-            data/stocks/raw/market_cap_by_date
+            data/stocks/cache/marketcap_curated
           retention-days: 30
           if-no-files-found: warn
