@@ -54,7 +54,7 @@ jobs:
 
     strategy:
       fail-fast: false
-      max-parallel: 2
+      max-parallel: 5
       matrix:
         year: [2022, 2023, 2024, 2025, 2026]
 
@@ -72,7 +72,7 @@ jobs:
       PRICE_THROTTLE_SEC: "0.06"
 
       # flows
-      MAX_WORKERS_FLOWS: "6"
+      MAX_WORKERS_FLOWS: "7"
       KRX_FLOWS_SAVE_FORMAT: "parquet"
       KRX_RETRY: "3"
       KRX_NO_DATA_RETRY: "1"
