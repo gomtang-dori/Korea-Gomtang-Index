@@ -93,9 +93,21 @@ def main():
 
     # Impute for model
     X = df[feat_cols].copy()
-    med = X.median(numeric_only=True)
+    # 1) numeric coercion (defensive)
+    X = X.apply(pd.to_numeric, errors="coerce")
+    # 2) inf -> NaN
+    X = X.replace([np.inf, -np.inf], np.nan)
+    # 3) median impute, but handle all-NaN columns by filling med with 0.0
+    med = X.median(numeric_only=True).fillna(0.0)
     X = X.fillna(med)
-
+    # 4) final fallback (should be no-op, but keep for safety)
+    X = X.fillna(0.0)
+    # 5) hard guard: sklearn LR cannot accept NaN
+    n_na = int(X.isna().sum().sum())
+    if n_na > 0:
+        bad_cols = X.columns[X.isna().any()].tolist()[:20]
+        raise ValueError(f"[backtest] X still contains NaN: n_na={n_na}, example_cols={bad_cols}")
+  
     df["model_prob"] = pipe.predict_proba(X)[:, 1]
     df["rule_global"] = apply_rules_score(df, rules_global, use_shrunk=False)
 
