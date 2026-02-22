@@ -58,7 +58,7 @@ jobs:
 
     strategy:
       fail-fast: false
-      max-parallel: 2
+      max-parallel: 3
       matrix:
         year: [2022, 2023, 2024, 2025, 2026]
 
@@ -77,7 +77,7 @@ jobs:
       PRICE_THROTTLE_SEC: "0.06"
 
       # flows
-      MAX_WORKERS_FLOWS: "6"
+      MAX_WORKERS_FLOWS: "8"
       KRX_FLOWS_SAVE_FORMAT: "parquet"
       KRX_RETRY: "3"
       KRX_NO_DATA_RETRY: "1"
@@ -86,8 +86,8 @@ jobs:
       FLOW_APPEND_IF_EXISTS: "true"
 
       # flows retry2
-      MAX_WORKERS_FLOWS_RETRY: "3"
-      KRX_THROTTLE_SEC_RETRY2: "0.25"
+      MAX_WORKERS_FLOWS_RETRY: "5"
+      KRX_THROTTLE_SEC_RETRY2: "0.20"
       KRX_NO_DATA_RETRY_RETRY2: "3"
       KRX_NO_DATA_SLEEP_BASE_RETRY2: "5.0"
       RETRY2_OVERWRITE_IF_EXISTS: "false"
