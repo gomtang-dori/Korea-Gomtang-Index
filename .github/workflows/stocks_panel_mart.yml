@@ -84,8 +84,9 @@ jobs:
       - name: Install dependencies
         run: |
           pip install --quiet --no-input -U pip
-          pip install --quiet --no-input pandas pyarrow requests pykrx tabulate
+          pip install --quiet --no-input pandas pyarrow requests pykrx tabulate openpyxl
           python -c "import tabulate; print('tabulate=', tabulate.__version__)"
+          python -c "import openpyxl; print('openpyxl=', openpyxl.__version__)"
 
       # ============================================================
       # (1) Prefer restoring cache produced by stock_backfill.yml
@@ -130,8 +131,6 @@ jobs:
 
       # ============================================================
       # (3) MUST: Restore marketcap-curated bundle cache + apply to curated
-      # - This ensures market_cap_daily.parquet exists under data/stocks/curated/{ticker}/
-      # - If missing, RUN_CURATIONS=true can regenerate from raw (if raw exists)
       # ============================================================
       - name: Restore cache (marketcap-curated bundle)
         id: cache_restore_marketcap_curated
@@ -203,8 +202,6 @@ jobs:
 
       # ============================================================
       # Optional curations
-      # - If RUN_CURATIONS=true, we refresh curated flows/fundamentals/dart/marketcap from raw
-      # - This does NOT conflict with the marketcap bundle apply above; it can only improve/overwrite
       # ============================================================
       - name: Curate (flows/fundamentals/dart/marketcap) - optional
         if: ${{ env.RUN_CURATIONS == 'true' }}
