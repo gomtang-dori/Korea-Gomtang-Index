@@ -12,12 +12,10 @@ on:
         description: "Fail-fast threshold for price CSV count (e.g. 2500)"
         type: string
         default: "2500"
-
       min_flow_files:
         description: "Fail-fast threshold for flow parquet count (e.g. 2000)"
         type: string
         default: "2000"
-
       min_fund_files:
         description: "Fail-fast threshold for fundamentals parquet count (e.g. 2000)"
         type: string
@@ -54,9 +52,6 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  # ------------------------------------------------------------
-  # (A) 연도별 RAW 생성 job (서로 다른 폴더에만 씀 -> 파일 충돌 방지)
-  # ------------------------------------------------------------
   backfill_year:
     runs-on: ubuntu-latest
     timeout-minutes: 330
@@ -73,7 +68,6 @@ jobs:
 
       STOCKS_BACKFILL_CACHE_NS: ${{ inputs.cache_namespace }}
 
-      # ---------- 안정 세팅 ----------
       # prices
       MAX_WORKERS: "20"
       PRICE_APPEND_IF_EXISTS: "true"
@@ -122,9 +116,9 @@ jobs:
 
       - name: Install dependencies
         run: |
-          pip install pandas pyarrow pykrx requests tabulate tqdm
+          pip install --quiet --no-input -U pip
+          pip install --quiet --no-input pandas pyarrow pykrx requests tabulate tqdm
 
-      # seed: 이전 run 캐시가 있으면 그걸 바탕으로 SKIP/append가 더 잘 작동
       - name: Restore cache (seed)
         id: cache_restore
         uses: actions/cache/restore@v4
@@ -155,6 +149,7 @@ jobs:
           print("[raw] prices csv files      =", count_files(Path("data/stocks/raw/prices"), "*.csv"))
           print("[raw] krx_flows parquet     =", count_files(Path("data/stocks/raw/krx_flows"), "*.parquet"))
           print("[raw] fundamentals parquet  =", count_files(Path("data/stocks/raw/fundamentals"), "*.parquet"))
+          print("[curated] flows_daily       =", count_rglob(Path("data/stocks/curated"), "flows_daily.parquet"))
           print("[curated] fundamentals_daily=", count_rglob(Path("data/stocks/curated"), "fundamentals_daily.parquet"))
           print("================")
           PY
@@ -240,9 +235,6 @@ jobs:
           retention-days: 30
           if-no-files-found: warn
 
-  # ------------------------------------------------------------
-  # (B) merge job 1개: 연도별 결과를 canonical(raw/)로 합치고 cache 저장
-  # ------------------------------------------------------------
   merge_and_cache:
     runs-on: ubuntu-latest
     timeout-minutes: 330
@@ -261,7 +253,8 @@ jobs:
 
       - name: Install dependencies
         run: |
-          pip install pandas pyarrow tqdm
+          pip install --quiet --no-input -U pip
+          pip install --quiet --no-input pandas pyarrow tqdm
 
       - name: Restore cache (seed canonical raw)
         id: cache_restore
@@ -281,12 +274,6 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           path: /tmp/raw_year_artifacts
-
-      - name: List downloaded artifacts
-        run: |
-          set -euxo pipefail
-          ls -lah /tmp/raw_year_artifacts || true
-          find /tmp/raw_year_artifacts -maxdepth 4 -type d | head -80
 
       - name: Merge year-partitioned raw -> canonical raw
         run: |
@@ -430,11 +417,8 @@ jobs:
           print(f"[sanity] flow_files ={n_flow} (min={min_flow})")
           print(f"[sanity] fund_files ={n_fund} (min={min_fund})")
 
-          # prices는 패널의 '필수'라 강하게 가드
           if n_price < min_price:
             raise SystemExit("[sanity] TOO_FEW_PRICES -> STOP (do NOT save cache)")
-
-          # flows/fund는 상황에 따라 낮을 수 있어도 되지만, 너무 낮으면 운영상 문제가 크므로 가드(원하면 완화 가능)
           if n_flow < min_flow:
             raise SystemExit("[sanity] TOO_FEW_FLOWS -> STOP (do NOT save cache)")
           if n_fund < min_fund:
@@ -447,7 +431,7 @@ jobs:
           MIN_FLOW_FILES: ${{ inputs.min_flow_files }}
           MIN_FUND_FILES: ${{ inputs.min_fund_files }}
 
-      - name: Save cache (canonical raw + curated)  ✅ only when sanity OK
+      - name: Save cache (canonical raw + curated) ✅ only when sanity OK
         if: ${{ success() && steps.sanity.outcome == 'success' }}
         uses: actions/cache/save@v4
         with:
@@ -457,13 +441,3 @@ jobs:
             data/stocks/curated
             docs/stocks/dart_standard_*.csv
           key: stocks-backfill-${{ env.STOCKS_BACKFILL_CACHE_NS }}-${{ github.ref_name }}-${{ github.run_id }}
-
-      - name: Upload canonical raw counts (artifact)
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: canonical-raw-counts
-          path: |
-            data/stocks/raw
-          retention-days: 7
-          if-no-files-found: warn
