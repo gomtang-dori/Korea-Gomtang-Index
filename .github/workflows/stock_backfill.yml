@@ -1,4 +1,4 @@
-name: Stock Backfill RAW (Matrix 2022-2026) + Merge + Cache (max-parallel=2)
+name: Stock Backfill RAW (Matrix 2022-2026) + Merge + Curate + Cache (max-parallel=2)
 
 on:
   workflow_dispatch:
@@ -9,15 +9,15 @@ on:
         default: "v2"
 
       min_price_files:
-        description: "Fail-fast threshold for price CSV count (e.g. 2500)"
+        description: "Sanity: min price CSV files (default 2500)"
         type: string
         default: "2500"
-      min_flow_files:
-        description: "Fail-fast threshold for flow parquet count (e.g. 2000)"
+      min_flow_curated_files:
+        description: "Sanity: min curated flows_daily.parquet files (default 2000)"
         type: string
         default: "2000"
-      min_fund_files:
-        description: "Fail-fast threshold for fundamentals parquet count (e.g. 2000)"
+      min_fund_curated_files:
+        description: "Sanity: min curated fundamentals_daily.parquet files (default 2000)"
         type: string
         default: "2000"
 
@@ -34,18 +34,14 @@ on:
         type: boolean
         default: false
 
-      skip_dart:
-        description: "Skip DART fetch (recommended true; DART separate backfill)"
-        type: boolean
-        default: true
-
       clean_derived:
-        description: "Delete derived outputs (curated/analysis/docs) before curations (recommended false for RAW backfill)"
+        description: "Delete derived outputs (curated/analysis/docs) before curations"
         type: boolean
         default: false
 
 permissions:
   contents: read
+  actions: write
 
 concurrency:
   group: stock-backfill-raw-matrix-${{ github.ref_name }}
@@ -58,7 +54,7 @@ jobs:
 
     strategy:
       fail-fast: false
-      max-parallel: 3
+      max-parallel: 2
       matrix:
         year: [2022, 2023, 2024, 2025, 2026]
 
@@ -77,20 +73,13 @@ jobs:
       PRICE_THROTTLE_SEC: "0.06"
 
       # flows
-      MAX_WORKERS_FLOWS: "8"
+      MAX_WORKERS_FLOWS: "6"
       KRX_FLOWS_SAVE_FORMAT: "parquet"
       KRX_RETRY: "3"
       KRX_NO_DATA_RETRY: "1"
       KRX_NO_DATA_SLEEP_BASE: "4.0"
       KRX_THROTTLE_SEC: "0.13"
       FLOW_APPEND_IF_EXISTS: "true"
-
-      # flows retry2
-      MAX_WORKERS_FLOWS_RETRY: "5"
-      KRX_THROTTLE_SEC_RETRY2: "0.20"
-      KRX_NO_DATA_RETRY_RETRY2: "3"
-      KRX_NO_DATA_SLEEP_BASE_RETRY2: "5.0"
-      RETRY2_OVERWRITE_IF_EXISTS: "false"
 
       # fundamentals
       MAX_WORKERS_FUNDAMENTALS: "8"
@@ -105,7 +94,6 @@ jobs:
       FUND_APPEND_IF_EXISTS: "true"
 
       HEARTBEAT_SEC: "60"
-      DART_API_KEY: ${{ secrets.DART_API_KEY }}
 
     steps:
       - uses: actions/checkout@v4
@@ -127,32 +115,10 @@ jobs:
             data/stocks/master
             data/stocks/raw
             data/stocks/curated
-            docs/stocks/dart_standard_*.csv
           key: stocks-backfill-${{ env.STOCKS_BACKFILL_CACHE_NS }}-${{ github.ref_name }}-${{ github.run_id }}
           restore-keys: |
             stocks-backfill-${{ env.STOCKS_BACKFILL_CACHE_NS }}-${{ github.ref_name }}-
             stocks-backfill-${{ env.STOCKS_BACKFILL_CACHE_NS }}-
-
-      - name: Cache precheck summary
-        if: always()
-        run: |
-          echo "[cache] hit? -> ${{ steps.cache_restore.outputs.cache-hit }}"
-          python - <<'PY'
-          from pathlib import Path
-          def count_files(p: Path, pattern: str):
-            if not p.exists(): return 0
-            return len(list(p.glob(pattern)))
-          def count_rglob(p: Path, suffix: str):
-            if not p.exists(): return 0
-            return sum(1 for x in p.rglob(f"*{suffix}") if x.is_file())
-          print("=== precheck ===")
-          print("[raw] prices csv files      =", count_files(Path("data/stocks/raw/prices"), "*.csv"))
-          print("[raw] krx_flows parquet     =", count_files(Path("data/stocks/raw/krx_flows"), "*.parquet"))
-          print("[raw] fundamentals parquet  =", count_files(Path("data/stocks/raw/fundamentals"), "*.parquet"))
-          print("[curated] flows_daily       =", count_rglob(Path("data/stocks/curated"), "flows_daily.parquet"))
-          print("[curated] fundamentals_daily=", count_rglob(Path("data/stocks/curated"), "fundamentals_daily.parquet"))
-          print("================")
-          PY
 
       - name: "[cleanup] Remove derived outputs (optional)"
         if: ${{ inputs.clean_derived }}
@@ -202,11 +168,9 @@ jobs:
         env:
           PROGRESS_JSON: docs/stocks/progress_flows_${{ matrix.year }}.json
           FLOWS_RAW_DIR: data/stocks/raw_year/krx_flows/${{ matrix.year }}
-          RETRY2_INPUT_FILE: data/stocks/raw_year/krx_flows/${{ matrix.year }}/_no_data_tickers.txt
         run: |
           set -euxo pipefail
           python -u src/stocks/fetch_krx_flows.py || true
-          python -u src/stocks/fetch_krx_flows_retry_nodata.py || true
           cat "${PROGRESS_JSON}" || true
 
       - name: "Fetch fundamentals (year=${{ matrix.year }})"
@@ -244,6 +208,10 @@ jobs:
       PYTHONPATH: src
       STOCKS_BACKFILL_CACHE_NS: ${{ inputs.cache_namespace }}
 
+      MIN_PRICE_FILES: ${{ inputs.min_price_files }}
+      MIN_FLOW_CURATED_FILES: ${{ inputs.min_flow_curated_files }}
+      MIN_FUND_CURATED_FILES: ${{ inputs.min_fund_curated_files }}
+
     steps:
       - uses: actions/checkout@v4
 
@@ -254,9 +222,9 @@ jobs:
       - name: Install dependencies
         run: |
           pip install --quiet --no-input -U pip
-          pip install --quiet --no-input pandas pyarrow tqdm
+          pip install --quiet --no-input pandas pyarrow tabulate tqdm
 
-      - name: Restore cache (seed canonical raw)
+      - name: Restore cache (seed canonical raw/curated)
         id: cache_restore
         uses: actions/cache/restore@v4
         with:
@@ -264,7 +232,6 @@ jobs:
             data/stocks/master
             data/stocks/raw
             data/stocks/curated
-            docs/stocks/dart_standard_*.csv
           key: stocks-backfill-${{ env.STOCKS_BACKFILL_CACHE_NS }}-${{ github.ref_name }}-${{ github.run_id }}
           restore-keys: |
             stocks-backfill-${{ env.STOCKS_BACKFILL_CACHE_NS }}-${{ github.ref_name }}-
@@ -291,6 +258,7 @@ jobs:
           YEARS = [2022, 2023, 2024, 2025, 2026]
 
           def iter_year_dirs(kind: str):
+            # actions/download-artifact 구조에 맞춰 광범위 탐색
             for y in YEARS:
               pattern = f"raw-year-{y}/**/data/stocks/raw_year/{kind}/{y}"
               for h in ART_ROOT.glob(pattern):
@@ -391,45 +359,56 @@ jobs:
           print("fund files  :", len(list(FUND_CAN.glob("*.parquet"))))
           PY
 
-      - name: Post-merge sanity gate (fail-fast to prevent cache poisoning)
+      # ✅ backfill에서 curated 생성(패널 마트/데일리 sanity 통과를 위해 필수)
+      - name: Curate flows & fundamentals (build curated for v2 cache)
+        run: |
+          python src/stocks/curate_flows.py
+          python src/stocks/curate_fundamentals.py
+          python - <<'PY'
+          from pathlib import Path
+          def count_rglob(p: Path, name: str):
+            if not p.exists(): return 0
+            return sum(1 for _ in p.rglob(name))
+          print("[curated] flows_daily =", count_rglob(Path("data/stocks/curated"), "flows_daily.parquet"))
+          print("[curated] fundamentals_daily =", count_rglob(Path("data/stocks/curated"), "fundamentals_daily.parquet"))
+          PY
+
+      - name: Sanity gate (prices + curated flows/fund)
         id: sanity
         run: |
-          set -euo pipefail
-          echo "prices: $(ls data/stocks/raw/prices/*.csv 2>/dev/null | wc -l)"
-          echo "flows : $(ls data/stocks/raw/krx_flows/*.parquet 2>/dev/null | wc -l)"
-          echo "fund  : $(ls data/stocks/raw/fundamentals/*.parquet 2>/dev/null | wc -l)"
           python - <<'PY'
           import os
           from pathlib import Path
 
-          def cnt(glob_pat: str):
-            return len(list(Path(".").glob(glob_pat)))
+          def count_glob(p: Path, pat: str):
+            if not p.exists(): return 0
+            return len(list(p.glob(pat)))
 
-          n_price = cnt("data/stocks/raw/prices/*.csv")
-          n_flow  = cnt("data/stocks/raw/krx_flows/*.parquet")
-          n_fund  = cnt("data/stocks/raw/fundamentals/*.parquet")
+          def count_rglob(p: Path, name: str):
+            if not p.exists(): return 0
+            return sum(1 for _ in p.rglob(name))
+
+          n_price = count_glob(Path("data/stocks/raw/prices"), "*.csv")
+          n_flows_cur = count_rglob(Path("data/stocks/curated"), "flows_daily.parquet")
+          n_fund_cur  = count_rglob(Path("data/stocks/curated"), "fundamentals_daily.parquet")
 
           min_price = int(os.environ.get("MIN_PRICE_FILES", "2500"))
-          min_flow  = int(os.environ.get("MIN_FLOW_FILES", "2000"))
-          min_fund  = int(os.environ.get("MIN_FUND_FILES", "2000"))
+          min_flows = int(os.environ.get("MIN_FLOW_CURATED_FILES", "2000"))
+          min_fund  = int(os.environ.get("MIN_FUND_CURATED_FILES", "2000"))
 
-          print(f"[sanity] price_files={n_price} (min={min_price})")
-          print(f"[sanity] flow_files ={n_flow} (min={min_flow})")
-          print(f"[sanity] fund_files ={n_fund} (min={min_fund})")
+          print(f"[sanity] price_csv_files={n_price} (min={min_price})")
+          print(f"[sanity] flows_curated_files={n_flows_cur} (min={min_flows})")
+          print(f"[sanity] fund_curated_files={n_fund_cur} (min={min_fund})")
 
           if n_price < min_price:
             raise SystemExit("[sanity] TOO_FEW_PRICES -> STOP (do NOT save cache)")
-          if n_flow < min_flow:
-            raise SystemExit("[sanity] TOO_FEW_FLOWS -> STOP (do NOT save cache)")
-          if n_fund < min_fund:
-            raise SystemExit("[sanity] TOO_FEW_FUND -> STOP (do NOT save cache)")
+          if n_flows_cur < min_flows:
+            raise SystemExit("[sanity] TOO_FEW_FLOWS_CURATED -> STOP (do NOT save cache)")
+          if n_fund_cur < min_fund:
+            raise SystemExit("[sanity] TOO_FEW_FUND_CURATED -> STOP (do NOT save cache)")
 
           print("[sanity] OK")
           PY
-        env:
-          MIN_PRICE_FILES: ${{ inputs.min_price_files }}
-          MIN_FLOW_FILES: ${{ inputs.min_flow_files }}
-          MIN_FUND_FILES: ${{ inputs.min_fund_files }}
 
       - name: Save cache (canonical raw + curated) ✅ only when sanity OK
         if: ${{ success() && steps.sanity.outcome == 'success' }}
@@ -439,5 +418,4 @@ jobs:
             data/stocks/master
             data/stocks/raw
             data/stocks/curated
-            docs/stocks/dart_standard_*.csv
           key: stocks-backfill-${{ env.STOCKS_BACKFILL_CACHE_NS }}-${{ github.ref_name }}-${{ github.run_id }}
