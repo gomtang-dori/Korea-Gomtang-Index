@@ -8,7 +8,6 @@ on:
         type: string
         default: "10"
   schedule:
-    # Weekdays 07:10 UTC
     - cron: "10 7 * * 1-5"
 
 permissions:
@@ -28,7 +27,16 @@ jobs:
       INCREMENTAL_MODE: "true"
       INCREMENTAL_DAYS: ${{ inputs.incremental_days || '10' }}
 
-      # 안정 설정(보수적으로)
+      # ✅ namespaces (bump to reset poisoned cache)
+      STOCKS_BACKFILL_CACHE_NS: "v2"
+      STOCKS_DAILY_CACHE_NS: "v2"
+
+      # sanity thresholds (as requested)
+      MIN_PRICE_FILES: "2500"
+      MIN_FLOWS_CURATED_FILES: "2000"
+      MIN_FUND_CURATED_FILES: "2000"
+
+      # 안정 세팅(보수적으로)
       MAX_WORKERS: "10"
       MAX_WORKERS_FLOWS: "3"
       MAX_WORKERS_FUNDAMENTALS: "6"
@@ -54,7 +62,6 @@ jobs:
       MARKETCAP_OUT_DIR: "data/stocks/raw/market_cap_by_date"
       MARKETCAP_COMPRESSION: "zstd"
 
-      # ✅ marketcap-curated cache namespace (backfill workflow와 동일하게)
       MARKETCAP_CACHE_NS: "v1"
       MARKETCAP_CURATED_BUNDLE_DIR: "data/stocks/cache/marketcap_curated"
 
@@ -76,10 +83,12 @@ jobs:
       - name: Install dependencies
         run: |
           pip install --quiet --no-input -U pip
-          pip install --quiet --no-input pandas pyarrow requests pykrx tabulate
+          # ✅ openpyxl 포함 (WICS 엑셀 읽기)
+          pip install --quiet --no-input pandas pyarrow requests pykrx tabulate openpyxl
+          python -c "import openpyxl; print('openpyxl=', openpyxl.__version__)"
 
       # ------------------------------------------------------------
-      # 기존 캐시 복원 (backfill -> daily)
+      # 캐시 복원 (backfill -> daily)
       # ------------------------------------------------------------
       - name: Restore cache (prefer backfill)
         id: cache_restore_backfill
@@ -93,12 +102,10 @@ jobs:
             data/stocks/curated
             data/stocks/analysis
             docs/stocks/dart_standard_*.csv
-          key: stocks-backfill-v1-${{ github.ref_name }}-${{ github.run_id }}
+          key: stocks-backfill-${{ env.STOCKS_BACKFILL_CACHE_NS }}-${{ github.ref_name }}-${{ github.run_id }}
           restore-keys: |
-            stocks-backfill-v1-${{ github.ref_name }}-
-            stocks-backfill-v1-
-            stocks-backfill-${{ github.ref_name }}-
-            stocks-backfill-
+            stocks-backfill-${{ env.STOCKS_BACKFILL_CACHE_NS }}-${{ github.ref_name }}-
+            stocks-backfill-${{ env.STOCKS_BACKFILL_CACHE_NS }}-
 
       - name: Restore cache (fallback daily)
         if: ${{ steps.cache_restore_backfill.outputs.cache-hit != 'true' }}
@@ -113,13 +120,13 @@ jobs:
             data/stocks/curated
             data/stocks/analysis
             docs/stocks/dart_standard_*.csv
-          key: stocks-daily-v1-${{ github.ref_name }}-${{ github.run_id }}
+          key: stocks-daily-${{ env.STOCKS_DAILY_CACHE_NS }}-${{ github.ref_name }}-${{ github.run_id }}
           restore-keys: |
-            stocks-daily-v1-${{ github.ref_name }}-
-            stocks-daily-v1-
+            stocks-daily-${{ env.STOCKS_DAILY_CACHE_NS }}-${{ github.ref_name }}-
+            stocks-daily-${{ env.STOCKS_DAILY_CACHE_NS }}-
 
       # ------------------------------------------------------------
-      # ✅ 반드시: marketcap-curated 번들 캐시 restore (작은 캐시)
+      # ✅ 반드시: marketcap-curated bundle restore + apply
       # ------------------------------------------------------------
       - name: Restore cache (marketcap-curated bundle)
         id: cache_restore_marketcap_curated
@@ -147,7 +154,7 @@ jobs:
 
           n = 0
           for p in bundle.rglob("market_cap_daily.parquet"):
-            rel = p.relative_to(bundle)  # {ticker}/market_cap_daily.parquet
+            rel = p.relative_to(bundle)
             dst = dst_root / rel
             dst.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(p, dst)
@@ -163,12 +170,55 @@ jobs:
           echo "[cache] marketcap-curated hit? -> ${{ steps.cache_restore_marketcap_curated.outputs.cache-hit }}"
           python - <<'PY'
           from pathlib import Path
-          def count_files(p: Path, glob_pat: str):
-            if not p.exists():
-              return 0
-            return sum(1 for _ in p.rglob(glob_pat))
-          print("[precheck] raw marketcap by date =", count_files(Path("data/stocks/raw/market_cap_by_date"), "*.parquet"))
-          print("[precheck] curated market_cap_daily =", count_files(Path("data/stocks/curated"), "market_cap_daily.parquet"))
+          def count_glob(p: Path, pat: str):
+            if not p.exists(): return 0
+            return len(list(p.glob(pat)))
+          def count_rglob(p: Path, name: str):
+            if not p.exists(): return 0
+            return sum(1 for _ in p.rglob(name))
+
+          print("[precheck] raw prices csv files =", count_glob(Path("data/stocks/raw/prices"), "*.csv"))
+          print("[precheck] curated flows_daily =", count_rglob(Path("data/stocks/curated"), "flows_daily.parquet"))
+          print("[precheck] curated fundamentals_daily =", count_rglob(Path("data/stocks/curated"), "fundamentals_daily.parquet"))
+          print("[precheck] curated market_cap_daily =", count_rglob(Path("data/stocks/curated"), "market_cap_daily.parquet"))
+          PY
+
+      # ✅ Fail-fast gate: 캐시 복원이 망가졌으면 daily는 진행하지 않음(오염 방지)
+      - name: Sanity gate (prices/flows/fund coverage)
+        id: sanity
+        run: |
+          python - <<'PY'
+          import os
+          from pathlib import Path
+
+          def count_glob(p: Path, pat: str):
+            if not p.exists(): return 0
+            return len(list(p.glob(pat)))
+
+          def count_rglob(p: Path, name: str):
+            if not p.exists(): return 0
+            return sum(1 for _ in p.rglob(name))
+
+          n_price = count_glob(Path("data/stocks/raw/prices"), "*.csv")
+          n_flows_cur = count_rglob(Path("data/stocks/curated"), "flows_daily.parquet")
+          n_fund_cur  = count_rglob(Path("data/stocks/curated"), "fundamentals_daily.parquet")
+
+          min_price = int(os.environ["MIN_PRICE_FILES"])
+          min_flows = int(os.environ["MIN_FLOWS_CURATED_FILES"])
+          min_fund  = int(os.environ["MIN_FUND_CURATED_FILES"])
+
+          print(f"[sanity] price_csv_files={n_price} (min={min_price})")
+          print(f"[sanity] flows_curated_files={n_flows_cur} (min={min_flows})")
+          print(f"[sanity] fund_curated_files={n_fund_cur} (min={min_fund})")
+
+          if n_price < min_price:
+            raise SystemExit("[sanity] TOO_FEW_PRICES -> STOP (run stock_backfill v2)")
+          if n_flows_cur < min_flows:
+            raise SystemExit("[sanity] TOO_FEW_FLOWS_CURATED -> STOP (run curate/backfill v2)")
+          if n_fund_cur < min_fund:
+            raise SystemExit("[sanity] TOO_FEW_FUND_CURATED -> STOP (run curate/backfill v2)")
+
+          print("[sanity] OK")
           PY
 
       - name: Fetch listings (master)
@@ -194,16 +244,12 @@ jobs:
       - name: Build WICS map (wics_map.parquet)
         run: python src/stocks/build_wics_map.py
 
-      # 최근 15거래일 시총만 갱신
       - name: Fetch market cap by date (recent)
         run: python src/stocks/fetch_market_cap_by_date.py
 
       - name: Curate market cap (per ticker)
         run: python src/stocks/curate_market_cap.py
 
-      # ------------------------------------------------------------
-      # marketcap-curated 번들 재생성 + cache save (다음 run에서 반드시 restore)
-      # ------------------------------------------------------------
       - name: Rebuild marketcap curated cache bundle (from data/stocks/curated)
         if: always()
         run: |
@@ -227,17 +273,14 @@ jobs:
           print(f"[bundle] copied_files={n}")
           PY
 
-      - name: Save cache (marketcap-curated bundle)
-        if: always()
+      - name: Save cache (marketcap-curated bundle) ✅ only when sanity OK
+        if: ${{ success() && steps.sanity.outcome == 'success' }}
         uses: actions/cache/save@v4
         with:
           path: |
             ${{ env.MARKETCAP_CURATED_BUNDLE_DIR }}
           key: marketcap-curated-${{ env.MARKETCAP_CACHE_NS }}-${{ github.ref_name }}-${{ github.run_id }}
 
-      # ------------------------------------------------------------
-      # 패널 생성 (panel_daily.parquet)
-      # ------------------------------------------------------------
       - name: Build panel parquet (5y scope -> panel_daily.parquet)
         env:
           PANEL_SCOPE: "5y"
@@ -246,7 +289,6 @@ jobs:
           python src/stocks/build_panel_parquet.py
           ls -lh "${PANEL_DAILY_PATH}" || true
 
-      # panel은 커밋하지 않고 artifact로만
       - name: Upload panel_daily.parquet (artifact, retention 30d)
         if: always()
         uses: actions/upload-artifact@v4
@@ -306,9 +348,8 @@ jobs:
       - name: Export summary CSVs
         run: python src/stocks/export_data_summary.py
 
-      # 기존 daily 캐시 저장(전체 파이프라인 안정성용)
-      - name: Save cache (prices/flows/fund/marketcap/raw+curated/analysis)
-        if: always()
+      - name: Save cache (prices/flows/fund/marketcap/raw+curated/analysis) ✅ only when sanity OK
+        if: ${{ success() && steps.sanity.outcome == 'success' }}
         uses: actions/cache/save@v4
         with:
           path: |
@@ -319,10 +360,10 @@ jobs:
             data/stocks/curated
             data/stocks/analysis
             docs/stocks/dart_standard_*.csv
-          key: stocks-daily-v1-${{ github.ref_name }}-${{ github.run_id }}
+          key: stocks-daily-${{ env.STOCKS_DAILY_CACHE_NS }}-${{ github.ref_name }}-${{ github.run_id }}
 
-      # ✅ docs만 커밋
-      - name: Commit & push (docs only)
+      - name: Commit & push (docs only) ✅ only when sanity OK
+        if: ${{ success() && steps.sanity.outcome == 'success' }}
         run: |
           set -euo pipefail
           git config user.name "github-actions[bot]"
