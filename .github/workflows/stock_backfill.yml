@@ -61,6 +61,7 @@ jobs:
     env:
       PYTHONPATH: src
       SAMPLE_MODE: "false"
+      SAMPLE_SIZE: "99999"
       STOCKS_BACKFILL_CACHE_NS: ${{ inputs.cache_namespace }}
 
       # prices
@@ -138,10 +139,14 @@ jobs:
           mkdir -p data/stocks/curated data/stocks/analysis docs/stocks
           echo "OK: derived outputs cleaned"
 
-      - name: Fetch listings
+      - name: Fetch listings (FULL universe)
         continue-on-error: true
+        env:
+          SAMPLE_MODE: "false"
+          SAMPLE_SIZE: "99999"
         run: |
           python -u src/stocks/fetch_listings.py || true
+          ls -lh data/stocks/master/listings.parquet || true
 
       - name: Resolve year window for this job
         run: |
@@ -238,7 +243,7 @@ jobs:
       - name: Install dependencies
         run: |
           pip install --quiet --no-input -U pip
-          pip install --quiet --no-input pandas pyarrow tabulate tqdm
+          pip install --quiet --no-input pandas pyarrow tabulate tqdm requests pykrx
 
       - name: Restore cache (seed canonical raw/curated)  # ✅ core paths unified
         id: cache_restore
@@ -375,6 +380,24 @@ jobs:
           print("prices files:", len(list(PRICES_CAN.glob("*.csv"))))
           print("flows files :", len(list(FLOWS_CAN.glob("*.parquet"))))
           print("fund files  :", len(list(FUND_CAN.glob("*.parquet"))))
+          PY
+
+      - name: Rebuild listings.parquet (FULL universe; disable sampling)
+        env:
+          SAMPLE_MODE: "false"
+          SAMPLE_SIZE: "99999"
+        run: |
+          set -euxo pipefail
+          python -u src/stocks/fetch_listings.py
+          ls -lh data/stocks/master/listings.parquet
+          python - <<'PY'
+          import pandas as pd
+          df = pd.read_parquet("data/stocks/master/listings.parquet")
+          n = len(df)
+          print("[listings] rows =", n)
+          print(df.head(3))
+          if n < 2500:
+            raise SystemExit(f"[listings] TOO_SMALL ({n}) -> STOP (sampling still enabled?)")
           PY
 
       - name: Curate flows & fundamentals (build curated for v2 cache)
